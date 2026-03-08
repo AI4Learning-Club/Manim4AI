@@ -1,0 +1,63 @@
+# Runs and outputs
+runs/
+media/
+*.mp4
+*.webm
+*.mp3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual env
+.venv/
+venv/
+ENV/
+env/
+
+# Secrets and local config
+.env
+.env.local
+*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# TTS cache (generated at runtime)
+tts_cache/
+
+# Manim / LaTeX
+*.svg
+*.tex
+!docs/*.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Eval pipeline artifacts (can be large)
+**/frame_stats.csv
+**/segments_all.csv
+**/vlm_verdicts.jsonl
+**/vlm_payload/
