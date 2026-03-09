@@ -44,8 +44,8 @@ def find_scene_classes(code: str) -> List[str]:
 def _sanitize_chinese_in_latex(code: str) -> str:
     """Auto-fix Chinese characters inside MathTex/Tex raw strings.
 
-    Replaces patterns like MathTex(r"\\text{中文}") with safe alternatives.
-    This is a safety net — the LLM should avoid this, but sometimes doesn't.
+    Removes unsafe Chinese fragments from MathTex/Tex strings without leaking
+    placeholder tokens into the rendered video.
     """
     import re
 
@@ -66,17 +66,22 @@ def _sanitize_chinese_in_latex(code: str) -> str:
         if i < len(code):
             raw_content = code[quote_start + 1:i]
             if _has_chinese(raw_content):
-                # Replace \text{中文} patterns with placeholder
+                # Strip Chinese text commands and raw Chinese characters.
                 cleaned = re.sub(
                     r'\\text\{([^}]*[\u4e00-\u9fff][^}]*)\}',
-                    r'\\mathrm{CHINESE}',
+                    r'\\quad',
                     raw_content,
                 )
                 cleaned = re.sub(
                     r'\\mathrm\{([^}]*[\u4e00-\u9fff][^}]*)\}',
-                    r'\\mathrm{CHINESE}',
+                    r'\\quad',
                     cleaned,
                 )
+                cleaned = re.sub(r'[\u4e00-\u9fff]+', ' ', cleaned)
+                cleaned = re.sub(r'[，。；：、“”‘’（）【】《》]', ' ', cleaned)
+                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                if not cleaned:
+                    cleaned = r"\\quad"
                 if cleaned != raw_content:
                     fixed = fixed.replace(raw_content, cleaned)
     return fixed
@@ -121,17 +126,40 @@ class NarratedScene(Scene):
         page = VGroup(title, body).arrange(DOWN, buff=buff)
         return self.fit_group(page)
 
-    def make_two_panel_page(self, title, left, right, panel_gap: float = 0.6):
-        if left.width > 5.4:
-            left.scale_to_fit_width(5.4)
-        if right.width > 5.4:
-            right.scale_to_fit_width(5.4)
+    def make_two_panel_page(self, title, left, right, panel_gap: float = 0.8):
+        if left.width > 5.0:
+            left.scale_to_fit_width(5.0)
+        if right.width > 4.4:
+            right.scale_to_fit_width(4.4)
         if left.height > 4.8:
             left.scale_to_fit_height(4.8)
         if right.height > 4.8:
             right.scale_to_fit_height(4.8)
         body = VGroup(left, right).arrange(RIGHT, buff=panel_gap, aligned_edge=UP)
+        if body.width > 10.6:
+            body.scale_to_fit_width(10.6)
         return self.make_page(title, body)
+
+    def make_graph_text_page(self, title, graph_group, text_group, panel_gap: float = 1.0):
+        if graph_group.width > 4.8:
+            graph_group.scale_to_fit_width(4.8)
+        if graph_group.height > 4.5:
+            graph_group.scale_to_fit_height(4.5)
+        if text_group.width > 4.0:
+            text_group.scale_to_fit_width(4.0)
+        if text_group.height > 4.5:
+            text_group.scale_to_fit_height(4.5)
+        body = VGroup(graph_group, text_group).arrange(RIGHT, buff=panel_gap, aligned_edge=UP)
+        if body.width > 10.4:
+            body.scale_to_fit_width(10.4)
+        return self.make_page(title, body, buff=0.4)
+
+    def limit_text_block(self, block, max_width: float = 4.0, max_height: float = 4.5):
+        if block.width > max_width:
+            block.scale_to_fit_width(max_width)
+        if block.height > max_height:
+            block.scale_to_fit_height(max_height)
+        return block
 
     def stack_panel(
         self,

@@ -136,13 +136,29 @@ VECTOR DIAGRAM RULES:
     necessary.  This reduces false overlap detections and keeps the scene clean.
 - On graphs, keep only essential short labels near lines and points.  Put long
     explanations, causal arrows with sentences, and conclusions outside the axes.
+- Never draw decorative divider lines in the explanation panel.
+- Never draw custom long horizontal or vertical lines that extend from the graph
+    into the explanation panel.
 
 AVAILABLE LAYOUT HELPERS (already defined on NarratedScene):
 - `self.fit_group(group, max_width=12, max_height=6.5)`
 - `self.make_page(title, body, buff=0.35)`
 - `self.make_two_panel_page(title, left, right, panel_gap=0.6)`
+- `self.make_graph_text_page(title, graph_group, text_group, panel_gap=1.0)`
+- `self.limit_text_block(block, max_width=4.0, max_height=4.5)`
 - `self.stack_panel(top, bottom, buff=0.18, max_width=5.4, max_height=4.8)`
 Use these helpers instead of many manual `.shift()` / `.to_edge()` calls.
+For graph + explanation pages, prefer `self.make_graph_text_page(...)`.
+
+CONTENT DENSITY RULES:
+- Do NOT try to fit all explanation text on one slide.
+- On any single slide, an explanation panel may contain at most 1 short heading
+    plus 3 short body lines.
+- If a concept needs more text, split it into the next slide while preserving
+    the same teaching content.
+- It is GOOD to make the video longer if this avoids crowding.
+- Preserving all content across more slides is better than squeezing content
+    into one crowded slide.
 
 ANIMATION RULES:
 - Use `Write()` for formulas, `Create()` for shapes, `FadeIn(shift=DOWN*0.2)`
@@ -206,6 +222,10 @@ GRAPH ANNOTATION RULES:
     extra decorative shapes at the intersection.
 - When showing cause/effect on a graph, animate one change at a time: first
     reveal the base graph, then the shifted curve, then the explanation text.
+- Right-side graph labels such as `D_1`, `S_1`, `E_2` must stay fully inside the
+    graph area and must never intrude into the text panel.
+- If graph labels and explanation text compete for space, keep the graph labels
+    minimal and move the sentence-level explanation to a separate follow-up slide.
 
 PACING RULES:
 - Let the speak() duration drive the timing.  Do NOT add extra self.wait()
@@ -284,6 +304,8 @@ RULE #2: Fix visual bugs surgically
     row plus a lower two-panel row.
 - Replace text-inside-shape layouts with self-drawn vector objects plus a
     nearby caption or right-side explanation block.
+- If a graph page is crowded, preserve the content but split it across two
+    consecutive slides instead of forcing the text to remain next to the graph.
 
 ## "layout" / "dense":
 - Break crowded sections into sub-stages with FadeOut between them.
@@ -298,6 +320,8 @@ RULE #3: Never introduce new crashes
 
 - Chinese text: ALWAYS `Text("中文")`.  NEVER inside MathTex or Tex.
   `\\mathrm{中文}`, `\\text{中文}` inside MathTex → instant LaTeX crash.
+- For mixed Chinese + math, build a `VGroup(Text(...), MathTex(...), Text(...))`
+    instead of putting Chinese inside one MathTex string.
 - To fade all: use `Group(*self.mobjects)`, NOT `VGroup(...)`.
 - Use the available NarratedScene layout helpers to rebuild crowded scenes
     instead of stacking manual `.shift()` calls.
@@ -353,6 +377,7 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
                 f"**OVERLAP (score {dscore:.2f})**: {details}\n"
                 "  → Elements are covering each other or extending off-screen.\n"
                 "  → FIX: Scale down, add spacing, FadeOut before new elements.\n"
+                "  → If needed, split one crowded slide into two slides while keeping the same content.\n"
             )
         elif name == "layout":
             lines.append(
@@ -455,7 +480,8 @@ class CodeGenAgent:
         prompt_parts.append(
             "## Implementation priority\n"
             "Keep each page visually stable after it appears. Use teacher-like sequencing, "
-            "self-drawn vector diagrams, and clean two-panel layouts."
+            "self-drawn vector diagrams, and clean two-panel layouts. Keep all current teaching content, "
+            "but split dense slides into multiple pages instead of squeezing text and graphics together."
         )
         content: list = [{"type": "input_text", "text": "\n\n".join(prompt_parts)}]
         if image_path and image_path.exists():
