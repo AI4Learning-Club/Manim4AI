@@ -4,6 +4,7 @@
 
 ## 功能概览
 
+- **教学编排 Agent**：先把学生需求整理成老师讲课用的授课结构，明确导入、误区、分步讲解、总结与迁移问题。
 - **代码生成**：使用大模型根据题目/需求生成 Manim 场景代码（支持中文+公式、图文排版、节奏与旁白）。
 - **渲染**：调用 Manim 渲染视频；若失败则自动把错误交给模型修复并重试一次。
 - **评测**：基于 CV（重叠、布局、运动等）与 VLM 语义判断对视频打分，并产出结构化报告。
@@ -26,17 +27,25 @@ pip install -r requirements.txt
 
 安装 Manim 与系统依赖请参考 [Manim 官方文档](https://docs.manim.community/en/stable/installation.html)。
 
+然后在项目根目录创建 `.env` 文件：
+
+```bash
+cp .env.example .env
+```
+
 ## 配置
 
-- **API 密钥**：设置环境变量 `OPENAI_API_KEY`（或兼容的 API Key）。流水线中的代码生成与评测 VLM 均使用该密钥。
+- 项目启动时会自动加载根目录下的 `.env`。
+- **API 密钥**：在 `.env` 中设置 `OPENAI_API_KEY`（或兼容的 API Key）。流水线中的代码生成与评测 VLM 均使用该密钥。
 - **Base URL**（可选）：若使用自建或第三方 OpenAI 兼容接口，可设置 `OPENAI_BASE_URL`。
-- **模型**（可选）：默认 `gpt-4o`，可通过 `OPENAI_MODEL` 覆盖。
+- **模型**（可选）：可通过 `OPENAI_MODEL` 统一指定模型；`agent_pipeline` 与 `eval_pipeline` 都会优先读取它。
 
-示例（PowerShell）：
+示例 `.env`：
 
-```powershell
-$env:OPENAI_API_KEY = "your-api-key"
-$env:OPENAI_BASE_URL = "https://api.example.com/v1"   # 可选
+```dotenv
+OPENAI_API_KEY=your-api-key
+OPENAI_BASE_URL=https://api.example.com/v1
+OPENAI_MODEL=gpt-5.4
 ```
 
 ## 使用
@@ -57,6 +66,7 @@ python -m agent_pipeline "用供需曲线动画解释通货膨胀下供不应求
 
 输出目录默认为 `runs/YYYYMMDD_HHMMSS/`，包含：
 
+- `teaching_plan.json`：教学编排 Agent 生成的授课结构与讲解顺序。
 - `round1/`、`round2/`：每轮生成的代码、渲染视频、评测结果与关键帧。
 - `summary.json`：各轮得分与最终选用轮次。
 - 最终视频路径会在控制台打印（若启用 TTS，会同时生成带旁白的版本）。
@@ -76,6 +86,7 @@ python -m eval_pipeline path/to/video.mp4 --out-dir path/to/eval_output
 ```
 manim-edu-agent/
 ├── agent_pipeline/       # 多智能体流水线
+│   ├── teaching_planner.py # 教学编排 Agent
 │   ├── code_gen.py       # 代码生成 / 修复 / 改进
 │   ├── renderer.py       # Manim 渲染与 TTS 预生成
 │   ├── evaluator.py      # 调用 eval_pipeline 做视频评测

@@ -20,22 +20,28 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
 
 from .code_gen import CodeGenAgent
 from .renderer import RenderResult, render_scene
 from .evaluator import evaluate, collect_keyframes
+from .teaching_planner import TeachingPlannerAgent
 from .tts import generate_narration, merge_audio_video
 
 # =====================================================================
-# Configuration constants (override via env: OPENAI_API_KEY, OPENAI_BASE_URL)
+# Configuration constants (override via .env or process env)
 # =====================================================================
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT_DIR / ".env")
 
 API_KEY = os.environ.get("OPENAI_API_KEY", "")
 BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 MANIM_QUALITY = "-qm --fps 60"
-RUNS_DIR = Path(__file__).resolve().parent.parent / "runs"
+RUNS_DIR = ROOT_DIR / "runs"
 
 # =====================================================================
 # Helpers
@@ -161,10 +167,22 @@ def run_pipeline(
     if image_path and image_path.exists():
         shutil.copy2(str(image_path), str(run_dir / f"request_image{image_path.suffix}"))
 
+    _log("Teaching planner: building lesson structure ...")
+    planner = TeachingPlannerAgent(api_key=API_KEY, base_url=BASE_URL, model=MODEL)
     agent = CodeGenAgent(api_key=API_KEY, base_url=BASE_URL, model=MODEL)
+    teaching_plan: Dict[str, Any] = planner.plan(request_text, image_path)
+    _log(f"Teaching planner: {len(teaching_plan.get('sections', []))} section(s) ready")
+
+    teaching_plan_path = run_dir / "teaching_plan.json"
+    teaching_plan_path.write_text(
+        json.dumps(teaching_plan, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
     summary: Dict = {
         "request": request_text,
         "image": str(image_path) if image_path else None,
+        "teaching_plan_file": str(teaching_plan_path),
         "rounds": [],
         "final_video": None,
         "final_score": None,
@@ -178,7 +196,7 @@ def run_pipeline(
     # Round 1
     # ==================================================================
     _log("Round 1: generating Manim code ...")
-    code = agent.generate(request_text, image_path)
+    code = agent.generate(request_text, image_path, teaching_plan=teaching_plan)
 
     r1_dir = run_dir / "round1"
     code, r1_render = _try_render(agent, code, r1_dir, "Round 1")
@@ -222,7 +240,12 @@ def run_pipeline(
         _log(f"  Sending {len(keyframes)} keyframe(s) to LLM for visual feedback")
 
     feedback = r1_report or {"issues": [], "dimensions": [], "overall_score": 0}
-    code = agent.improve(code, feedback, keyframe_paths=keyframes or None)
+    code = agent.improve(
+        code,
+        feedback,
+        keyframe_paths=keyframes or None,
+        teaching_plan=teaching_plan,
+    )
 
     r2_dir = run_dir / "round2"
     code, r2_render = _try_render(agent, code, r2_dir, "Round 2")
@@ -322,7 +345,7 @@ def main() -> int:
     args = parse_args()
 
     if not API_KEY:
-        print("Error: OPENAI_API_KEY is not set. Set it in the environment and try again.")
+        print("Error: OPENAI_API_KEY is not set. Put it in .env or export it in the shell and try again.")
         return 1
 
     if args.request is None and args.image is None:

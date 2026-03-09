@@ -3,6 +3,7 @@
 
 # 代码生成与 API
 openai>=1.30.0
+python-dotenv>=1.0.1
 
 # 评测管道：CV + 数值
 opencv-python>=4.8.0

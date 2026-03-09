@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
 from typing import List
+
+from dotenv import load_dotenv
 
 from .config import CVConfig, FusionConfig, PipelineConfig, VLMConfig
 from .cv_features import (
@@ -49,6 +52,14 @@ from .cv_features import (
 )
 from .vlm_judge import VLMVerdict, review_segments, save_verdicts_jsonl
 from .fusion import compute_report, print_report, save_report_json
+
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT_DIR / ".env")
+
+DEFAULT_API_KEY = os.environ.get("OPENAI_API_KEY")
+DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.tabcode.cc/openai")
+DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
 
 
 # =====================================================================
@@ -79,9 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
     # --- VLM options ---
     vlm = p.add_argument_group("VLM options")
     vlm.add_argument("--skip-vlm", action="store_true", help="Run CV-only mode")
-    vlm.add_argument("--api-key", type=str, default=None, help="OpenAI API key")
-    vlm.add_argument("--base-url", type=str, default="https://api.tabcode.cc/openai", help="Custom API base URL")
-    vlm.add_argument("--model", type=str, default="gpt-5.4", help="VLM model name")
+    vlm.add_argument("--api-key", type=str, default=DEFAULT_API_KEY, help="OpenAI API key (default: OPENAI_API_KEY from .env/env)")
+    vlm.add_argument("--base-url", type=str, default=DEFAULT_BASE_URL, help="Custom API base URL (default: OPENAI_BASE_URL from .env/env)")
+    vlm.add_argument("--model", type=str, default=DEFAULT_MODEL, help="VLM model name (default: OPENAI_MODEL from .env/env)")
     vlm.add_argument("--max-vlm-segments", type=int, default=0, help="Max segments to send to VLM (0=all)")
     vlm.add_argument("--vlm-all", action="store_true", help="Send ALL segments to VLM (including likely_intentional)")
 

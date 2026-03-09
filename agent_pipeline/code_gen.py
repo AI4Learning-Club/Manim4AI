@@ -8,6 +8,7 @@ streaming to handle long responses.
 from __future__ import annotations
 
 import base64
+import json
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -26,6 +27,11 @@ concepts — not just show formulas.
 ═══════════════════════════════════════════════════════
 PART 1: PEDAGOGICAL DESIGN (think like a great teacher)
 ═══════════════════════════════════════════════════════
+
+You will receive a teaching plan from a teaching-planner agent.
+You MUST follow that plan closely and preserve its teacher logic.
+The video should feel like a teacher guiding the student step by step,
+not a slideshow that states definitions directly.
 
 Before writing any code, plan a multi-step teaching flow:
 
@@ -113,11 +119,47 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
   SMALLER is better than clipped!  When in doubt, reduce font size.
 - Never use `.to_edge(UP)` on its own — put the title inside the
   VGroup so it scales together with everything else.
+- ALWAYS reserve a dedicated title row above the content; the title must not
+    overlap the graph or diagram below it.
+- Prefer a clean two-row structure: title row on top, content row below.
+- For graph + explanation slides, keep the graph fully in the LEFT panel and
+    all long explanation text in the RIGHT panel.
+- If a visual needs extra explanation, use a caption BELOW the visual or a
+    separate text panel.  Do not float paragraph text over the diagram.
+
+VECTOR DIAGRAM RULES:
+- Prefer self-drawn vector diagrams with Manim primitives such as Rectangle,
+    RoundedRectangle, Circle, Line, Arrow, Axes, Polygon, and VGroup.
+- Do NOT rely on large text placed inside shapes as the main explanation.
+    Draw the object first, then explain it beside or below the object.
+- Use outline-only shapes (`fill_opacity=0`) unless a filled region is truly
+    necessary.  This reduces false overlap detections and keeps the scene clean.
+- On graphs, keep only essential short labels near lines and points.  Put long
+    explanations, causal arrows with sentences, and conclusions outside the axes.
+
+AVAILABLE LAYOUT HELPERS (already defined on NarratedScene):
+- `self.fit_group(group, max_width=12, max_height=6.5)`
+- `self.make_page(title, body, buff=0.35)`
+- `self.make_two_panel_page(title, left, right, panel_gap=0.6)`
+- `self.stack_panel(top, bottom, buff=0.18, max_width=5.4, max_height=4.8)`
+Use these helpers instead of many manual `.shift()` / `.to_edge()` calls.
 
 ANIMATION RULES:
 - Use `Write()` for formulas, `Create()` for shapes, `FadeIn(shift=DOWN*0.2)`
   for text, `GrowArrow()` for arrows.
 - To fade out everything: use `Group(*self.mobjects)` NOT `VGroup(...)`.
+
+STABILITY RULES (reduce messy motion):
+- Once a page layout appears, keep its title, panels, and axes FIXED in place.
+- Do NOT animate whole pages with `.animate.shift(...)` or move large groups
+    around after they are already on screen.
+- Reveal new information in place with FadeIn, Write, Create, or small local
+    transforms.
+- If a section needs a new layout, FadeOut the old page and build a new stable
+    page, instead of dragging old elements across the screen.
+- Axes should enter once and then stay anchored; only curves, dots, arrows,
+    or highlights should change.
+- Text blocks should appear at their final positions. Avoid long sliding text.
 
 VOICE NARRATION (audio-synced pacing):
 - Your Scene class MUST inherit from NarratedScene (already available).
@@ -158,6 +200,12 @@ GRAPH ANNOTATION RULES:
   place annotations ABOVE or BELOW the graph area, not overlapping curves.
 - Use `.next_to(axes, DOWN)` or `.next_to(axes, UP)` for annotation text.
 - Alternatively, put annotations in the RIGHT panel, not on the graph itself.
+- Never place long titles, sentences, or multi-word explanations inside the
+    axes region.
+- A line intersection between supply and demand curves is normal; avoid adding
+    extra decorative shapes at the intersection.
+- When showing cause/effect on a graph, animate one change at a time: first
+    reveal the base graph, then the shifted curve, then the explanation text.
 
 PACING RULES:
 - Let the speak() duration drive the timing.  Do NOT add extra self.wait()
@@ -230,6 +278,12 @@ RULE #2: Fix visual bugs surgically
 - FadeOut old elements before showing new ones in the same area.
 - For physics diagrams where block sits ON board: make block thinner or use
   outline-only (fill_opacity=0) so the overlap is not flagged.
+- If text overlaps a diagram, separate them into different panels instead of
+    squeezing both into the same region.
+- If a section mixes title + diagram + explanation, rebuild it as a top title
+    row plus a lower two-panel row.
+- Replace text-inside-shape layouts with self-drawn vector objects plus a
+    nearby caption or right-side explanation block.
 
 ## "layout" / "dense":
 - Break crowded sections into sub-stages with FadeOut between them.
@@ -245,6 +299,8 @@ RULE #3: Never introduce new crashes
 - Chinese text: ALWAYS `Text("中文")`.  NEVER inside MathTex or Tex.
   `\\mathrm{中文}`, `\\text{中文}` inside MathTex → instant LaTeX crash.
 - To fade all: use `Group(*self.mobjects)`, NOT `VGroup(...)`.
+- Use the available NarratedScene layout helpers to rebuild crowded scenes
+    instead of stacking manual `.shift()` calls.
 
 Output ONLY the improved Python code in a ```python``` block.
 """
@@ -315,6 +371,7 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
                 f"**ANIMATION (score {dscore:.2f})**: {details}\n"
                 "  → Motion is jerky.\n"
                 "  → FIX: Add self.wait() between animations, longer run_time.\n"
+                "  → Keep the page anchor fixed; avoid moving whole panels after entry.\n"
             )
         elif name == "vlm_semantic":
             lines.append(
@@ -387,9 +444,20 @@ class CodeGenAgent:
         self,
         request_text: str,
         image_path: Optional[Path] = None,
+        teaching_plan: Optional[Dict] = None,
     ) -> str:
         """Generate Manim code from a student request (text, optionally image)."""
-        content: list = [{"type": "input_text", "text": request_text}]
+        prompt_parts = [f"## Student request\n{request_text}"]
+        if teaching_plan:
+            prompt_parts.append(
+                "## Teaching plan\n" + json.dumps(teaching_plan, ensure_ascii=False, indent=2)
+            )
+        prompt_parts.append(
+            "## Implementation priority\n"
+            "Keep each page visually stable after it appears. Use teacher-like sequencing, "
+            "self-drawn vector diagrams, and clean two-panel layouts."
+        )
+        content: list = [{"type": "input_text", "text": "\n\n".join(prompt_parts)}]
         if image_path and image_path.exists():
             content.append({
                 "type": "input_image",
@@ -454,15 +522,21 @@ class CodeGenAgent:
         code: str,
         eval_report: Dict,
         keyframe_paths: Optional[List[Path]] = None,
+        teaching_plan: Optional[Dict] = None,
     ) -> str:
         """Improve code based on evaluation feedback + optional keyframe images."""
         feedback = _build_actionable_feedback(eval_report)
+        prompt_parts = [
+            f"## Original code\n```python\n{code}\n```\n\n## Evaluation feedback\n{feedback}"
+        ]
+        if teaching_plan:
+            prompt_parts.append(
+                "## Teaching plan to preserve\n"
+                + json.dumps(teaching_plan, ensure_ascii=False, indent=2)
+            )
         content: list = [{
             "type": "input_text",
-            "text": (
-                f"## Original code\n```python\n{code}\n```\n\n"
-                f"## Evaluation feedback\n{feedback}"
-            ),
+            "text": "\n\n".join(prompt_parts),
         }]
         if keyframe_paths:
             content.append({

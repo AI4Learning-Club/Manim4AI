@@ -176,7 +176,7 @@ def review_segments(
     api_key = vlm_cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
         raise RuntimeError(
-            "No API key provided.  Set VLMConfig.api_key or OPENAI_API_KEY env var."
+            "No API key provided. Set VLMConfig.api_key or configure OPENAI_API_KEY in .env/env."
         )
 
     # Import OpenAI SDK
