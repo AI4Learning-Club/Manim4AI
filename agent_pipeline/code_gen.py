@@ -33,6 +33,25 @@ You MUST follow that plan closely and preserve its teacher logic.
 The video should feel like a teacher guiding the student step by step,
 not a slideshow that states definitions directly.
 
+When a teaching plan is provided, treat it as a TEACHER SCRIPT, not as metadata.
+That means:
+- use `hook` and `teaching_promise` to shape the opening tone,
+- use each section's `teacher_move` to decide how the teacher acts,
+- use each section's `student_question` as the confusion you are answering,
+- use `misconceptions` to create explicit correction moments,
+- use each section's `transition` so the lesson flows naturally,
+- use `key_takeaway` to end each section with one clear sentence students can keep.
+
+Each major section should feel like this classroom loop:
+1. Raise the student's real question or prediction.
+2. Show a visual or concrete example.
+3. Explain the mechanism in plain language.
+4. Land on one memorable takeaway.
+5. Bridge naturally into the next section.
+
+Do NOT sound like: "定义是... 性质是... 应用是...".
+Sound like: "你可能会先以为... 但我们看这个画面，会发现真正决定它的是...".
+
 Before writing any code, plan a multi-step teaching flow:
 
 STEP 1 — MOTIVATION & ROADMAP (5-10 seconds):
@@ -46,21 +65,28 @@ STEP 1 — MOTIVATION & ROADMAP (5-10 seconds):
   This gives the student a mental roadmap before diving in.
   Use simple language.  Make the student feel "I want to know the answer."
 
-STEP 2+ — TEACH EACH CONCEPT with VISUAL + FORMULA SIDE-BY-SIDE:
+STEP 2+ — TEACH EACH CONCEPT with VISUAL + FORMULA TOGETHER:
   This is the CORE of the animation.  For EACH concept in the roadmap:
 
   Show visuals and formulas ON SCREEN TOGETHER so the student sees the
-  connection.  Choose the layout that best fits the content:
+  connection.  Do NOT lock the whole video into one repeated layout.
+  Choose the layout that best fits the content of THAT section:
+    If the page starts getting crowded, split it into two consecutive sections.
+    A longer video is better than one overloaded frame.
 
   LAYOUT OPTIONS (pick the best one for each concept):
   A) TOP title + MIDDLE visual + BOTTOM formula/text
      Best for: wide diagrams, process flows, timelines
   B) LEFT visual + RIGHT formula/text (each ~half width)
      Best for: a single diagram that needs explanation
-  C) TOP title + FULL-WIDTH visual, then formula overlaid or below
+  C) TOP text/question + BOTTOM visual reveal
+      Best for: first asking the student to predict, then answering with the figure
+  D) TOP title + FULL-WIDTH visual, then formula overlaid or below
      Best for: graphs with labels, network diagrams
-  D) FULL-WIDTH formula slide (no visual)
+  E) FULL-WIDTH formula slide (no visual)
      Best for: pure derivation steps with no diagram needed
+  F) CENTER visual + small caption block below or beside it
+      Best for: intuition-heavy pages where the picture should dominate
 
   Example for "diffusion forward process":
     TOP: title  MIDDLE: row of images (noise -> clean)  BOTTOM: formula
@@ -73,12 +99,23 @@ STEP 2+ — TEACH EACH CONCEPT with VISUAL + FORMULA SIDE-BY-SIDE:
   see what the formula describes — either a visual next to it, or a clear
   text explanation of what each symbol means.
 
-  Between major concepts: FadeOut everything, then build the next
-  LEFT+RIGHT pair.
+    Between major concepts: FadeOut everything, then build the next layout fresh.
+    When neighboring sections teach different kinds of content, often switch to
+    a different layout rhythm so the lesson does not feel templated.
 
 FINAL STEP — CONCLUSION (5-8 seconds):
   Summarize the key result with a highlighted box.
   Can be full-screen centered (no need for left/right split here).
+
+TEACHER-LIKE DELIVERY RULES:
+- Open with the student's confusion, not the formal definition.
+- Before any abstract formula, first give the student a visible or causal picture.
+- At least twice in the video, let the narration ask the student to predict,
+    compare, or notice something before giving the answer.
+- When correcting a misconception, first acknowledge why it feels plausible,
+    then overturn it with the visual.
+- Use short bridge lines such as "先别急着背结论，我们先看画面", "现在公式只是把刚才的画面写下来".
+- End each section with a one-sentence takeaway a good teacher would actually say.
 
 IMPORTANT: The visual+formula side-by-side approach is what makes
 animation BETTER than a textbook.  A student can read formulas anywhere —
@@ -121,11 +158,21 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
   VGroup so it scales together with everything else.
 - ALWAYS reserve a dedicated title row above the content; the title must not
     overlap the graph or diagram below it.
+- ALWAYS reserve the bottom band for subtitles.  Do NOT place formulas,
+    diagrams, captions, or explanatory text in the bottom subtitle area.
 - Prefer a clean two-row structure: title row on top, content row below.
-- For graph + explanation slides, keep the graph fully in the LEFT panel and
-    all long explanation text in the RIGHT panel.
+- Do NOT default every section to left graphic + right text.
+- For graph + explanation slides, keep the graph fully in one region and the
+    explanation in a separate region, but that region may be below, above, or
+    beside the graph depending on the scene.
 - If a visual needs extra explanation, use a caption BELOW the visual or a
     separate text panel.  Do not float paragraph text over the diagram.
+- Across a full lesson, vary layouts naturally: some sections can be top-down,
+    some full-width visual, some two-panel, some centered formula focus.
+- Do not repeat the exact same layout pattern for 3 or more consecutive sections
+    unless the content truly requires it.
+- If the bottom area starts feeling crowded, move content upward or split the
+    current teaching point into the next slide.
 
 VECTOR DIAGRAM RULES:
 - Prefer self-drawn vector diagrams with Manim primitives such as Rectangle,
@@ -142,6 +189,11 @@ VECTOR DIAGRAM RULES:
 
 AVAILABLE LAYOUT HELPERS (already defined on NarratedScene):
 - `self.fit_group(group, max_width=12, max_height=6.5)`
+- `self.show_section_header("片段标题")`
+- `self.make_subtitle_panel("字幕内容")`
+- `self.set_subtitle("字幕内容")`
+- `self.clear_subtitle()`
+- `self.speak_with_subtitle("旁白文本", *animations, run_time=...)`
 - `self.make_page(title, body, buff=0.35)`
 - `self.make_two_panel_page(title, left, right, panel_gap=0.6)`
 - `self.make_graph_text_page(title, graph_group, text_group, panel_gap=1.0)`
@@ -149,6 +201,26 @@ AVAILABLE LAYOUT HELPERS (already defined on NarratedScene):
 - `self.stack_panel(top, bottom, buff=0.18, max_width=5.4, max_height=4.8)`
 Use these helpers instead of many manual `.shift()` / `.to_edge()` calls.
 For graph + explanation pages, prefer `self.make_graph_text_page(...)`.
+You do NOT need to use the same helper for every section.
+
+SECTION TITLE RULES:
+- Keep the section-title behavior: a large title should appear first, then
+    shrink and remain at the top-left as the section marker.
+- Use `self.show_section_header(...)` for major teaching segments.
+- Keep section titles short, usually 4-10 Chinese characters.
+- Title names should be informative and teacher-like, not vague slogans.
+- Prefer titles that tell the student what this step is for, such as
+    "先看每一步加了什么", "为什么它还不是乱噪声", "把图像翻译成公式".
+- Avoid empty labels like "只看一步", "继续推导", "再看一下" unless they are
+    expanded into a concrete learning goal.
+
+SUBTITLE RULES:
+- Keep a bottom subtitle module during explanation-heavy beats.
+- Prefer `self.speak_with_subtitle(...)` so subtitle, narration, and animation
+    stay aligned.
+- Update subtitles when the spoken focus changes, and clear them before dense
+    transitions if necessary.
+- Nothing except the subtitle module itself should occupy the subtitle band.
 
 CONTENT DENSITY RULES:
 - Do NOT try to fit all explanation text on one slide.
@@ -159,6 +231,8 @@ CONTENT DENSITY RULES:
 - It is GOOD to make the video longer if this avoids crowding.
 - Preserving all content across more slides is better than squeezing content
     into one crowded slide.
+- If subtitles are present, treat the bottom band as unavailable space when
+  planning every page.
 
 ANIMATION RULES:
 - Use `Write()` for formulas, `Create()` for shapes, `FadeIn(shift=DOWN*0.2)`
@@ -210,6 +284,8 @@ VOICE NARRATION (audio-synced pacing):
 - Section titles: narrate them!  Don't show a silent title.
   dur = self.speak("下面来看第二步")
   self.play(FadeIn(title), run_time=dur)
+- Prefer `self.speak_with_subtitle(...)` over raw `self.speak(...)` during
+    explanation beats so the subtitle module stays synchronized.
 
 GRAPH ANNOTATION RULES:
 - When labelling regions on a graph (e.g. shortage arrows between curves),
@@ -283,6 +359,10 @@ Specifically, you MUST preserve:
 - The Phase B visual intuition (diagrams, graphs, animations)
 - The Phase C formula derivation steps
 - The overall order and pacing
+- The section-title rhythm where the title appears large first and then stays
+    at the top-left.
+- The bottom subtitle module when present, and add it if the scene lacks a
+    clear subtitle band during explanations.
 
 Do NOT simplify the teaching just to avoid overlap.  Instead, fix the overlap
 by adjusting positions and sizes.
@@ -306,6 +386,8 @@ RULE #2: Fix visual bugs surgically
     nearby caption or right-side explanation block.
 - If a graph page is crowded, preserve the content but split it across two
     consecutive slides instead of forcing the text to remain next to the graph.
+- The bottom subtitle band must stay clear; move any low-placed content upward
+    or split the page rather than letting it collide with subtitles.
 
 ## "layout" / "dense":
 - Break crowded sections into sub-stages with FadeOut between them.
@@ -325,6 +407,10 @@ RULE #3: Never introduce new crashes
 - To fade all: use `Group(*self.mobjects)`, NOT `VGroup(...)`.
 - Use the available NarratedScene layout helpers to rebuild crowded scenes
     instead of stacking manual `.shift()` calls.
+- Preserve or introduce varied layouts instead of collapsing everything into
+    the same left-visual/right-text template.
+- Prefer `self.show_section_header(...)` and `self.speak_with_subtitle(...)`
+    when revising scenes so title markers and subtitle rhythm remain consistent.
 
 Output ONLY the improved Python code in a ```python``` block.
 """
@@ -477,11 +563,18 @@ class CodeGenAgent:
             prompt_parts.append(
                 "## Teaching plan\n" + json.dumps(teaching_plan, ensure_ascii=False, indent=2)
             )
+            prompt_parts.append(
+                "## Required teaching-plan execution\n"
+                "Turn the plan into actual teaching behavior. The opening must cash out the hook and teaching_promise. "
+                "For each section, reflect teacher_move, answer student_question, include the concrete_example or visual_strategy, "
+                "and end with key_takeaway or check_for_understanding. Use the listed misconceptions to design at least one explicit "
+                "'you may think X, but actually Y' correction moment. Use transitions so the lesson feels continuous rather than segmented."
+            )
         prompt_parts.append(
             "## Implementation priority\n"
             "Keep each page visually stable after it appears. Use teacher-like sequencing, "
-            "self-drawn vector diagrams, and clean two-panel layouts. Keep all current teaching content, "
-            "but split dense slides into multiple pages instead of squeezing text and graphics together."
+            "self-drawn vector diagrams, varied layouts chosen by content, and stable section markers/subtitles. Keep all current teaching content, "
+            "but split dense slides into multiple pages instead of squeezing text and graphics together. Reserve the bottom band for subtitles only, and give sections informative titles rather than vague labels."
         )
         content: list = [{"type": "input_text", "text": "\n\n".join(prompt_parts)}]
         if image_path and image_path.exists():

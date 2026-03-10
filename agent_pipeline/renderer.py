@@ -98,6 +98,13 @@ except ImportError:
     _HAS_MUTAGEN = False
 
 class NarratedScene(Scene):
+    SUBTITLE_SAFE_BOTTOM = -2.15
+    CONTENT_TOP_LIMIT = 3.15
+
+    def setup(self):
+        self._section_badge = None
+        self._subtitle_mob = None
+
     def speak(self, text: str) -> float:
         h = hashlib.md5(text.encode('utf-8')).hexdigest()
         # Search for pre-generated audio in tts_cache
@@ -119,22 +126,114 @@ class NarratedScene(Scene):
             group.scale_to_fit_width(max_width)
         if group.height > max_height:
             group.scale_to_fit_height(max_height)
-        group.move_to(ORIGIN)
+        group.move_to(UP * 0.28)
+        if group.get_bottom() < self.SUBTITLE_SAFE_BOTTOM:
+            group.shift(UP * (self.SUBTITLE_SAFE_BOTTOM - group.get_bottom()))
+        if group.get_top() > self.CONTENT_TOP_LIMIT:
+            group.shift(DOWN * (group.get_top() - self.CONTENT_TOP_LIMIT))
         return group
+
+    def _build_title_chip(self, text: str, font_size: float = 22, max_width: float = 4.6):
+        label = Text(text, font_size=font_size, weight=BOLD)
+        if label.width > max_width:
+            label.scale_to_fit_width(max_width)
+        box = RoundedRectangle(
+            corner_radius=0.22,
+            width=label.width + 0.6,
+            height=label.height + 0.38,
+            stroke_color=YELLOW,
+            stroke_width=2,
+            fill_color="#18263C",
+            fill_opacity=0.92,
+        )
+        return VGroup(box, label.move_to(box.get_center()))
+
+    def show_section_header(self, text: str):
+        intro = self._build_title_chip(text, font_size=32, max_width=8.4)
+        intro.move_to(ORIGIN)
+
+        animations = []
+        if self._section_badge is not None:
+            animations.append(FadeOut(self._section_badge, shift=UP * 0.15))
+        if animations:
+            self.play(*animations, run_time=0.25)
+
+        self.play(
+            DrawBorderThenFill(intro[0]),
+            FadeIn(intro[1], shift=UP * 0.08),
+            run_time=0.38,
+        )
+        self.play(
+            intro.animate.scale(0.64).to_corner(UL, buff=0.32),
+            run_time=0.38,
+        )
+        self._section_badge = intro
+        return self._section_badge
+
+    def make_subtitle_panel(self, text: str, font_size: float = 20, max_width: float = 10.6):
+        label = Text(text, font_size=font_size, line_spacing=0.88)
+        if label.width > max_width:
+            label.scale_to_fit_width(max_width)
+        box = RoundedRectangle(
+            corner_radius=0.18,
+            width=min(11.6, label.width + 0.9),
+            height=max(0.72, label.height + 0.36),
+            stroke_color=BLUE_E,
+            stroke_width=1.6,
+            fill_color=BLACK,
+            fill_opacity=0.82,
+        )
+        panel = VGroup(box, label.move_to(box.get_center()))
+        panel.to_edge(DOWN, buff=0.22)
+        return panel
+
+    def set_subtitle(self, text: str, run_time: float = 0.25):
+        new_panel = self.make_subtitle_panel(text)
+        if self._subtitle_mob is None:
+            self.play(FadeIn(new_panel, shift=UP * 0.08), run_time=run_time)
+        else:
+            self.play(ReplacementTransform(self._subtitle_mob, new_panel), run_time=run_time)
+        self._subtitle_mob = new_panel
+        return self._subtitle_mob
+
+    def clear_subtitle(self, run_time: float = 0.2):
+        if self._subtitle_mob is not None:
+            self.play(FadeOut(self._subtitle_mob, shift=DOWN * 0.08), run_time=run_time)
+            self._subtitle_mob = None
+
+    def speak_with_subtitle(self, text: str, *animations, run_time: float | None = None, clear_after: bool = False):
+        dur = self.speak(text)
+        new_panel = self.make_subtitle_panel(text)
+        subtitle_anim = (
+            FadeIn(new_panel, shift=UP * 0.08)
+            if self._subtitle_mob is None
+            else ReplacementTransform(self._subtitle_mob, new_panel)
+        )
+        self._subtitle_mob = new_panel
+        total = run_time or dur
+        if animations:
+            self.play(subtitle_anim, *animations, run_time=total)
+        else:
+            self.play(subtitle_anim, run_time=min(total, 0.35))
+            if total > 0.35:
+                self.wait(total - 0.35)
+        if clear_after:
+            self.clear_subtitle()
+        return dur
 
     def make_page(self, title, body, buff: float = 0.35):
         page = VGroup(title, body).arrange(DOWN, buff=buff)
-        return self.fit_group(page)
+        return self.fit_group(page, max_height=5.9)
 
     def make_two_panel_page(self, title, left, right, panel_gap: float = 0.8):
         if left.width > 5.0:
             left.scale_to_fit_width(5.0)
         if right.width > 4.4:
             right.scale_to_fit_width(4.4)
-        if left.height > 4.8:
-            left.scale_to_fit_height(4.8)
-        if right.height > 4.8:
-            right.scale_to_fit_height(4.8)
+        if left.height > 4.35:
+            left.scale_to_fit_height(4.35)
+        if right.height > 4.35:
+            right.scale_to_fit_height(4.35)
         body = VGroup(left, right).arrange(RIGHT, buff=panel_gap, aligned_edge=UP)
         if body.width > 10.6:
             body.scale_to_fit_width(10.6)
@@ -143,18 +242,18 @@ class NarratedScene(Scene):
     def make_graph_text_page(self, title, graph_group, text_group, panel_gap: float = 1.0):
         if graph_group.width > 4.8:
             graph_group.scale_to_fit_width(4.8)
-        if graph_group.height > 4.5:
-            graph_group.scale_to_fit_height(4.5)
+        if graph_group.height > 4.15:
+            graph_group.scale_to_fit_height(4.15)
         if text_group.width > 4.0:
             text_group.scale_to_fit_width(4.0)
-        if text_group.height > 4.5:
-            text_group.scale_to_fit_height(4.5)
+        if text_group.height > 4.15:
+            text_group.scale_to_fit_height(4.15)
         body = VGroup(graph_group, text_group).arrange(RIGHT, buff=panel_gap, aligned_edge=UP)
         if body.width > 10.4:
             body.scale_to_fit_width(10.4)
         return self.make_page(title, body, buff=0.4)
 
-    def limit_text_block(self, block, max_width: float = 4.0, max_height: float = 4.5):
+    def limit_text_block(self, block, max_width: float = 4.0, max_height: float = 4.0):
         if block.width > max_width:
             block.scale_to_fit_width(max_width)
         if block.height > max_height:
@@ -167,7 +266,7 @@ class NarratedScene(Scene):
         bottom,
         buff: float = 0.18,
         max_width: float = 5.4,
-        max_height: float = 4.8,
+        max_height: float = 4.2,
     ):
         panel = VGroup(top, bottom).arrange(DOWN, buff=buff)
         if panel.width > max_width:
