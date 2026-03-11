@@ -100,7 +100,7 @@ except ImportError:
     _HAS_MUTAGEN = False
 
 class NarratedScene(Scene):
-    SUBTITLE_SAFE_BOTTOM = -1.15
+    SUBTITLE_SAFE_BOTTOM = -0.9
     CONTENT_TOP_LIMIT = 2.95
     CONTENT_SIDE_LIMIT = 6.1
     SECTION_BADGE_BUFF = 0.34
@@ -158,8 +158,6 @@ class NarratedScene(Scene):
         return max(1.6, len(text) * 0.22)
 
     def _content_bottom_limit(self):
-        if self._subtitle_mob is not None:
-            return self._subtitle_mob.get_top()[1] + 0.3
         return self.SUBTITLE_SAFE_BOTTOM
 
     def _keep_clear_of_section_badge(self, group):
@@ -237,69 +235,19 @@ class NarratedScene(Scene):
         self._section_badge_text = text
         return self._section_badge
 
-    def _normalize_subtitle_text(self, text: str, max_line_chars: int = 18):
+    def _normalize_subtitle_text(self, text: str):
         cleaned = re.sub(r"\\s+", " ", text).strip()
         if not cleaned:
             return ""
+        return cleaned
 
-        parts = []
-        current = ""
-        for token in re.split(r"([，。！？；：,.!?;:])", cleaned):
-            if not token:
-                continue
-            candidate = f"{current}{token}"
-            plain_len = len(candidate.replace(" ", ""))
-            if current and plain_len > max_line_chars:
-                parts.append(current.strip())
-                current = token.strip()
-            else:
-                current = candidate
-        if current.strip():
-            parts.append(current.strip())
-
-        lines = []
-        for part in parts:
-            segment = part
-            while len(segment.replace(" ", "")) > max_line_chars:
-                cut = max_line_chars
-                lines.append(segment[:cut].strip())
-                segment = segment[cut:].strip()
-            if segment:
-                lines.append(segment)
-
-        lines = [line for line in lines if line]
-        if not lines:
-            return cleaned
-        return "\\n".join(lines)
-
-    def _lift_mobjects_for_subtitle(self, subtitle_top: float):
-        movable = []
-        for mob in self.mobjects:
-            if mob is self._subtitle_mob or mob is self._section_badge:
-                continue
-            try:
-                if mob.get_bottom()[1] < subtitle_top + 0.14:
-                    movable.append(mob)
-            except Exception:
-                continue
-        if not movable:
-            return
-        group = Group(*movable)
-        shift = subtitle_top + 0.24 - group.get_bottom()[1]
-        if shift > 0:
-            self.play(group.animate.shift(UP * shift), run_time=0.18)
-
-    def make_subtitle_panel(self, text: str, font_size: float = 18, max_width: float = 10.4):
+    def make_subtitle_panel(self, text: str, font_size: float = 17, max_width: float = 11.8):
         text = self._normalize_subtitle_text(text)
-        line_count = max(1, text.count("\\n") + 1)
-        adaptive_font_size = font_size
-        if line_count >= 4:
-            adaptive_font_size = 14
-        elif line_count == 3:
-            adaptive_font_size = 16
-        label = Text(text, font_size=adaptive_font_size, line_spacing=0.84, weight=MEDIUM)
+        label = Text(text, font_size=font_size, weight=MEDIUM)
         if label.width > max_width:
             label.scale_to_fit_width(max_width)
+        if label.height > 0.42:
+            label.scale_to_fit_height(0.42)
         label.set_stroke(color=BLACK, width=8, background=True)
         label.to_edge(DOWN, buff=0.18)
         label.set_z_index(100)
@@ -307,7 +255,6 @@ class NarratedScene(Scene):
 
     def set_subtitle(self, text: str, run_time: float = 0.25):
         new_panel = self.make_subtitle_panel(text)
-        self._lift_mobjects_for_subtitle(new_panel.get_top()[1])
         if self._subtitle_mob is None:
             self.play(FadeIn(new_panel, shift=UP * 0.08), run_time=run_time)
         else:
@@ -323,7 +270,6 @@ class NarratedScene(Scene):
     def speak_with_subtitle(self, text: str, *animations, run_time: float | None = None, clear_after: bool = False):
         dur = self.speak(text)
         new_panel = self.make_subtitle_panel(text)
-        self._lift_mobjects_for_subtitle(new_panel.get_top()[1])
         subtitle_anim = (
             FadeIn(new_panel, shift=UP * 0.08)
             if self._subtitle_mob is None

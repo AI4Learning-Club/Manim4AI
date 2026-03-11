@@ -81,6 +81,53 @@ python -m eval_pipeline path/to/video.mp4 --out-dir path/to/eval_output
 
 需设置 `OPENAI_API_KEY`。更多参数见 `python -m eval_pipeline --help`。
 
+## HTTP API
+
+可直接启动一个简单 API 服务，让用户只提交需求文本即可生成视频：
+
+```bash
+python app.py
+```
+
+默认监听 `http://0.0.0.0:8000`，可通过环境变量修改：
+
+```bash
+APP_HOST=127.0.0.1 APP_PORT=8080 python app.py
+```
+
+### 1. 提交任务
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"request":"用动画讲解牛顿迭代法为什么会收敛"}'
+```
+
+返回里会包含：
+
+- `job_id`：任务 ID
+- `status_url`：查询状态接口
+- `video_url`：视频下载接口（生成完成后可用）
+
+### 2. 查询任务状态
+
+```bash
+curl http://127.0.0.1:8000/jobs/<job_id>
+```
+
+状态可能为：
+
+- `queued`
+- `running`
+- `completed`
+- `failed`
+
+### 3. 获取视频
+
+```bash
+curl -L http://127.0.0.1:8000/videos/<job_id> --output lesson.mp4
+```
+
 ## 项目结构
 
 ```
@@ -98,6 +145,7 @@ manim-edu-agent/
 │   ├── vlm_judge.py
 │   ├── fusion.py
 │   └── run.py
+├── app.py                # 简单 HTTP API 服务
 ├── requirements.txt
 ├── README.md
 └── .gitignore

@@ -233,8 +233,9 @@ SUBTITLE RULES:
 - Subtitle changes must follow semantic pauses that a human reader can track:
     prefer one natural clause per `self.speak_with_subtitle(...)`, instead of
     one long sentence covering multiple ideas.
-- Prefer subtitle lines that fit in 1-2 short lines. If narration is long,
-    split it into multiple explanation beats rather than keeping one giant subtitle.
+- Prefer a single-line subtitle whenever possible. If narration is too long for
+    one bottom line, split it into multiple explanation beats instead of forcing
+    multi-line subtitles.
 - Subtitle text must match the spoken TTS content for that beat. Do not
     paraphrase the subtitle into different wording than the narration.
 - Update subtitles when the spoken focus changes, and clear them before dense
