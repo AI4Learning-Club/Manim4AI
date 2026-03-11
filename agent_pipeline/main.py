@@ -14,6 +14,7 @@ Flow:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import shutil
@@ -28,7 +29,7 @@ from .code_gen import CodeGenAgent
 from .renderer import RenderResult, render_scene
 from .evaluator import evaluate, collect_keyframes
 from .teaching_planner import TeachingPlannerAgent
-from .tts import generate_narration, merge_audio_video
+from .tts import generate_narration, has_audio_stream, merge_audio_video
 
 # =====================================================================
 # Configuration constants (override via .env or process env)
@@ -75,6 +76,53 @@ def _detect_chinese_in_mathtex(code: str) -> str:
     return ""
 
 
+def _check_python_syntax(code: str) -> Optional[str]:
+    """Return a readable syntax error string, or None if code parses."""
+    try:
+        ast.parse(code)
+        return None
+    except SyntaxError as exc:
+        line = ""
+        if exc.lineno and 1 <= exc.lineno <= len(code.splitlines()):
+            line = code.splitlines()[exc.lineno - 1]
+        pointer = ""
+        if exc.offset and line:
+            pointer = " " * max(exc.offset - 1, 0) + "^"
+        return (
+            f"{exc.__class__.__name__}: {exc.msg}\n"
+            f"line {exc.lineno}, column {exc.offset}\n"
+            f"{line}\n{pointer}"
+        )
+
+
+def _repair_syntax_before_render(
+    agent: CodeGenAgent,
+    code: str,
+    round_dir: Path,
+    label: str,
+    max_attempts: int = 2,
+) -> tuple[str, Optional[str]]:
+    """Fix Python syntax errors before calling Manim."""
+    syntax_error = _check_python_syntax(code)
+    attempt = 0
+    while syntax_error and attempt < max_attempts:
+        attempt += 1
+        _log(f"{label}: Python syntax invalid before render — asking LLM to fix (attempt {attempt}) ...")
+        extra_hint = (
+            "\n\nThis is a Python syntax failure, not a Manim layout issue.\n"
+            "Fix the code so it parses first. Pay special attention to:\n"
+            "- unterminated string literals\n"
+            "- broken multiline Chinese strings\n"
+            "- missing closing brackets or parentheses\n"
+            "- truncated code near the end of the file\n"
+            "- leaving every `self.speak(...)` / `self.speak_with_subtitle(...)` string on one logical Python string literal\n"
+        )
+        code = agent.fix(code, syntax_error + extra_hint)
+        (round_dir / f"scene_syntax_fixed_{attempt}.py").write_text(code, encoding="utf-8")
+        syntax_error = _check_python_syntax(code)
+    return code, syntax_error
+
+
 def _try_render(
     agent: CodeGenAgent,
     code: str,
@@ -82,6 +130,11 @@ def _try_render(
     label: str,
 ) -> tuple[str, RenderResult]:
     """Render *code*; on failure ask the agent to fix once and retry."""
+    code, syntax_error = _repair_syntax_before_render(agent, code, round_dir, label)
+    if syntax_error:
+        _log(f"{label}: syntax fix failed before render")
+        return code, RenderResult(success=False, error_log=syntax_error, scene_name="")
+
     _log(f"{label}: rendering ...")
     result = render_scene(code, round_dir, quality_flags=MANIM_QUALITY)
 
@@ -91,6 +144,10 @@ def _try_render(
         error_info = result.error_log + extra_hint
         code = agent.fix(code, error_info)
         (round_dir / "scene_fixed.py").write_text(code, encoding="utf-8")
+        code, syntax_error = _repair_syntax_before_render(agent, code, round_dir, label)
+        if syntax_error:
+            _log(f"{label}: post-fix syntax still invalid")
+            return code, RenderResult(success=False, error_log=syntax_error, scene_name="")
         result = render_scene(code, round_dir, quality_flags=MANIM_QUALITY)
         if result.success:
             _log(f"{label}: fix succeeded, render OK")
@@ -220,6 +277,7 @@ def run_pipeline(
         summary["final_video"] = str(r1_render.video_path)
         summary["final_score"] = r1_report["overall_score"]
         summary["final_passed"] = True
+        _add_tts(agent, code, request_text, run_dir, summary)
         _save_summary(run_dir, summary)
         return summary
 
@@ -276,6 +334,7 @@ def run_pipeline(
     else:
         summary["final_passed"] = False
 
+    _add_tts(agent, code, request_text, run_dir, summary)
     _log(f"Done — final score: {summary['final_score']}, passed: {summary['final_passed']}")
     _save_summary(run_dir, summary)
     return summary
@@ -288,14 +347,17 @@ def _add_tts(
     run_dir: Path,
     summary: Dict,
 ) -> None:
-    """Generate TTS narration and merge with the final video."""
+    """Generate fallback narration and merge it when the final video is silent."""
     if not summary.get("final_video"):
         return
     video_path = Path(summary["final_video"])
     if not video_path.exists():
         return
+    if has_audio_stream(video_path):
+        _log("Final render already contains audio track — skipping fallback narration merge")
+        return
 
-    _log("Generating narration with TTS ...")
+    _log("Final render is silent — generating fallback narration with TTS ...")
     try:
         script = agent.narrate(code, request_text)
         if not script:

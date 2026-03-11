@@ -1,5 +1,5 @@
 """
-TTS module using edge-tts (Microsoft free TTS).
+TTS module with online edge-tts and offline macOS `say` fallback.
 
 Generates narration audio from text, then merges with video using ffmpeg.
 """
@@ -7,15 +7,17 @@ Generates narration audio from text, then merges with video using ffmpeg.
 from __future__ import annotations
 
 import asyncio
-import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 
 VOICE_ZH = "zh-CN-YunxiNeural"
 VOICE_EN = "en-US-AriaNeural"
+LOCAL_VOICE_ZH = "Tingting"
+LOCAL_VOICE_EN = "Samantha"
 
 
 async def _generate_audio_async(
@@ -30,19 +32,161 @@ async def _generate_audio_async(
     await communicate.save(str(output_path))
 
 
+def _supports_macos_say() -> bool:
+    return shutil.which("say") is not None and shutil.which("ffmpeg") is not None
+
+
+def _is_valid_audio_file(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    if not shutil.which("ffprobe"):
+        return True
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_name,duration",
+        "-of",
+        "default=noprint_wrappers=1",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return result.returncode == 0 and "codec_name=" in (result.stdout or "")
+    except Exception:
+        return False
+
+
+def has_audio_stream(path: Path) -> bool:
+    if not path.exists() or not shutil.which("ffprobe"):
+        return False
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "stream=codec_type",
+        "-of",
+        "default=noprint_wrappers=1",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return result.returncode == 0 and "codec_type=audio" in (result.stdout or "")
+    except Exception:
+        return False
+
+
+def _local_voice_for(text: str, voice: str) -> str:
+    if "zh" in voice.lower() or any("\u4e00" <= ch <= "\u9fff" for ch in text):
+        return LOCAL_VOICE_ZH
+    return LOCAL_VOICE_EN
+
+
+def _say_rate(rate: str) -> str:
+    base_wpm = 185
+    try:
+        sign = 1
+        value = rate.strip()
+        if value.startswith("-"):
+            sign = -1
+        value = value.lstrip("+-").rstrip("%")
+        percent = int(value or "0") * sign
+    except ValueError:
+        percent = 0
+    return str(max(120, min(260, int(base_wpm * (1 + percent / 100)))))
+
+
+def _generate_audio_with_say(
+    text: str,
+    output_path: Path,
+    voice: str = VOICE_ZH,
+    rate: str = "+0%",
+) -> bool:
+    if not _supports_macos_say():
+        return False
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    local_voice = _local_voice_for(text, voice)
+    say_rate = _say_rate(rate)
+
+    with tempfile.TemporaryDirectory(prefix="codex_tts_") as tmp_dir:
+        aiff_path = Path(tmp_dir) / "tts.aiff"
+        say_cmd = [
+            "say",
+            "-v",
+            local_voice,
+            "-r",
+            say_rate,
+            "-o",
+            str(aiff_path),
+            text,
+        ]
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(aiff_path),
+            str(output_path),
+        ]
+        try:
+            say_result = subprocess.run(
+                say_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if say_result.returncode != 0 or not aiff_path.exists():
+                return False
+            ffmpeg_result = subprocess.run(
+                ffmpeg_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return ffmpeg_result.returncode == 0 and _is_valid_audio_file(output_path)
+        except Exception as exc:
+            print(f"  Local TTS error: {exc}")
+            return False
+
+
 def generate_audio(
     text: str,
     output_path: Path,
     voice: str = VOICE_ZH,
     rate: str = "+0%",
 ) -> bool:
-    """Synchronous wrapper for edge-tts audio generation."""
+    """Generate audio with edge-tts, or fall back to local macOS `say`."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         asyncio.run(_generate_audio_async(text, output_path, voice, rate))
-        return output_path.exists() and output_path.stat().st_size > 0
+        return _is_valid_audio_file(output_path)
     except Exception as exc:
-        print(f"  TTS error: {exc}")
+        print(f"  edge-tts error: {exc}")
+        if _generate_audio_with_say(text, output_path, voice=voice, rate=rate):
+            print("  Local TTS fallback succeeded via macOS say")
+            return True
         return False
 
 
@@ -104,7 +248,7 @@ def merge_audio_video(
             encoding="utf-8",
             errors="replace",
         )
-        return result.returncode == 0 and output_path.exists()
+        return result.returncode == 0 and output_path.exists() and has_audio_stream(output_path)
     except Exception as exc:
         print(f"  ffmpeg error: {exc}")
         return False

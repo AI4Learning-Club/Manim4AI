@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from .tts import VOICE_ZH, generate_audio, has_audio_stream
+
 
 @dataclass
 class RenderResult:
@@ -88,7 +90,7 @@ def _sanitize_chinese_in_latex(code: str) -> str:
 
 
 _NARRATED_SCENE_CODE = """
-import os, hashlib, glob
+import os, hashlib, glob, re, subprocess, shutil
 from manim import *
 
 try:
@@ -98,12 +100,47 @@ except ImportError:
     _HAS_MUTAGEN = False
 
 class NarratedScene(Scene):
-    SUBTITLE_SAFE_BOTTOM = -2.15
-    CONTENT_TOP_LIMIT = 3.15
+    SUBTITLE_SAFE_BOTTOM = -1.15
+    CONTENT_TOP_LIMIT = 2.95
+    CONTENT_SIDE_LIMIT = 6.1
+    SECTION_BADGE_BUFF = 0.34
 
     def setup(self):
         self._section_badge = None
+        self._section_badge_text = None
         self._subtitle_mob = None
+
+    def _audio_duration(self, fp: str, text: str) -> float:
+        if _HAS_MUTAGEN:
+            try:
+                return MP3(fp).info.length
+            except Exception:
+                pass
+        if shutil.which("ffprobe"):
+            cmd = [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                fp,
+            ]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return float(result.stdout.strip())
+            except Exception:
+                pass
+        return max(1.6, len(text) * 0.22)
 
     def speak(self, text: str) -> float:
         h = hashlib.md5(text.encode('utf-8')).hexdigest()
@@ -111,15 +148,36 @@ class NarratedScene(Scene):
         candidates = glob.glob(os.path.join("tts_cache", f"{h}.mp3"))
         if not candidates:
             candidates = glob.glob(os.path.join("**", "tts_cache", f"{h}.mp3"), recursive=True)
-        if candidates and _HAS_MUTAGEN:
+        if candidates:
             fp = os.path.abspath(candidates[0])
             try:
-                duration = MP3(fp).info.length
                 self.add_sound(fp)
-                return duration
+                return self._audio_duration(fp, text)
             except Exception:
                 pass
-        return max(1.0, len(text) * 0.12)
+        return max(1.6, len(text) * 0.22)
+
+    def _content_bottom_limit(self):
+        if self._subtitle_mob is not None:
+            return self._subtitle_mob.get_top()[1] + 0.3
+        return self.SUBTITLE_SAFE_BOTTOM
+
+    def _keep_clear_of_section_badge(self, group):
+        if self._section_badge is None:
+            return group
+
+        badge_left = self._section_badge.get_left()[0] - 0.18
+        badge_bottom = self._section_badge.get_bottom()[1] - 0.14
+        group_right = group.get_right()[0]
+        group_top = group.get_top()[1]
+        if group_right > badge_left and group_top > badge_bottom:
+            dx = group_right - badge_left
+            dy = group_top - badge_bottom
+            if dx >= dy:
+                group.shift(LEFT * (dx + 0.18))
+            else:
+                group.shift(DOWN * (dy + 0.12))
+        return group
 
     def fit_group(self, group, max_width: float = 12.0, max_height: float = 6.5):
         if group.width > max_width:
@@ -127,10 +185,18 @@ class NarratedScene(Scene):
         if group.height > max_height:
             group.scale_to_fit_height(max_height)
         group.move_to(UP * 0.28)
-        if group.get_bottom() < self.SUBTITLE_SAFE_BOTTOM:
-            group.shift(UP * (self.SUBTITLE_SAFE_BOTTOM - group.get_bottom()))
-        if group.get_top() > self.CONTENT_TOP_LIMIT:
-            group.shift(DOWN * (group.get_top() - self.CONTENT_TOP_LIMIT))
+        if group.get_left()[0] < -self.CONTENT_SIDE_LIMIT:
+            group.shift(RIGHT * (-self.CONTENT_SIDE_LIMIT - group.get_left()[0]))
+        if group.get_right()[0] > self.CONTENT_SIDE_LIMIT:
+            group.shift(LEFT * (group.get_right()[0] - self.CONTENT_SIDE_LIMIT))
+        content_bottom_limit = self._content_bottom_limit()
+        if group.get_bottom()[1] < content_bottom_limit:
+            group.shift(UP * (content_bottom_limit - group.get_bottom()[1]))
+        if group.get_top()[1] > self.CONTENT_TOP_LIMIT:
+            group.shift(DOWN * (group.get_top()[1] - self.CONTENT_TOP_LIMIT))
+        self._keep_clear_of_section_badge(group)
+        if group.get_bottom()[1] < content_bottom_limit:
+            group.shift(UP * (content_bottom_limit - group.get_bottom()[1]))
         return group
 
     def _build_title_chip(self, text: str, font_size: float = 22, max_width: float = 4.6):
@@ -149,6 +215,9 @@ class NarratedScene(Scene):
         return VGroup(box, label.move_to(box.get_center()))
 
     def show_section_header(self, text: str):
+        if self._section_badge is not None and self._section_badge_text == text:
+            return self._section_badge
+
         intro = self._build_title_chip(text, font_size=32, max_width=8.4)
         intro.move_to(ORIGIN)
 
@@ -163,32 +232,82 @@ class NarratedScene(Scene):
             FadeIn(intro[1], shift=UP * 0.08),
             run_time=0.38,
         )
-        self.play(
-            intro.animate.scale(0.64).to_corner(UL, buff=0.32),
-            run_time=0.38,
-        )
+        self.play(intro.animate.scale(0.64).to_corner(UR, buff=self.SECTION_BADGE_BUFF), run_time=0.38)
         self._section_badge = intro
+        self._section_badge_text = text
         return self._section_badge
 
-    def make_subtitle_panel(self, text: str, font_size: float = 20, max_width: float = 10.6):
-        label = Text(text, font_size=font_size, line_spacing=0.88)
+    def _normalize_subtitle_text(self, text: str, max_line_chars: int = 18):
+        cleaned = re.sub(r"\\s+", " ", text).strip()
+        if not cleaned:
+            return ""
+
+        parts = []
+        current = ""
+        for token in re.split(r"([，。！？；：,.!?;:])", cleaned):
+            if not token:
+                continue
+            candidate = f"{current}{token}"
+            plain_len = len(candidate.replace(" ", ""))
+            if current and plain_len > max_line_chars:
+                parts.append(current.strip())
+                current = token.strip()
+            else:
+                current = candidate
+        if current.strip():
+            parts.append(current.strip())
+
+        lines = []
+        for part in parts:
+            segment = part
+            while len(segment.replace(" ", "")) > max_line_chars:
+                cut = max_line_chars
+                lines.append(segment[:cut].strip())
+                segment = segment[cut:].strip()
+            if segment:
+                lines.append(segment)
+
+        lines = [line for line in lines if line]
+        if not lines:
+            return cleaned
+        return "\\n".join(lines)
+
+    def _lift_mobjects_for_subtitle(self, subtitle_top: float):
+        movable = []
+        for mob in self.mobjects:
+            if mob is self._subtitle_mob or mob is self._section_badge:
+                continue
+            try:
+                if mob.get_bottom()[1] < subtitle_top + 0.14:
+                    movable.append(mob)
+            except Exception:
+                continue
+        if not movable:
+            return
+        group = Group(*movable)
+        shift = subtitle_top + 0.24 - group.get_bottom()[1]
+        if shift > 0:
+            self.play(group.animate.shift(UP * shift), run_time=0.18)
+
+    def make_subtitle_panel(self, text: str, font_size: float = 18, max_width: float = 10.4):
+        text = self._normalize_subtitle_text(text)
+        line_count = max(1, text.count("\\n") + 1)
+        adaptive_font_size = font_size
+        if line_count >= 4:
+            adaptive_font_size = 14
+        elif line_count == 3:
+            adaptive_font_size = 16
+        label = Text(text, font_size=adaptive_font_size, line_spacing=0.84, weight=MEDIUM)
         if label.width > max_width:
             label.scale_to_fit_width(max_width)
-        box = RoundedRectangle(
-            corner_radius=0.18,
-            width=min(11.6, label.width + 0.9),
-            height=max(0.72, label.height + 0.36),
-            stroke_color=BLUE_E,
-            stroke_width=1.6,
-            fill_color=BLACK,
-            fill_opacity=0.82,
-        )
-        panel = VGroup(box, label.move_to(box.get_center()))
-        panel.to_edge(DOWN, buff=0.22)
-        return panel
+        label.set_stroke(color=BLACK, width=8, background=True)
+        label.to_edge(DOWN, buff=0.18)
+        label.set_z_index(100)
+        return label
 
     def set_subtitle(self, text: str, run_time: float = 0.25):
         new_panel = self.make_subtitle_panel(text)
+        self._lift_mobjects_for_subtitle(new_panel.get_top()[1])
         if self._subtitle_mob is None:
             self.play(FadeIn(new_panel, shift=UP * 0.08), run_time=run_time)
         else:
@@ -204,19 +323,22 @@ class NarratedScene(Scene):
     def speak_with_subtitle(self, text: str, *animations, run_time: float | None = None, clear_after: bool = False):
         dur = self.speak(text)
         new_panel = self.make_subtitle_panel(text)
+        self._lift_mobjects_for_subtitle(new_panel.get_top()[1])
         subtitle_anim = (
             FadeIn(new_panel, shift=UP * 0.08)
             if self._subtitle_mob is None
             else ReplacementTransform(self._subtitle_mob, new_panel)
         )
         self._subtitle_mob = new_panel
-        total = run_time or dur
+        anim_time = run_time or dur
         if animations:
-            self.play(subtitle_anim, *animations, run_time=total)
+            self.play(subtitle_anim, *animations, run_time=anim_time)
+            if dur > anim_time:
+                self.wait(dur - anim_time)
         else:
-            self.play(subtitle_anim, run_time=min(total, 0.35))
-            if total > 0.35:
-                self.wait(total - 0.35)
+            self.play(subtitle_anim, run_time=min(dur, 0.35))
+            if dur > 0.35:
+                self.wait(dur - 0.35)
         if clear_after:
             self.clear_subtitle()
         return dur
@@ -277,30 +399,45 @@ class NarratedScene(Scene):
 """
 
 def _pregenererate_tts(code: str, output_dir: Path) -> None:
-    """Extract all self.speak("...") texts and pre-generate TTS audio."""
-    import re as _re
-    texts = _re.findall(r'self\.speak\(["\'](.+?)["\']\)', code)
+    """Extract narration texts and pre-generate TTS audio."""
+    import ast
+
+    texts = []
+    try:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in {"speak", "speak_with_subtitle"}:
+                continue
+            if not node.args:
+                continue
+            first_arg = node.args[0]
+            if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+                texts.append(first_arg.value)
+    except SyntaxError:
+        texts = []
+
     if not texts:
         return
     try:
         import hashlib
-        import asyncio
-        import edge_tts
 
         cache_dir = output_dir / "tts_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
+        unique_texts = list(dict.fromkeys(texts))
 
-        async def _gen_all():
-            for text in texts:
-                h = hashlib.md5(text.encode('utf-8')).hexdigest()
-                fp = cache_dir / f"{h}.mp3"
-                if fp.exists():
-                    continue
-                comm = edge_tts.Communicate(text, "zh-CN-YunxiNeural", rate="+5%")
-                await comm.save(str(fp))
-
-        asyncio.run(_gen_all())
-        print(f"  Pre-generated {len(texts)} TTS audio files")
+        generated = 0
+        for text in unique_texts:
+            h = hashlib.md5(text.encode('utf-8')).hexdigest()
+            fp = cache_dir / f"{h}.mp3"
+            if fp.exists():
+                continue
+            if generate_audio(text, fp, voice=VOICE_ZH, rate="+5%"):
+                generated += 1
+        print(f"  Pre-generated {generated} TTS audio files")
     except Exception as exc:
         print(f"  TTS pre-generation warning: {exc}")
 
@@ -388,6 +525,17 @@ def render_scene(
 
     final_video = output_dir / "video.mp4"
     shutil.copy2(str(video_path), str(final_video))
+
+    has_tts_calls = (
+        "self.speak(" in code or
+        "self.speak_with_subtitle(" in code
+    )
+    if has_tts_calls and not has_audio_stream(final_video):
+        return RenderResult(
+            success=False,
+            error_log="Rendered video is missing an audio track even though the scene uses TTS calls.",
+            scene_name=scene_name,
+        )
 
     return RenderResult(
         success=True,

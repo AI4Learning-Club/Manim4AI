@@ -158,6 +158,11 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
   VGroup so it scales together with everything else.
 - ALWAYS reserve a dedicated title row above the content; the title must not
     overlap the graph or diagram below it.
+- But if a section already uses `self.show_section_header(...)`, do NOT create
+    another large page title with the same wording inside the page body.
+- Avoid duplicate title rendering: one section marker is enough. Use either the
+    shrinking section header badge or a local page heading, not both with the
+    same text on screen at the same time.
 - ALWAYS reserve the bottom band for subtitles.  Do NOT place formulas,
     diagrams, captions, or explanatory text in the bottom subtitle area.
 - Prefer a clean two-row structure: title row on top, content row below.
@@ -205,22 +210,38 @@ You do NOT need to use the same helper for every section.
 
 SECTION TITLE RULES:
 - Keep the section-title behavior: a large title should appear first, then
-    shrink and remain at the top-left as the section marker.
+    shrink and remain at the top-right as the section marker.
 - Use `self.show_section_header(...)` for major teaching segments.
+- Before each new major teaching segment, show a clear center title first,
+    then let it shrink to the top-right badge.
+- Do NOT call `self.show_section_header(...)` twice in a row with the same
+    title unless you have already cleared the whole section and intentionally
+    started a new segment.
 - Keep section titles short, usually 4-10 Chinese characters.
 - Title names should be informative and teacher-like, not vague slogans.
 - Prefer titles that tell the student what this step is for, such as
     "先看每一步加了什么", "为什么它还不是乱噪声", "把图像翻译成公式".
 - Avoid empty labels like "只看一步", "继续推导", "再看一下" unless they are
     expanded into a concrete learning goal.
+- Once the badge is in the top-right, treat that corner as reserved space:
+    do not place formulas, graph labels, captions, or text blocks under it.
 
 SUBTITLE RULES:
 - Keep a bottom subtitle module during explanation-heavy beats.
 - Prefer `self.speak_with_subtitle(...)` so subtitle, narration, and animation
     stay aligned.
+- Subtitle changes must follow semantic pauses that a human reader can track:
+    prefer one natural clause per `self.speak_with_subtitle(...)`, instead of
+    one long sentence covering multiple ideas.
+- Prefer subtitle lines that fit in 1-2 short lines. If narration is long,
+    split it into multiple explanation beats rather than keeping one giant subtitle.
+- Subtitle text must match the spoken TTS content for that beat. Do not
+    paraphrase the subtitle into different wording than the narration.
 - Update subtitles when the spoken focus changes, and clear them before dense
     transitions if necessary.
 - Nothing except the subtitle module itself should occupy the subtitle band.
+- Leave extra vertical breathing room above the subtitle band; do not place
+    low formulas, captions, or diagram labels close to it.
 
 CONTENT DENSITY RULES:
 - Do NOT try to fit all explanation text on one slide.
@@ -360,7 +381,7 @@ Specifically, you MUST preserve:
 - The Phase C formula derivation steps
 - The overall order and pacing
 - The section-title rhythm where the title appears large first and then stays
-    at the top-left.
+    at the top-right.
 - The bottom subtitle module when present, and add it if the scene lacks a
     clear subtitle band during explanations.
 
@@ -411,6 +432,8 @@ RULE #3: Never introduce new crashes
     the same left-visual/right-text template.
 - Prefer `self.show_section_header(...)` and `self.speak_with_subtitle(...)`
     when revising scenes so title markers and subtitle rhythm remain consistent.
+- Keep the top-right title badge clear of other content, and split long
+    narration into shorter subtitle-sized beats when needed.
 
 Output ONLY the improved Python code in a ```python``` block.
 """
@@ -574,7 +597,8 @@ class CodeGenAgent:
             "## Implementation priority\n"
             "Keep each page visually stable after it appears. Use teacher-like sequencing, "
             "self-drawn vector diagrams, varied layouts chosen by content, and stable section markers/subtitles. Keep all current teaching content, "
-            "but split dense slides into multiple pages instead of squeezing text and graphics together. Reserve the bottom band for subtitles only, and give sections informative titles rather than vague labels."
+            "but split dense slides into multiple pages instead of squeezing text and graphics together. Reserve the bottom band for subtitles only, keep the top-right badge area clear, "
+            "use a centered section title before each major segment, and give sections informative titles rather than vague labels."
         )
         content: list = [{"type": "input_text", "text": "\n\n".join(prompt_parts)}]
         if image_path and image_path.exists():
