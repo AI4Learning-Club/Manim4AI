@@ -1,0 +1,37 @@
+from .ai4learning_theme import (
+    AI4LearningBaseScene,
+    CHARCOAL_BOARD,
+    DEEP_SPACE_BOARD,
+    DEFAULT_THEME,
+    DEFAULT_THEME_ID,
+    HL_PRIMARY,
+    HL_SECONDARY,
+    MIST_BLUE_FOCUS,
+    PALETTE,
+    PALETTE_USAGE_GUIDE,
+    PALETTE_USAGE_NOTES,
+    SOFT_GLASS_WHITE,
+    THEMES,
+    TEXT_MAIN,
+    get_theme,
+)
+from .narrated_scene import NarratedScene
+
+__all__ = [
+    "NarratedScene",
+    "AI4LearningBaseScene",
+    "THEMES",
+    "DEFAULT_THEME_ID",
+    "DEFAULT_THEME",
+    "get_theme",
+    "MIST_BLUE_FOCUS",
+    "CHARCOAL_BOARD",
+    "SOFT_GLASS_WHITE",
+    "DEEP_SPACE_BOARD",
+    "TEXT_MAIN",
+    "HL_PRIMARY",
+    "HL_SECONDARY",
+    "PALETTE",
+    "PALETTE_USAGE_GUIDE",
+    "PALETTE_USAGE_NOTES",
+]

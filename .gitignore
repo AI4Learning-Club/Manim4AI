@@ -1,0 +1,55 @@
+# Only keep the publishable project surface
+/*
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/app.py
+!/agent_pipeline/
+!/agent_pipeline/**
+!/colortest/
+!/colortest/**
+!/eval_pipeline/
+!/eval_pipeline/**
+!/icon/
+!/icon/**
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Local config and secrets
+.env
+.env.local
+*.local
+
+# IDE / OS noise
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Test / tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/

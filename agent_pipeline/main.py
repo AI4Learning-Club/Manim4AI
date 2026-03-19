@@ -1,0 +1,583 @@
+"""
+Multi-agent Manim generation-evaluation loop.
+
+Flow:
+  1. CodeGen agent produces Round 1 Manim code from a student request.
+  2. Round 1 renders with TTS enabled and goes through full evaluation.
+  3. The CodeGen agent revises the code from Round 1 feedback and keyframes.
+  4. Round 2 renders the improved scene with TTS enabled and becomes the
+     final delivery video.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import os
+import shutil
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+
+from .asset_resolver import resolve_local_assets
+from .code_gen import CodeGenAgent
+from .evaluator import collect_keyframes, evaluate
+from .llm import resolve_pipeline_llm_configs, validate_pipeline_llm_configs
+from .renderer import RenderResult, render_scene
+from .teaching_planner import TeachingPlannerAgent
+from .theme_resolver import resolve_theme
+from .tts import has_audio_stream
+
+# =====================================================================
+# Configuration constants (override via .env or process env)
+# =====================================================================
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT_DIR / ".env")
+
+EVAL_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+EVAL_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+EVAL_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+MANIM_QUALITY = os.environ.get("MANIM_QUALITY", "-qm --fps 60")
+ROUND1_MANIM_QUALITY = os.environ.get("ROUND1_MANIM_QUALITY", "-r 854,480 --fps 30")
+ROUND2_MANIM_QUALITY = os.environ.get("ROUND2_MANIM_QUALITY", MANIM_QUALITY)
+RUNS_DIR = ROOT_DIR / "runs"
+USE_LOCAL_ICONS = os.environ.get("A4L_USE_LOCAL_ICONS", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+SYNTAX_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_SYNTAX_FIX_MAX_ATTEMPTS", 4))
+RENDER_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_RENDER_FIX_MAX_ATTEMPTS", 4))
+MANIM_TIMEOUT_SEC = max(300, _int_env("MANIM_TIMEOUT_SEC", 1200))
+
+# =====================================================================
+# Helpers
+# =====================================================================
+
+
+def _log(msg: str) -> None:
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"[{ts}] {msg}")
+
+
+def _detect_chinese_in_mathtex(code: str) -> str:
+    """Scan code for Chinese chars inside MathTex/Tex and return a warning."""
+    import re
+
+    issues = []
+    for match in re.finditer(r"(MathTex|Tex)\s*\(", code):
+        start = match.end()
+        depth = 1
+        i = start
+        while i < len(code) and depth > 0:
+            if code[i] == "(":
+                depth += 1
+            elif code[i] == ")":
+                depth -= 1
+            i += 1
+        fragment = code[start:i]
+        chinese = re.findall(r"[\u4e00-\u9fff]+", fragment)
+        if chinese:
+            issues.append(
+                f"  Found Chinese '{','.join(chinese)}' inside "
+                f"{match.group(1)}() near: ...{fragment[:80]}..."
+            )
+    if issues:
+        return "\n\nAUTO-DETECTED ISSUES (fix these first!):\n" + "\n".join(issues)
+    return ""
+
+
+def _check_python_syntax(code: str) -> Optional[str]:
+    """Return a readable syntax error string, or None if code parses."""
+    try:
+        ast.parse(code)
+        return None
+    except SyntaxError as exc:
+        line = ""
+        lines = code.splitlines()
+        if exc.lineno and 1 <= exc.lineno <= len(lines):
+            line = lines[exc.lineno - 1]
+        pointer = ""
+        if exc.offset and line:
+            pointer = " " * max(exc.offset - 1, 0) + "^"
+        return (
+            f"{exc.__class__.__name__}: {exc.msg}\n"
+            f"line {exc.lineno}, column {exc.offset}\n"
+            f"{line}\n{pointer}"
+        )
+
+
+def _repair_syntax_before_render(
+    agent: CodeGenAgent,
+    code: str,
+    round_dir: Path,
+    label: str,
+    max_attempts: int = SYNTAX_FIX_MAX_ATTEMPTS,
+) -> tuple[str, Optional[str], int]:
+    """Fix Python syntax errors before calling Manim."""
+    syntax_error = _check_python_syntax(code)
+    attempt = 0
+    while syntax_error and attempt < max_attempts:
+        attempt += 1
+        _log(f"{label}: Python syntax invalid before render - asking LLM to fix (attempt {attempt}) ...")
+        extra_hint = (
+            "\n\nThis is a Python syntax failure, not a Manim layout issue.\n"
+            "Fix the code so it parses first. Pay special attention to:\n"
+            "- unterminated string literals\n"
+            "- broken multiline Chinese strings\n"
+            "- missing closing brackets or parentheses\n"
+            "- truncated code near the end of the file\n"
+            "- leaving every `self.speak(...)` / `self.speak_with_subtitle(...)` string on one logical Python string literal\n"
+        )
+        code = agent.fix(code, syntax_error + extra_hint)
+        (round_dir / f"scene_syntax_fixed_{attempt}.py").write_text(code, encoding="utf-8")
+        syntax_error = _check_python_syntax(code)
+    return code, syntax_error, attempt
+
+
+def _try_render(
+    agent: CodeGenAgent,
+    code: str,
+    round_dir: Path,
+    label: str,
+    *,
+    quality_flags: str,
+    enable_tts: bool,
+) -> tuple[str, RenderResult, Dict[str, Any]]:
+    """Render *code*; on failure keep repairing until retry budget is exhausted."""
+    round_dir.mkdir(parents=True, exist_ok=True)
+    result = RenderResult(success=False, error_log="", scene_name="")
+    syntax_fix_rounds = 0
+
+    for attempt in range(RENDER_FIX_MAX_ATTEMPTS + 1):
+        code, syntax_error, syntax_attempts = _repair_syntax_before_render(
+            agent, code, round_dir, label
+        )
+        syntax_fix_rounds += syntax_attempts
+        if syntax_error:
+            _log(f"{label}: syntax fix failed before render")
+            result = RenderResult(success=False, error_log=syntax_error, scene_name="")
+        else:
+            render_msg = f"{label}: rendering"
+            if attempt:
+                render_msg += f" after fix {attempt}"
+            _log(render_msg + " ...")
+            result = render_scene(
+                code,
+                round_dir,
+                quality_flags=quality_flags,
+                timeout_sec=MANIM_TIMEOUT_SEC,
+                enable_tts=enable_tts,
+            )
+            if result.success:
+                if attempt:
+                    _log(f"{label}: fix {attempt} succeeded, render OK")
+                else:
+                    _log(f"{label}: render OK")
+                return code, result, {
+                    "syntax_fix_rounds": syntax_fix_rounds,
+                    "render_fix_rounds": attempt,
+                    "total_fix_rounds": syntax_fix_rounds + attempt,
+                }
+
+        if attempt >= RENDER_FIX_MAX_ATTEMPTS:
+            _log(f"{label}: render still failed after {attempt} fix attempt(s)")
+            break
+
+        _log(
+            f"{label}: render FAILED - asking LLM to fix "
+            f"(attempt {attempt + 1}/{RENDER_FIX_MAX_ATTEMPTS}) ..."
+        )
+        error_info = result.error_log + _detect_chinese_in_mathtex(code)
+        code = agent.fix(code, error_info)
+        (round_dir / f"scene_fixed_{attempt + 1}.py").write_text(code, encoding="utf-8")
+
+    return code, result, {
+        "syntax_fix_rounds": syntax_fix_rounds,
+        "render_fix_rounds": RENDER_FIX_MAX_ATTEMPTS,
+        "total_fix_rounds": syntax_fix_rounds + RENDER_FIX_MAX_ATTEMPTS,
+    }
+
+
+def _try_eval(
+    video_path: Path,
+    eval_dir: Path,
+    label: str,
+    *,
+    skip_audio: bool,
+    ocr_enabled: bool,
+    meta: Optional[Dict[str, Any]] = None,
+    topic: Optional[str] = None,
+) -> Optional[Dict]:
+    """Run the eval pipeline. Returns the report dict or None on error."""
+    _log(f"{label}: evaluating video ...")
+    try:
+        report = evaluate(
+            video_path,
+            eval_dir,
+            api_key=EVAL_API_KEY,
+            base_url=EVAL_BASE_URL,
+            model=EVAL_MODEL,
+            skip_audio=skip_audio,
+            ocr_enabled=ocr_enabled,
+            meta=meta,
+            topic=topic,
+        )
+        score = report.get("overall_score", 0)
+        passed = report.get("overall_passed", False)
+        status = "PASS" if passed else "FAIL"
+        _log(f"{label}: score={score:.2f} [{status}]")
+        return report
+    except Exception as exc:
+        _log(f"{label}: evaluation error - {exc}")
+        return None
+
+
+def _round_info(n: int, render: RenderResult, report: Optional[Dict]) -> Dict:
+    info = {
+        "round": n,
+        "render_success": render.success,
+        "video": str(render.video_path) if render.video_path else None,
+        "eval_score": report.get("overall_score") if report else None,
+        "eval_passed": report.get("overall_passed") if report else None,
+    }
+    if render.error_log:
+        info["render_warning" if render.success else "render_error"] = render.error_log[-1500:]
+    return info
+
+
+def _find_keyframes(eval_dir: Path) -> List[Path]:
+    """Collect keyframe images from an eval output dir."""
+    keyframes = collect_keyframes(eval_dir)
+    if keyframes:
+        return keyframes
+    for sub in eval_dir.rglob("*.jpg"):
+        keyframes.append(sub)
+    return sorted(keyframes)
+
+
+def _build_eval_meta(
+    *,
+    render_at_1: Optional[bool],
+    render_at_final: Optional[bool],
+    repair_rounds: int,
+    time_total_sec: Optional[float],
+    time_per_stage: Dict[str, float],
+) -> Dict[str, Any]:
+    meta: Dict[str, Any] = {
+        "render_at_1": render_at_1,
+        "render_at_final": render_at_final,
+        "time_total_sec": time_total_sec,
+        "time_per_stage": time_per_stage or None,
+    }
+    if repair_rounds > 0:
+        meta["repair_rounds"] = repair_rounds
+        meta["fix_rate"] = 1.0 if render_at_final else 0.0
+    return meta
+
+
+# =====================================================================
+# Main pipeline
+# =====================================================================
+
+
+def run_pipeline(
+    request_text: str,
+    image_path: Optional[Path] = None,
+    run_dir: Optional[Path] = None,
+) -> Dict:
+    """Execute the full generate-render-evaluate-improve loop."""
+    pipeline_started_at = time.time()
+    stage_times: Dict[str, float] = {}
+
+    if run_dir is None:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = RUNS_DIR / ts
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    (run_dir / "request.txt").write_text(request_text, encoding="utf-8")
+    if image_path and image_path.exists():
+        shutil.copy2(str(image_path), str(run_dir / f"request_image{image_path.suffix}"))
+
+    llm_configs = resolve_pipeline_llm_configs()
+    validate_pipeline_llm_configs(llm_configs)
+    analysis_llm = llm_configs["analysis"]
+    code_llm = llm_configs["code"]
+    _log(
+        "LLM routing: "
+        f"analysis={analysis_llm.provider}/{analysis_llm.model}, "
+        f"code={code_llm.provider}/{code_llm.model}"
+    )
+
+    llm_routing_path = run_dir / "llm_routing.json"
+    llm_routing_path.write_text(
+        json.dumps(
+            {
+                "analysis": analysis_llm.summary(),
+                "code": code_llm.summary(),
+                "eval": {
+                    "provider": "openai",
+                    "model": EVAL_MODEL,
+                    "base_url": EVAL_BASE_URL,
+                    "api_key": "***" if EVAL_API_KEY else "",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    _log("Teaching planner: building lesson structure ...")
+    stage_started_at = time.time()
+    planner = TeachingPlannerAgent(analysis_llm)
+    agent = CodeGenAgent(code_llm)
+    teaching_plan: Dict[str, Any] = planner.plan(request_text, image_path)
+    stage_times["planning"] = time.time() - stage_started_at
+    _log(f"Teaching planner: {len(teaching_plan.get('sections', []))} section(s) ready")
+
+    _log("Theme resolver: selecting lesson theme ...")
+    stage_started_at = time.time()
+    selected_theme = resolve_theme(request_text, teaching_plan)
+    stage_times["theme_selection"] = time.time() - stage_started_at
+    teaching_plan["selected_theme"] = selected_theme
+    _log(
+        "Theme resolver: selected "
+        f"{selected_theme['theme_id']} ({selected_theme['display_name']})"
+    )
+
+    assets_info: Dict[str, Any] = {
+        "enabled": USE_LOCAL_ICONS,
+        "icon_dir": str((ROOT_DIR / "icon").resolve()),
+        "available_icon_count": 0,
+        "selected_assets": [],
+    }
+    if USE_LOCAL_ICONS:
+        _log("Asset resolver: selecting local icons ...")
+        stage_started_at = time.time()
+        try:
+            assets_info = resolve_local_assets(
+                request_text,
+                teaching_plan,
+                llm_config=analysis_llm,
+            )
+            selected_assets = assets_info.get("selected_assets", [])
+            teaching_plan["selected_assets"] = selected_assets
+            stage_times["asset_selection"] = time.time() - stage_started_at
+            _log(f"Asset resolver: selected {len(selected_assets)} icon(s)")
+        except Exception as exc:
+            stage_times["asset_selection"] = time.time() - stage_started_at
+            teaching_plan["selected_assets"] = []
+            _log(f"Asset resolver: skipped due to error - {exc}")
+    else:
+        teaching_plan["selected_assets"] = []
+
+    selected_assets_path = run_dir / "selected_assets.json"
+    selected_assets_path.write_text(
+        json.dumps(assets_info, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    selected_theme_path = run_dir / "selected_theme.json"
+    selected_theme_path.write_text(
+        json.dumps(selected_theme, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    teaching_plan_path = run_dir / "teaching_plan.json"
+    teaching_plan_path.write_text(
+        json.dumps(teaching_plan, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    summary: Dict[str, Any] = {
+        "request": request_text,
+        "image": str(image_path) if image_path else None,
+        "teaching_plan_file": str(teaching_plan_path),
+        "selected_theme_file": str(selected_theme_path),
+        "selected_theme_id": selected_theme["theme_id"],
+        "selected_theme_reason": selected_theme.get("reason"),
+        "selected_assets_file": str(selected_assets_path),
+        "selected_assets_count": len(teaching_plan.get("selected_assets", [])),
+        "llm_routing_file": str(llm_routing_path),
+        "analysis_llm": analysis_llm.summary(),
+        "code_llm": code_llm.summary(),
+        "rounds": [],
+        "final_video": None,
+        "final_video_with_audio": None,
+        "final_eval_file": None,
+        "final_score": None,
+        "final_passed": None,
+    }
+
+    total_repair_rounds = 0
+
+    # ==================================================================
+    # Round 1
+    # ==================================================================
+    _log("Round 1: generating Manim code ...")
+    stage_started_at = time.time()
+    code = agent.generate(request_text, image_path, teaching_plan=teaching_plan)
+    stage_times["round1_codegen"] = time.time() - stage_started_at
+
+    r1_dir = run_dir / "round1"
+    stage_started_at = time.time()
+    code, r1_render, r1_fix_stats = _try_render(
+        agent,
+        code,
+        r1_dir,
+        "Round 1",
+        quality_flags=ROUND1_MANIM_QUALITY,
+        enable_tts=True,
+    )
+    stage_times["round1_render"] = time.time() - stage_started_at
+    total_repair_rounds += int(r1_fix_stats.get("total_fix_rounds", 0))
+
+    r1_report: Optional[Dict] = None
+    r1_eval_dir = r1_dir / "eval"
+    if r1_render.success and r1_render.video_path:
+        stage_started_at = time.time()
+        r1_report = _try_eval(
+            r1_render.video_path,
+            r1_eval_dir,
+            "Round 1",
+            skip_audio=False,
+            ocr_enabled=True,
+            topic=request_text,
+        )
+        stage_times["round1_eval"] = time.time() - stage_started_at
+
+    summary["rounds"].append(_round_info(1, r1_render, r1_report))
+
+    # ==================================================================
+    # Round 2
+    # ==================================================================
+    if not r1_render.success:
+        _log("Round 2: Round 1 did not produce a video - running a render-rescue pass ...")
+        rescue_hint = r1_render.error_log or "Round 1 did not produce a completed video."
+        stage_started_at = time.time()
+        code = agent.fix(code, rescue_hint)
+        stage_times["round2_rescue_fix"] = time.time() - stage_started_at
+        total_repair_rounds += 1
+    else:
+        _log("Round 2: improving code with evaluation feedback + keyframe screenshots ...")
+        keyframes = _find_keyframes(r1_eval_dir)
+        if keyframes:
+            _log(f"  Sending {len(keyframes)} keyframe(s) to LLM for visual feedback")
+        feedback = r1_report or {"issues": [], "dimensions": [], "overall_score": 0}
+        stage_started_at = time.time()
+        code = agent.improve(
+            code,
+            feedback,
+            keyframe_paths=keyframes or None,
+            teaching_plan=teaching_plan,
+        )
+        stage_times["round2_improve"] = time.time() - stage_started_at
+
+    r2_dir = run_dir / "round2"
+    stage_started_at = time.time()
+    code, r2_render, r2_fix_stats = _try_render(
+        agent,
+        code,
+        r2_dir,
+        "Round 2",
+        quality_flags=ROUND2_MANIM_QUALITY,
+        enable_tts=True,
+    )
+    stage_times["round2_render"] = time.time() - stage_started_at
+    total_repair_rounds += int(r2_fix_stats.get("total_fix_rounds", 0))
+
+    summary["rounds"].append(_round_info(2, r2_render, None))
+    if r2_render.success and r2_render.video_path:
+        summary["final_video"] = str(r2_render.video_path)
+        if has_audio_stream(r2_render.video_path):
+            summary["final_video_with_audio"] = str(r2_render.video_path)
+        _log("Final delivery: Round 2 video ready")
+    elif r1_render.success and r1_render.video_path:
+        summary["final_video"] = str(r1_render.video_path)
+        if has_audio_stream(r1_render.video_path):
+            summary["final_video_with_audio"] = str(r1_render.video_path)
+        summary["final_score"] = r1_report.get("overall_score") if r1_report else None
+        summary["final_passed"] = r1_report.get("overall_passed") if r1_report else None
+        _log("Round 2 failed - falling back to Round 1 video")
+    else:
+        summary["final_passed"] = False
+
+    _log(f"Done - final score: {summary['final_score']}, passed: {summary['final_passed']}")
+    _save_summary(run_dir, summary)
+    return summary
+
+
+def _save_summary(run_dir: Path, summary: Dict[str, Any]) -> None:
+    path = run_dir / "summary.json"
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    _log(f"Summary saved: {path}")
+
+
+# =====================================================================
+# CLI
+# =====================================================================
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="agent_pipeline",
+        description="Multi-agent Manim generation-evaluation loop",
+    )
+    parser.add_argument("request", nargs="?", default=None, help="Student request text")
+    parser.add_argument("--image", type=Path, default=None, help="Optional input image")
+    parser.add_argument("--run-dir", type=Path, default=None, help="Custom output directory")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+
+    try:
+        validate_pipeline_llm_configs(resolve_pipeline_llm_configs())
+    except RuntimeError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    if args.request is None and args.image is None:
+        print('Usage: python -m agent_pipeline "request text" [--image img.png]')
+        return 1
+
+    request_text = args.request or "Generate an animation lesson from the image."
+
+    t0 = time.time()
+    summary = run_pipeline(request_text, args.image, args.run_dir)
+    elapsed = time.time() - t0
+
+    print(f"\n{'=' * 60}")
+    print(f"  Pipeline finished in {elapsed:.0f}s")
+    print(f"  Rounds: {len(summary['rounds'])}")
+    for round_info in summary["rounds"]:
+        round_number = round_info["round"]
+        score = round_info.get("eval_score")
+        passed = round_info.get("eval_passed")
+        rendered = "YES" if round_info.get("render_success") else "NO"
+        print(f"    Round {round_number}: render={rendered}, score={score}, passed={passed}")
+    print(f"  Final video:  {summary['final_video']}")
+    audio_video = summary.get("final_video_with_audio")
+    if audio_video:
+        print(f"  With audio:   {audio_video}")
+    print(f"  Final score:  {summary['final_score']}")
+    print(f"  Final passed: {summary['final_passed']}")
+    print(f"{'=' * 60}")
+
+    return 0 if summary.get("final_video") else 1
