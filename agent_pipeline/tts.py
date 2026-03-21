@@ -13,11 +13,17 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional
 
+from .output_language import normalize_output_language
+
 
 VOICE_ZH = "zh-CN-YunxiNeural"
 VOICE_EN = "en-US-AriaNeural"
 LOCAL_VOICE_ZH = "Tingting"
 LOCAL_VOICE_EN = "Samantha"
+
+
+def voice_for_language(output_language: str) -> str:
+    return VOICE_ZH if normalize_output_language(output_language) == "zh" else VOICE_EN
 
 
 async def _generate_audio_async(

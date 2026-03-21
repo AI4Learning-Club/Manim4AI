@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
-from agent_pipeline.main import RUNS_DIR, run_pipeline
+from agent_pipeline.main import DEFAULT_OUTPUT_LANGUAGE, RUNS_DIR, run_pipeline
+from agent_pipeline.output_language import normalize_output_language
 
 
 HOST = os.environ.get("APP_HOST", "0.0.0.0")
@@ -25,6 +26,7 @@ PORT = int(os.environ.get("APP_PORT", "8000"))
 class Job:
     job_id: str
     request: str
+    language: str = DEFAULT_OUTPUT_LANGUAGE
     status: str = "queued"
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     started_at: Optional[str] = None
@@ -55,7 +57,7 @@ def _run_job(job_id: str) -> None:
 
     run_dir = RUNS_DIR / f"api_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{job_id[:8]}"
     try:
-        summary = run_pipeline(job.request, run_dir=run_dir)
+        summary = run_pipeline(job.request, run_dir=run_dir, language=job.language)
         final_video = summary.get("final_video_with_audio") or summary.get("final_video")
         with _jobs_lock:
             job = _jobs[job_id]
@@ -117,8 +119,14 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_json(
                 {
                     "service": "manim-edu-agent",
+                    "default_language": DEFAULT_OUTPUT_LANGUAGE,
+                    "supported_languages": ["en", "zh"],
                     "endpoints": {
-                        "submit_job": {"method": "POST", "path": "/jobs", "body": {"request": "讲解需求"}},
+                        "submit_job": {
+                            "method": "POST",
+                            "path": "/jobs",
+                            "body": {"request": "Explain the lesson topic", "language": "en"},
+                        },
                         "job_status": {"method": "GET", "path": "/jobs/{job_id}"},
                         "video_download": {"method": "GET", "path": "/videos/{job_id}"},
                     },
@@ -173,8 +181,13 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "request is required"}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        language = normalize_output_language(
+            payload.get("language", payload.get("video_language")),
+            DEFAULT_OUTPUT_LANGUAGE,
+        )
+
         job_id = uuid.uuid4().hex
-        job = Job(job_id=job_id, request=request_text)
+        job = Job(job_id=job_id, request=request_text, language=language)
         with _jobs_lock:
             _jobs[job_id] = job
 

@@ -21,7 +21,7 @@ from queue import Empty, Queue
 from threading import Thread
 from typing import List, Optional
 
-from .tts import VOICE_ZH, generate_audio, has_audio_stream
+from .tts import generate_audio, has_audio_stream, voice_for_language
 
 
 def _int_env(name: str, default: int) -> int:
@@ -374,7 +374,12 @@ class NarratedScene(Scene):
         return panel
 """
 
-def _pregenererate_tts(code: str, output_dir: Path) -> None:
+def _pregenererate_tts(
+    code: str,
+    output_dir: Path,
+    *,
+    tts_voice: str | None = None,
+) -> None:
     """Extract narration texts and pre-generate TTS audio."""
     import ast
     import hashlib
@@ -409,7 +414,8 @@ def _pregenererate_tts(code: str, output_dir: Path) -> None:
             fp = cache_dir / f"{h}.mp3"
             if fp.exists():
                 return False
-            return bool(generate_audio(text, fp, voice=VOICE_ZH, rate="+5%"))
+            voice = tts_voice or voice_for_language("en")
+            return bool(generate_audio(text, fp, voice=voice, rate="+5%"))
 
         generated = 0
         max_workers = min(TTS_MAX_WORKERS, len(unique_texts))
@@ -515,6 +521,7 @@ def render_scene(
     quality_flags: str = "-qm --fps 60",
     timeout_sec: int = 360,
     enable_tts: bool = True,
+    tts_voice: str | None = None,
 ) -> RenderResult:
     """
     Render a Manim scene from source code.
@@ -547,7 +554,7 @@ def render_scene(
 
     # Pre-generate TTS audio for renders that explicitly enable narration.
     if enable_tts:
-        _pregenererate_tts(code, output_dir)
+        _pregenererate_tts(code, output_dir, tts_voice=tts_voice)
 
     scene_names = find_scene_classes(code)
     if not scene_names:

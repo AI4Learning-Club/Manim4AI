@@ -15,6 +15,7 @@ import argparse
 import ast
 import json
 import os
+import re
 import shutil
 import time
 from datetime import datetime
@@ -27,10 +28,11 @@ from .asset_resolver import resolve_local_assets
 from .code_gen import CodeGenAgent
 from .evaluator import collect_keyframes, evaluate
 from .llm import resolve_pipeline_llm_configs, validate_pipeline_llm_configs
+from .output_language import normalize_output_language, output_language_name
 from .renderer import RenderResult, render_scene
 from .teaching_planner import TeachingPlannerAgent
 from .theme_resolver import resolve_theme
-from .tts import has_audio_stream
+from .tts import has_audio_stream, voice_for_language
 
 # =====================================================================
 # Configuration constants (override via .env or process env)
@@ -51,6 +53,9 @@ USE_LOCAL_ICONS = os.environ.get("A4L_USE_LOCAL_ICONS", "1").lower() not in {
     "false",
     "no",
 }
+DEFAULT_OUTPUT_LANGUAGE = normalize_output_language(
+    os.environ.get("A4L_VIDEO_LANGUAGE", "en")
+)
 
 
 def _int_env(name: str, default: int) -> int:
@@ -62,6 +67,7 @@ def _int_env(name: str, default: int) -> int:
 
 SYNTAX_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_SYNTAX_FIX_MAX_ATTEMPTS", 4))
 RENDER_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_RENDER_FIX_MAX_ATTEMPTS", 4))
+LANGUAGE_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_LANGUAGE_FIX_MAX_ATTEMPTS", 2))
 MANIM_TIMEOUT_SEC = max(300, _int_env("MANIM_TIMEOUT_SEC", 1200))
 
 # =====================================================================
@@ -126,6 +132,7 @@ def _repair_syntax_before_render(
     code: str,
     round_dir: Path,
     label: str,
+    output_language: str,
     max_attempts: int = SYNTAX_FIX_MAX_ATTEMPTS,
 ) -> tuple[str, Optional[str], int]:
     """Fix Python syntax errors before calling Manim."""
@@ -143,10 +150,151 @@ def _repair_syntax_before_render(
             "- truncated code near the end of the file\n"
             "- leaving every `self.speak(...)` / `self.speak_with_subtitle(...)` string on one logical Python string literal\n"
         )
-        code = agent.fix(code, syntax_error + extra_hint)
+        code = agent.fix(code, syntax_error + extra_hint, output_language=output_language)
         (round_dir / f"scene_syntax_fixed_{attempt}.py").write_text(code, encoding="utf-8")
         syntax_error = _check_python_syntax(code)
     return code, syntax_error, attempt
+
+
+_USER_FACING_TEXT_CALLS = {
+    "MarkupText",
+    "Paragraph",
+    "Text",
+    "Title",
+    "get_muted_text",
+    "get_secondary_text",
+    "get_success_text",
+    "get_text",
+    "get_warning_text",
+    "make_subtitle_panel",
+    "set_subtitle",
+    "show_section_header",
+    "speak",
+    "speak_with_subtitle",
+}
+
+
+def _call_name(node: ast.AST) -> Optional[str]:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _iter_string_literals(node: ast.AST):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        yield node.value
+        return
+    if isinstance(node, ast.JoinedStr):
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                yield value.value
+
+
+def _contains_chinese_text(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text))
+
+
+def _contains_translatable_english(text: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned or not re.search(r"[A-Za-z]", cleaned):
+        return False
+
+    if re.fullmatch(r"[A-Za-z]", cleaned):
+        return False
+    if re.fullmatch(r"[A-Za-z]{1,2}(?:[_^][A-Za-z0-9]+)?", cleaned):
+        return False
+
+    letters_only = re.sub(r"[^A-Za-z]", "", cleaned)
+    if (
+        re.fullmatch(r"[A-Za-z0-9_+\-*/=^()./%]+", cleaned)
+        and len(letters_only) <= 2
+    ):
+        return False
+
+    return True
+
+
+def _detect_output_language_mismatch(code: str, output_language: str) -> str:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return ""
+
+    target_language = normalize_output_language(output_language, DEFAULT_OUTPUT_LANGUAGE)
+    issues: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        call_name = _call_name(node.func)
+        if call_name not in _USER_FACING_TEXT_CALLS:
+            continue
+
+        for arg in node.args:
+            for literal in _iter_string_literals(arg):
+                snippet = re.sub(r"\s+", " ", literal).strip()
+                if not snippet:
+                    continue
+                if target_language == "en" and _contains_chinese_text(snippet):
+                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:80]}")
+                elif target_language == "zh" and _contains_translatable_english(snippet):
+                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:80]}")
+
+        for keyword in node.keywords:
+            for literal in _iter_string_literals(keyword.value):
+                snippet = re.sub(r"\s+", " ", literal).strip()
+                if not snippet:
+                    continue
+                if target_language == "en" and _contains_chinese_text(snippet):
+                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:80]}")
+                elif target_language == "zh" and _contains_translatable_english(snippet):
+                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:80]}")
+
+    if not issues:
+        return ""
+
+    target_name = output_language_name(target_language)
+    return (
+        f"\n\nAUTO-DETECTED LANGUAGE MISMATCHES (video should be {target_name}):\n"
+        + "\n".join(dict.fromkeys(issues))
+    )
+
+
+def _repair_output_language_before_render(
+    agent: CodeGenAgent,
+    code: str,
+    round_dir: Path,
+    label: str,
+    output_language: str,
+    max_attempts: int = LANGUAGE_FIX_MAX_ATTEMPTS,
+) -> tuple[str, str, int]:
+    mismatch_report = _detect_output_language_mismatch(code, output_language)
+    attempt = 0
+    target_name = output_language_name(output_language)
+
+    while mismatch_report and attempt < max_attempts:
+        attempt += 1
+        _log(
+            f"{label}: user-facing text does not match target language "
+            f"({target_name}) - asking LLM to translate (attempt {attempt}) ..."
+        )
+        extra_hint = (
+            "\n\nThis is a language compliance fix, not a layout rewrite.\n"
+            f"Translate every user-facing title, label, caption, section header, subtitle, "
+            f"and narration into {target_name}.\n"
+            "Keep formulas, variable names, units, local icon filenames, theme_id values, "
+            "class names, function names, and other code identifiers unchanged.\n"
+            "If a short standard abbreviation is necessary, keep it only after the translated "
+            "term, such as 'gross domestic product (GDP)'.\n"
+        )
+        code = agent.fix(code, mismatch_report + extra_hint, output_language=output_language)
+        (round_dir / f"scene_language_fixed_{attempt}.py").write_text(code, encoding="utf-8")
+        mismatch_report = _detect_output_language_mismatch(code, output_language)
+
+    return code, mismatch_report, attempt
 
 
 def _try_render(
@@ -157,21 +305,46 @@ def _try_render(
     *,
     quality_flags: str,
     enable_tts: bool,
+    output_language: str,
 ) -> tuple[str, RenderResult, Dict[str, Any]]:
     """Render *code*; on failure keep repairing until retry budget is exhausted."""
     round_dir.mkdir(parents=True, exist_ok=True)
     result = RenderResult(success=False, error_log="", scene_name="")
     syntax_fix_rounds = 0
+    language_fix_rounds = 0
+    tts_voice = voice_for_language(output_language)
 
     for attempt in range(RENDER_FIX_MAX_ATTEMPTS + 1):
         code, syntax_error, syntax_attempts = _repair_syntax_before_render(
-            agent, code, round_dir, label
+            agent, code, round_dir, label, output_language=output_language
         )
         syntax_fix_rounds += syntax_attempts
         if syntax_error:
             _log(f"{label}: syntax fix failed before render")
             result = RenderResult(success=False, error_log=syntax_error, scene_name="")
         else:
+            code, language_error, language_attempts = _repair_output_language_before_render(
+                agent,
+                code,
+                round_dir,
+                label,
+                output_language=output_language,
+            )
+            language_fix_rounds += language_attempts
+            if language_attempts:
+                code, syntax_error, syntax_attempts = _repair_syntax_before_render(
+                    agent, code, round_dir, label, output_language=output_language
+                )
+                syntax_fix_rounds += syntax_attempts
+            if syntax_error:
+                _log(f"{label}: syntax fix failed after language translation")
+                result = RenderResult(success=False, error_log=syntax_error, scene_name="")
+                continue
+            if language_error:
+                _log(f"{label}: target-language fix did not converge before render")
+                result = RenderResult(success=False, error_log=language_error, scene_name="")
+                continue
+
             render_msg = f"{label}: rendering"
             if attempt:
                 render_msg += f" after fix {attempt}"
@@ -182,6 +355,7 @@ def _try_render(
                 quality_flags=quality_flags,
                 timeout_sec=MANIM_TIMEOUT_SEC,
                 enable_tts=enable_tts,
+                tts_voice=tts_voice,
             )
             if result.success:
                 if attempt:
@@ -190,8 +364,9 @@ def _try_render(
                     _log(f"{label}: render OK")
                 return code, result, {
                     "syntax_fix_rounds": syntax_fix_rounds,
+                    "language_fix_rounds": language_fix_rounds,
                     "render_fix_rounds": attempt,
-                    "total_fix_rounds": syntax_fix_rounds + attempt,
+                    "total_fix_rounds": syntax_fix_rounds + language_fix_rounds + attempt,
                 }
 
         if attempt >= RENDER_FIX_MAX_ATTEMPTS:
@@ -203,13 +378,14 @@ def _try_render(
             f"(attempt {attempt + 1}/{RENDER_FIX_MAX_ATTEMPTS}) ..."
         )
         error_info = result.error_log + _detect_chinese_in_mathtex(code)
-        code = agent.fix(code, error_info)
+        code = agent.fix(code, error_info, output_language=output_language)
         (round_dir / f"scene_fixed_{attempt + 1}.py").write_text(code, encoding="utf-8")
 
     return code, result, {
         "syntax_fix_rounds": syntax_fix_rounds,
+        "language_fix_rounds": language_fix_rounds,
         "render_fix_rounds": RENDER_FIX_MAX_ATTEMPTS,
-        "total_fix_rounds": syntax_fix_rounds + RENDER_FIX_MAX_ATTEMPTS,
+        "total_fix_rounds": syntax_fix_rounds + language_fix_rounds + RENDER_FIX_MAX_ATTEMPTS,
     }
 
 
@@ -299,10 +475,12 @@ def run_pipeline(
     request_text: str,
     image_path: Optional[Path] = None,
     run_dir: Optional[Path] = None,
+    language: Optional[str] = None,
 ) -> Dict:
     """Execute the full generate-render-evaluate-improve loop."""
     pipeline_started_at = time.time()
     stage_times: Dict[str, float] = {}
+    output_language = normalize_output_language(language, DEFAULT_OUTPUT_LANGUAGE)
 
     if run_dir is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -322,6 +500,7 @@ def run_pipeline(
         f"analysis={analysis_llm.provider}/{analysis_llm.model}, "
         f"code={code_llm.provider}/{code_llm.model}"
     )
+    _log(f"Output language: {output_language_name(output_language)} ({output_language})")
 
     llm_routing_path = run_dir / "llm_routing.json"
     llm_routing_path.write_text(
@@ -406,6 +585,7 @@ def run_pipeline(
 
     summary: Dict[str, Any] = {
         "request": request_text,
+        "output_language": output_language,
         "image": str(image_path) if image_path else None,
         "teaching_plan_file": str(teaching_plan_path),
         "selected_theme_file": str(selected_theme_path),
@@ -431,7 +611,12 @@ def run_pipeline(
     # ==================================================================
     _log("Round 1: generating Manim code ...")
     stage_started_at = time.time()
-    code = agent.generate(request_text, image_path, teaching_plan=teaching_plan)
+    code = agent.generate(
+        request_text,
+        image_path,
+        teaching_plan=teaching_plan,
+        output_language=output_language,
+    )
     stage_times["round1_codegen"] = time.time() - stage_started_at
 
     r1_dir = run_dir / "round1"
@@ -443,6 +628,7 @@ def run_pipeline(
         "Round 1",
         quality_flags=ROUND1_MANIM_QUALITY,
         enable_tts=True,
+        output_language=output_language,
     )
     stage_times["round1_render"] = time.time() - stage_started_at
     total_repair_rounds += int(r1_fix_stats.get("total_fix_rounds", 0))
@@ -470,7 +656,7 @@ def run_pipeline(
         _log("Round 2: Round 1 did not produce a video - running a render-rescue pass ...")
         rescue_hint = r1_render.error_log or "Round 1 did not produce a completed video."
         stage_started_at = time.time()
-        code = agent.fix(code, rescue_hint)
+        code = agent.fix(code, rescue_hint, output_language=output_language)
         stage_times["round2_rescue_fix"] = time.time() - stage_started_at
         total_repair_rounds += 1
     else:
@@ -485,6 +671,7 @@ def run_pipeline(
             feedback,
             keyframe_paths=keyframes or None,
             teaching_plan=teaching_plan,
+            output_language=output_language,
         )
         stage_times["round2_improve"] = time.time() - stage_started_at
 
@@ -497,6 +684,7 @@ def run_pipeline(
         "Round 2",
         quality_flags=ROUND2_MANIM_QUALITY,
         enable_tts=True,
+        output_language=output_language,
     )
     stage_times["round2_render"] = time.time() - stage_started_at
     total_repair_rounds += int(r2_fix_stats.get("total_fix_rounds", 0))
@@ -541,6 +729,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("request", nargs="?", default=None, help="Student request text")
     parser.add_argument("--image", type=Path, default=None, help="Optional input image")
     parser.add_argument("--run-dir", type=Path, default=None, help="Custom output directory")
+    parser.add_argument(
+        "--language",
+        type=str,
+        default=DEFAULT_OUTPUT_LANGUAGE,
+        help="Output language for the video: en or zh",
+    )
     return parser.parse_args()
 
 
@@ -560,7 +754,12 @@ def main() -> int:
     request_text = args.request or "Generate an animation lesson from the image."
 
     t0 = time.time()
-    summary = run_pipeline(request_text, args.image, args.run_dir)
+    summary = run_pipeline(
+        request_text,
+        args.image,
+        args.run_dir,
+        language=args.language,
+    )
     elapsed = time.time() - t0
 
     print(f"\n{'=' * 60}")
@@ -573,6 +772,7 @@ def main() -> int:
         rendered = "YES" if round_info.get("render_success") else "NO"
         print(f"    Round {round_number}: render={rendered}, score={score}, passed={passed}")
     print(f"  Final video:  {summary['final_video']}")
+    print(f"  Language:     {summary['output_language']}")
     audio_video = summary.get("final_video_with_audio")
     if audio_video:
         print(f"  With audio:   {audio_video}")

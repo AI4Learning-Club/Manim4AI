@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .llm import LLMClient, LLMConfig
+from .output_language import normalize_output_language, output_language_name
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -90,11 +91,12 @@ GROUP / VGROUP / CREATE SAFETY:
 
 LANGUAGE / API SAFETY:
 - `from manim import *` at the top.
-- Chinese text: ALWAYS `Text("中文", font_size=...)`.
-- NEVER `Tex(r"\\text{中文}")`, `\\text{中文}`, `\\mathrm{中文}`, or any
-  Chinese inside `MathTex(...)` / `Tex(...)`.
+- Use `Text(...)` or theme text helpers for natural-language titles, labels,
+  captions, subtitles, and narration-related screen text.
+- Do NOT put full natural-language phrases inside `MathTex(...)` / `Tex(...)`.
+- Chinese text must NEVER appear inside `MathTex(...)` / `Tex(...)`.
 - Pure math: `MathTex(r"...", font_size=...)`.
-- MIXED Chinese + math: split into parts and arrange them with
+- MIXED natural language + math: split into parts and arrange them with
   `Group(...)` or `VGroup(...)` as appropriate.
 - Any variable with subscripts/superscripts (e.g. `x_t`, `Q_d`) MUST use
   `MathTex`, not plain `Text`.
@@ -110,6 +112,25 @@ STATE / CLEARING SAFETY:
   persistent background is not removed.
 - Use the available `AI4LearningBaseScene` layout helpers before stacking many
   manual `.shift()` / `.to_edge()` calls.
+
+STAGED REVEAL SAFETY:
+- Do NOT put all future text, formulas, arrows, labels, captions, examples,
+  and conclusions on screen at the start of a section.
+- A section may reserve stable final positions, but only the elements being
+  discussed right now may be visible.
+- Reveal each teaching beat in sync with narration: usually main visual or
+  title first, then local labels, then formulas, then the takeaway.
+- If you use `self.make_page(...)`, `self.make_two_panel_page(...)`, or
+  `self.make_graph_text_page(...)`, do NOT reveal the whole returned page or
+  layout container at once.
+- Avoid patterns like `self.play(FadeIn(page))`, `self.play(Write(page))`,
+  `self.play(Create(page))`, or `self.speak_with_subtitle(..., FadeIn(page))`
+  when `page` is a page/layout container.
+- If an object is already visible, do NOT "show it again" when narration
+  reaches that part. Keep it on screen and highlight it, transform it, or add
+  only the new local element.
+- Good rhythm: build the board like a teacher in real time, not like a fully
+  finished slide that gets explained afterward.
 """
 
 _SYSTEM_GENERATE = (
@@ -143,8 +164,13 @@ Each major section should feel like this classroom loop:
 4. Land on one memorable takeaway.
 5. Bridge naturally into the next section.
 
-Do NOT sound like: "定义是..., 性质是..., 应用是...".
-Sound like: "你可能会先以为..., 但我们看这个画面，会发现真正决定它的是...".
+Do NOT sound like a textbook outline such as "定义是..., 性质是..., 应用是...".
+Instead, sound like a live teacher responding to a student's current confusion:
+- start from what the student is likely to think at this moment,
+- use the current visual or example to test that intuition,
+- then explain what actually matters in plain classroom language.
+Keep the wording specific to THIS lesson. Do NOT copy stock phrases or sample
+sentences from this prompt verbatim.
 
 Before writing any code, plan a multi-step teaching flow:
 
@@ -263,16 +289,26 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
 VECTOR DIAGRAM RULES:
 - Prefer self-drawn vector diagrams with Manim primitives such as Rectangle,
     RoundedRectangle, Circle, Line, Arrow, Axes, Polygon, and VGroup.
+- Build diagrams progressively. Show the core object, axis, path, or shape
+    first; add labels, arrows, highlighted regions, comparisons, and formulas
+    only when that exact teaching beat is being explained.
+- Do NOT reveal a fully annotated finished diagram at the start of the section
+    if the explanation will unfold step by step.
 - But do NOT add arrows or connector lines by default. Only add them when they
     are essential to the explanation and can be anchored unambiguously.
 - Do NOT rely on large text placed inside shapes as the main explanation.
     Draw the object first, then explain it beside or below the object.
+- If a diagram has several moving parts, keep the base geometry stable and add
+    one explanatory layer at a time instead of redrawing the whole figure.
 - Use outline-only shapes (`fill_opacity=0`) unless a filled region is truly
     necessary.  This reduces false overlap detections and keeps the scene clean.
 - Avoid dark decorative panels, empty filled boxes, or black blocks that do not
     carry teaching information.
 - On graphs, keep only essential short labels near lines and points.  Put long
     explanations, causal arrows with sentences, and conclusions outside the axes.
+- For multi-step graphs, reveal them in teaching order: base axes and baseline
+    curve first, then the changed curve or marked point, then the annotation or
+    takeaway. Do NOT pre-place all graph labels and callouts at once.
 - Never draw decorative divider lines in the explanation panel.
 - Never draw custom long horizontal or vertical lines that extend from the graph
     into the explanation panel.
@@ -316,7 +352,7 @@ SECTION TITLE RULES:
 - Do NOT call `self.show_section_header(...)` twice in a row with the same
     title unless you have already cleared the whole section and intentionally
     started a new segment.
-- Keep section titles short, usually 4-10 Chinese characters.
+- Keep section titles short, usually 2-6 words in English or 4-10 Chinese characters.
 - Title names should be informative and teacher-like, not vague slogans.
 - Prefer titles that tell the student what this step is for, such as
     "先看每一步加了什么", "为什么它还不是乱噪声", "把图像翻译成公式".
@@ -364,6 +400,43 @@ ANIMATION RULES:
   for text, `GrowArrow()` for arrows.
 - To clear a section: prefer `self.clear_scene_keep_bg()`. Do NOT use
   `FadeOut(Group(*self.mobjects))`, because it removes the persistent background.
+- Each major section should contain multiple meaningful visual beats, not just
+  one static page with narration on top of it.
+- In most sections, include at least 2-4 visible changes that help the student
+  see the idea develop over time.
+- Prefer animations that change the state of the current visual, not just add
+  more text beside it.
+
+ANIMATION VARIETY RULES:
+- Across a full lesson, include a mix of animation types instead of relying on
+  only `FadeIn(...)` and static holds.
+- Good animation motifs include:
+  - building a diagram piece by piece,
+  - moving a point, marker, or object along a path,
+  - changing a graph from one state to another,
+  - highlighting one part while dimming another,
+  - turning a visual relationship into a formula,
+  - comparing two nearby cases through a staged change,
+  - transforming one formula line into the next with structural continuity.
+- Prefer `Transform(...)`, `ReplacementTransform(...)`,
+  `TransformMatchingTex(...)`, `LaggedStart(...)`, `AnimationGroup(...)`,
+  `Indicate(...)`, `Circumscribe(...)`, `Flash(...)`, `MoveAlongPath(...)`,
+  and `ValueTracker` + `always_redraw` when they clarify the idea.
+- Do NOT add motion just for decoration. Every animation should teach a
+  relation, change, comparison, buildup, or consequence.
+
+STATE CHANGE RULES:
+- At least half of the major sections should include a genuine state change in
+  the visual itself: not only new text appearing, but the diagram, graph,
+  marker, region, or formula evolving.
+- For graphs, prefer a progression such as base axes -> base curve -> changed
+  curve -> marked point/intersection -> takeaway.
+- For geometry or process diagrams, prefer object construction, part-by-part
+  highlighting, motion along a path, or before/after comparison.
+- For formulas, prefer deriving or transforming from the previous line rather
+  than showing isolated final equations with no visual transition.
+- If a visual stays on screen for several narration beats, make it evolve in at
+  least one meaningful way during those beats.
 
 STABILITY RULES (reduce messy motion):
 - Once a page layout appears, keep its title, panels, and axes FIXED in place.
@@ -376,6 +449,21 @@ STABILITY RULES (reduce messy motion):
 - Axes should enter once and then stay anchored; only curves, dots, arrows,
     or highlights should change.
 - Text blocks should appear at their final positions. Avoid long sliding text.
+
+REVEAL RHYTHM RULES:
+- Think like a teacher building the board live.
+- At the start of a section, show only the minimum needed to begin the
+  explanation.
+- When narration says "now look at this label / this step / this formula",
+  that specific object should appear at that beat, not earlier.
+- Do NOT pre-place a full explanation panel if its lines will be explained one
+  by one. Reveal those lines progressively.
+- Do NOT pre-place the final formula before the intuition or derivation has
+  happened.
+- If a section has 3 teaching beats, implement 3 reveals, not one full-page
+  reveal plus 3 repeated explanations.
+- Page/layout helpers are for positioning and stable composition, not for
+  dumping all content on screen at once.
 
 VOICE NARRATION (audio-synced pacing):
 - Your Scene class MUST inherit from `AI4LearningBaseScene`.
@@ -398,7 +486,7 @@ VOICE NARRATION (audio-synced pacing):
     self.wait(dur)
 
 - Call self.speak() BEFORE or AT THE SAME TIME as the animation it describes.
-- Use SHORT sentences (15-30 Chinese characters per speak call).
+- Use SHORT sentences (roughly 6-16 English words or 15-30 Chinese characters per speak call).
 - One speak() per visual "step" - don't narrate everything at once.
 - For transitions (FadeOut), do NOT add narration - keep them silent and fast.
 - MATCH narration length to animation complexity:
@@ -544,6 +632,12 @@ RULE #2: Fix visual bugs surgically
 ## "layout" / "dense":
 - Break crowded sections into sub-stages with FadeOut between them.
 - But keep the CONTENT the same - just spread it across more slides.
+- If a section currently appears as a full finished page before the narration
+  explains it, rebuild it as a staged reveal: keep the layout stable, but let
+  labels, formulas, bullets, and takeaways appear only when that beat is
+  narrated.
+- Do NOT solve pacing problems by showing the same content twice. If something
+  is already on screen, keep it and highlight it, or add only the missing part.
 
 ## "animation" / "motion":
 - Add self.wait(0.3) between rapid animations, use longer run_time.
@@ -851,6 +945,29 @@ def _build_selected_theme_prompt(teaching_plan: Optional[Dict]) -> str:
     )
 
 
+def _build_output_language_prompt(output_language: str) -> str:
+    language = normalize_output_language(output_language)
+    language_name = output_language_name(language)
+    if language == "zh":
+        return (
+            "## Output language\n"
+            "The final video must use Chinese for all user-facing natural language.\n"
+            "- All titles, labels, captions, section headers, subtitles, and narration must be in natural Chinese.\n"
+            "- If the teaching plan or request contains English teaching text, translate its meaning into Chinese before putting it on screen.\n"
+            "- Only formulas, variable names, standard math symbols, units, file names, and truly necessary abbreviations may remain non-Chinese.\n"
+            "- If an abbreviation is important, prefer translated Chinese plus the abbreviation in parentheses.\n"
+        )
+
+    return (
+        "## Output language\n"
+        f"The final video must use {language_name} for all user-facing natural language.\n"
+        "- All titles, labels, captions, section headers, subtitles, and narration must be in clear classroom English.\n"
+        "- The teaching plan may be written in Chinese; translate its teacher intent into English instead of copying Chinese wording into the video.\n"
+        "- Only formulas, variable names, standard math symbols, units, file names, and truly necessary abbreviations may remain non-English.\n"
+        "- If a translated term benefits from an abbreviation, write the English term first and keep the abbreviation short.\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main class
 # ---------------------------------------------------------------------------
@@ -905,9 +1022,11 @@ class CodeGenAgent:
         request_text: str,
         image_path: Optional[Path] = None,
         teaching_plan: Optional[Dict] = None,
+        output_language: str = "en",
     ) -> str:
         """Generate Manim code from a student request (text, optionally image)."""
         prompt_parts = [f"## Student request\n{request_text}"]
+        prompt_parts.append(_build_output_language_prompt(output_language))
         if teaching_plan:
             prompt_parts.append(
                 "## Teaching plan\n" + json.dumps(teaching_plan, ensure_ascii=False, indent=2)
@@ -944,11 +1063,13 @@ class CodeGenAgent:
         raw = self._call(_SYSTEM_GENERATE, content)
         return _extract_code(raw)
 
-    def fix(self, code: str, error_log: str) -> str:
+    def fix(self, code: str, error_log: str, output_language: str = "en") -> str:
         """Fix code that failed to render, given the error output."""
         content: list = [{
             "type": "input_text",
             "text": (
+                _build_output_language_prompt(output_language)
+                + "\n\n"
                 f"## Original code\n```python\n{code}\n```\n\n"
                 f"## Render error\n```\n{error_log[-3000:]}\n```"
             ),
@@ -956,28 +1077,37 @@ class CodeGenAgent:
         raw = self._call(_SYSTEM_FIX, content)
         return _extract_code(raw)
 
-    def narrate(self, code: str, request_text: str) -> List[str]:
+    def narrate(self, code: str, request_text: str, output_language: str = "en") -> List[str]:
         """Generate a narration script (list of paragraphs) for the video."""
+        language = normalize_output_language(output_language)
+        language_name = output_language_name(language)
+        sentence_hint = (
+            "15-40 Chinese characters"
+            if language == "zh"
+            else "1-2 short sentences, usually 6-18 English words total"
+        )
         content: list = [{
             "type": "input_text",
             "text": (
+                _build_output_language_prompt(language)
+                + "\n\n"
                 f"## Student request\n{request_text}\n\n"
                 f"## Manim code\n```python\n{code}\n```"
             ),
         }]
         system = (
-            "You are a warm, clear Chinese-speaking teacher narrating an educational "
+            f"You are a warm, clear {language_name}-speaking teacher narrating an educational "
             "animation video.  Based on the Manim code and the student's question, "
-            "write a narration script in Chinese.\n\n"
+            f"write a narration script in {language_name}.\n\n"
             "Rules:\n"
             "- Write 5-10 short paragraphs, one for each visual section.\n"
-            "- Each paragraph should be 1-2 sentences (15-40 Chinese characters).\n"
+            f"- Each paragraph should be {sentence_hint}.\n"
             "- Match the pacing of the animation: brief for visual parts, detailed "
             "for formula/concept explanations.\n"
             "- Use conversational, encouraging tone (like talking to a student).\n"
             "- Do NOT include timestamps, stage directions, or code references.\n"
             "- Output ONLY a JSON array of strings, like:\n"
-            '  ["第一段旁白", "第二段旁白", ...]\n'
+            '  ["First narration beat", "Second narration beat", ...]\n'
         )
         raw = self._call(system, content)
         try:
@@ -1001,12 +1131,14 @@ class CodeGenAgent:
         eval_report: Dict,
         keyframe_paths: Optional[List[Path]] = None,
         teaching_plan: Optional[Dict] = None,
+        output_language: str = "en",
     ) -> str:
         """Improve code based on evaluation feedback + optional keyframe images."""
         feedback = _build_actionable_feedback(eval_report)
         prompt_parts = [
             f"## Original code\n```python\n{code}\n```\n\n## Evaluation feedback\n{feedback}"
         ]
+        prompt_parts.append(_build_output_language_prompt(output_language))
         if teaching_plan:
             prompt_parts.append(
                 "## Teaching plan to preserve\n"

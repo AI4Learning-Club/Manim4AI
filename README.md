@@ -90,7 +90,7 @@ APP_PORT=8000
 最常用入口：
 
 ```bash
-python -m agent_pipeline "用动画讲解一下dfs和bfs"
+python -m agent_pipeline "用动画讲解一下拉普拉斯变换"
 ```
 
 更多示例：
@@ -104,7 +104,7 @@ python -m agent_pipeline "用板书感动画一步一步讲解完全平方公式
 带图片输入：
 
 ```bash
-python -m agent_pipeline "用动画讲解这道题" --image path/to/problem.png
+python -m agent_pipeline "用动画讲解这道题" --image "E:\Ai4learning\3.18.16.25\1.png"
 ```
 
 只给图片也可以：
