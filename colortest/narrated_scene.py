@@ -18,8 +18,11 @@ except ImportError:
 
 
 class NarratedScene(Scene):
+    TOP_BAND_TOP = 3.68
+    TOP_BAND_BOTTOM = 2.82
+    BODY_BAND_TOP = TOP_BAND_BOTTOM
     SUBTITLE_SAFE_BOTTOM = -0.9
-    CONTENT_TOP_LIMIT = 2.95
+    CONTENT_TOP_LIMIT = BODY_BAND_TOP
     CONTENT_SIDE_LIMIT = 6.1
     SECTION_BADGE_BUFF = 0.34
     SUBTITLE_TRANSITION_TIME = 0.18
@@ -83,6 +86,21 @@ class NarratedScene(Scene):
     def _content_bottom_limit(self):
         return self.SUBTITLE_SAFE_BOTTOM
 
+    def _band_center_y(self, top: float, bottom: float) -> float:
+        return 0.5 * (top + bottom)
+
+    def top_band_center(self):
+        return UP * self._band_center_y(self.TOP_BAND_TOP, self.TOP_BAND_BOTTOM)
+
+    def body_band_center(self):
+        return UP * self._band_center_y(self.CONTENT_TOP_LIMIT, self._content_bottom_limit())
+
+    def top_band_height(self) -> float:
+        return self.TOP_BAND_TOP - self.TOP_BAND_BOTTOM
+
+    def body_band_height(self) -> float:
+        return self.CONTENT_TOP_LIMIT - self._content_bottom_limit()
+
     def _keep_clear_of_section_badge(self, group):
         if self._section_badge is None:
             return group
@@ -100,25 +118,85 @@ class NarratedScene(Scene):
                 group.shift(DOWN * (dy + 0.12))
         return group
 
-    def fit_group(self, group, max_width: float = 12.0, max_height: float = 6.5):
+    def _clamp_vertical_band(self, group, *, top_limit: float, bottom_limit: float, side_limit: float | None = None):
+        """Clamp a block into a fixed vertical band and side limits."""
+        side_limit = self.CONTENT_SIDE_LIMIT if side_limit is None else side_limit
+        if group.get_left()[0] < -side_limit:
+            group.shift(RIGHT * (-side_limit - group.get_left()[0]))
+        if group.get_right()[0] > side_limit:
+            group.shift(LEFT * (group.get_right()[0] - side_limit))
+        if group.get_bottom()[1] < bottom_limit:
+            group.shift(UP * (bottom_limit - group.get_bottom()[1]))
+        if group.get_top()[1] > top_limit:
+            group.shift(DOWN * (group.get_top()[1] - top_limit))
+        return group
+
+    def _fit_to_vertical_band(
+        self,
+        group,
+        *,
+        band_top: float,
+        band_bottom: float,
+        max_width: float,
+        max_height: float | None = None,
+        center=None,
+    ):
+        """Scale a block for a fixed vertical band, then place and clamp it."""
+        if max_height is None:
+            max_height = band_top - band_bottom
+        else:
+            max_height = min(max_height, max(0.1, band_top - band_bottom))
         if group.width > max_width:
             group.scale_to_fit_width(max_width)
         if group.height > max_height:
             group.scale_to_fit_height(max_height)
-        group.move_to(UP * 0.28)
-        if group.get_left()[0] < -self.CONTENT_SIDE_LIMIT:
-            group.shift(RIGHT * (-self.CONTENT_SIDE_LIMIT - group.get_left()[0]))
-        if group.get_right()[0] > self.CONTENT_SIDE_LIMIT:
-            group.shift(LEFT * (group.get_right()[0] - self.CONTENT_SIDE_LIMIT))
-        content_bottom_limit = self._content_bottom_limit()
-        if group.get_bottom()[1] < content_bottom_limit:
-            group.shift(UP * (content_bottom_limit - group.get_bottom()[1]))
-        if group.get_top()[1] > self.CONTENT_TOP_LIMIT:
-            group.shift(DOWN * (group.get_top()[1] - self.CONTENT_TOP_LIMIT))
-        self._keep_clear_of_section_badge(group)
-        if group.get_bottom()[1] < content_bottom_limit:
-            group.shift(UP * (content_bottom_limit - group.get_bottom()[1]))
-        return group
+        if center is not None:
+            group.move_to(center)
+        return self._clamp_vertical_band(group, top_limit=band_top, bottom_limit=band_bottom)
+
+    def clamp_group(self, group):
+        """Clamp a finished body block into the body band above subtitles."""
+        return self._clamp_vertical_band(
+            group,
+            top_limit=self.BODY_BAND_TOP,
+            bottom_limit=self._content_bottom_limit(),
+        )
+
+    def fit_group(self, group, max_width: float = 12.0, max_height: float | None = None, center=None):
+        """Scale/place a finished body block into the body band above subtitles."""
+        if center is None:
+            center = self.body_band_center()
+        return self._fit_to_vertical_band(
+            group,
+            band_top=self.BODY_BAND_TOP,
+            band_bottom=self._content_bottom_limit(),
+            max_width=max_width,
+            max_height=max_height,
+            center=center,
+        )
+
+    def fit_to_top_band(self, group, max_width: float = 11.8, max_height: float | None = None, center=None):
+        """Scale/place a title-like block into the shared top band."""
+        if max_height is None:
+            max_height = self.top_band_height()
+        if center is None:
+            center = self.top_band_center()
+        return self._fit_to_vertical_band(
+            group,
+            band_top=self.TOP_BAND_TOP,
+            band_bottom=self.TOP_BAND_BOTTOM,
+            max_width=max_width,
+            max_height=max_height,
+            center=center,
+        )
+
+    def fit_to_body_band(self, group, max_width: float = 12.0, max_height: float | None = None, center=None):
+        """Scale/place a finished body block into the body band above subtitles."""
+        return self.fit_group(group, max_width=max_width, max_height=max_height, center=center)
+
+    def safe_top_title(self, title, font_size: float = 34, max_width: float = 11.4):
+        title = self._coerce_page_title(title, font_size=font_size)
+        return self.fit_to_top_band(title, max_width=max_width, max_height=self.top_band_height() * 0.95)
 
     def _build_title_chip(self, text: str, font_size: float = 22, max_width: float = 4.6):
         label = Text(text, font_size=font_size, weight=BOLD)
@@ -140,7 +218,7 @@ class NarratedScene(Scene):
             return self._section_badge
 
         intro = self._build_title_chip(text, font_size=32, max_width=8.4)
-        intro.move_to(ORIGIN)
+        self.fit_to_top_band(intro, max_width=8.4, max_height=self.top_band_height() * 0.96)
 
         animations = []
         if self._section_badge is not None:
@@ -153,8 +231,14 @@ class NarratedScene(Scene):
             FadeIn(intro[1], shift=UP * 0.08),
             run_time=0.38,
         )
+        target = intro.copy().scale(0.64).to_corner(UR, buff=self.SECTION_BADGE_BUFF)
+        self._clamp_vertical_band(
+            target,
+            top_limit=self.TOP_BAND_TOP,
+            bottom_limit=self.TOP_BAND_BOTTOM,
+        )
         self.play(
-            intro.animate.scale(0.64).to_corner(UR, buff=self.SECTION_BADGE_BUFF),
+            Transform(intro, target),
             run_time=0.38,
         )
         self._section_badge = intro
@@ -244,9 +328,9 @@ class NarratedScene(Scene):
         return Text(title, font_size=font_size, weight=BOLD)
 
     def make_page(self, title, body, buff: float = 0.35):
-        title = self._coerce_page_title(title)
-        page = Group(title, body).arrange(DOWN, buff=buff)
-        return self.fit_group(page, max_height=5.9)
+        title = self.safe_top_title(title)
+        self.fit_to_body_band(body)
+        return Group(title, body)
 
     def make_two_panel_page(self, title, left, right, panel_gap: float = 0.8):
         if left.width > 5.0:
@@ -295,7 +379,7 @@ class NarratedScene(Scene):
         max_width: float = 5.4,
         max_height: float = 4.2,
     ):
-        panel = VGroup(top, bottom).arrange(DOWN, buff=buff)
+        panel = Group(top, bottom).arrange(DOWN, buff=buff)
         if panel.width > max_width:
             panel.scale_to_fit_width(max_width)
         if panel.height > max_height:

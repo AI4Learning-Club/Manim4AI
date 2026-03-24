@@ -116,6 +116,8 @@ STATE / CLEARING SAFETY:
 STAGED REVEAL SAFETY:
 - Do NOT put all future text, formulas, arrows, labels, captions, examples,
   and conclusions on screen at the start of a section.
+- For each page, define the persistent page objects before the first reveal of
+  that page. Then reveal those objects beat by beat.
 - A section may reserve stable final positions, but only the elements being
   discussed right now may be visible.
 - Reveal each teaching beat in sync with narration: usually main visual or
@@ -129,12 +131,156 @@ STAGED REVEAL SAFETY:
 - If an object is already visible, do NOT "show it again" when narration
   reaches that part. Keep it on screen and highlight it, transform it, or add
   only the new local element.
+- If a later persistent element would change the current page structure, start
+  a new page instead of repacking the old one.
 - Good rhythm: build the board like a teacher in real time, not like a fully
   finished slide that gets explained afterward.
 """
 
+_PAGE_BLOCK_LAYOUT_CONTRACT = """\
+PAGE / BLOCK AUTHORING CONTRACT:
+- A section may contain multiple pages.
+- End one page with `self.clear_scene_keep_bg()`, then define the next page
+  from scratch.
+- Compose each page before its first reveal.
+- A page is organized by three fixed bands: top band, body band, and subtitle
+  band.
+- The top band is shared by the page title and the section badge.
+- The subtitle band is permanently reserved for subtitles only.
+- Top band content: page title, section badge, and nothing else substantial.
+- Subtitle band content: only the subtitle module created by
+  `self.speak_with_subtitle(...)`, `self.set_subtitle(...)`, or
+  `self.make_subtitle_panel(...)`.
+- Body band content: all actual teaching content, including graphs, diagrams,
+  formulas, comparison columns, task rows, prompt panels, roadmap lines,
+  promise lines, takeaway panels, mechanism strips, misconception strips,
+  summary lines, queue/stack visuals, example rows, and other persistent
+  teaching text.
+- Any standalone natural-language sentence, question, prompt, takeaway,
+  summary, roadmap line, promise line, mechanism line, misconception line, or
+  other sentence-level explanatory text should be treated as a body-band block
+  by default.
+- Notes, takeaways, roadmap lines, and other persistent teaching text belong in
+  the body band, not in a separate subtitle-like band.
+- The basic layout unit of a page is a block, not a loose leaf object.
+- A block may be a graph, panel, task row, queue/stack visual, comparison
+  column, takeaway sentence, or note.
+- If a takeaway or note occupies its own stable page region, treat it as a
+  block.
+- Late persistent text such as roadmap lines, promises, takeaways, summaries,
+  or check-for-understanding prompts must be pre-defined as a note block for
+  that page, not attached ad hoc after the page is already visible.
+- Decide block placement explicitly with `Group(...).arrange(...)`,
+  `next_to(...)`, `align_to(...)`, and targeted `move_to(...)` when needed.
+- Inside each block, arrange leaf objects locally.
+- Textual labels are intentionally restricted. Only symbolic identifiers or
+  very short object names may be placed as local labels near graphics, such as
+  `A`, `B`, `C`, `D`, `T`, `x`, `y`, `q1`, `layer 1`, or other similarly short
+  symbolic markers.
+- Use `next_to(...)` primarily for those symbolic labels and for non-text
+  geometric overlays such as arrows, rings, and braces.
+- Do NOT use `next_to(...)` to place sentence-like teaching text. Questions,
+  prompts, takeaways, summaries, mechanism lines, roadmap lines, and other
+  explanatory text must be body blocks.
+- The number of body blocks is not fixed. Optimize for readability,
+  non-overlap, and clear hierarchy instead of chasing an arbitrary count.
+- Reference templates are suggestions only. Adapt, combine, or vary them based
+  on the lesson content.
+- `self.fit_group(...)` only scales and clamps a finished body block into the
+  body band.
+- Use `self.fit_to_top_band(...)` or `self.safe_top_title(...)` for title-like
+  objects in the top band.
+- In a normal page, `self.fit_group(...)` should be called once on the main
+  finished body block before that page is revealed.
+- Do NOT call `self.fit_group(...)` on late prompt panels, takeaway panels,
+  misconception strips, single-line summary rows, or local callout labels after
+  the page is already visible.
+- Do NOT position persistent text relative to the whole `body` or whole `page`
+  after the page has been composed. Ban patterns such as
+  `note.next_to(body, ...)`, `summary.next_to(body, ...)`,
+  `prompt.next_to(body, ...)`, `takeaway.align_to(body, ...)`, or any similar
+  placement relative to the whole fitted body/page.
+- Do NOT use raw absolute placement such as `.move_to(DOWN * ...)` for late
+  persistent teaching text. If that text should remain on the page, it must be
+  planned as part of the body-band layout before reveal.
+- Graphical overlays and symbolic labels may use `next_to(...)`, `align_to(...)`,
+  and small offsets, but they must remain local and must not collide with the
+  graphic, other labels, or body blocks.
+- Do NOT use `self.fit_group(...)` to invent page layout.
+- After a page starts, do NOT refit or reposition the whole page.
+- If a new persistent element would change the page structure, start a new page
+  instead of repacking the current page.
+
+Correct / incorrect examples:
+
+Bad:
+```python
+body = Group(graph_block, compare_block).arrange(RIGHT, buff=0.5)
+self.fit_group(body, max_width=11.6, center=UP * 0.2)
+
+prompt_panel = self.make_panel(self.get_warning_text("Pause and predict", font_size=20))
+prompt_panel.next_to(body, DOWN, buff=0.2)
+takeaway_panel = self.make_panel(self.get_success_text("Key idea", font_size=20))
+takeaway_panel.next_to(prompt_panel, UP, buff=0.14)
+```
+
+Good:
+```python
+prompt_panel = self.make_panel(self.get_warning_text("Pause and predict", font_size=20))
+takeaway_panel = self.make_panel(self.get_success_text("Key idea", font_size=20))
+note_block = Group(takeaway_panel, prompt_panel).arrange(DOWN, buff=0.14, aligned_edge=LEFT)
+
+body = Group(main_visual_block, note_block).arrange(DOWN, buff=0.24)
+self.fit_group(body, max_width=11.6, center=UP * 0.15)
+```
+
+Good for a symbolic local label:
+```python
+target_label = self.get_secondary_text("T", font_size=18)
+target_label.next_to(target_node, RIGHT, buff=0.08).align_to(target_node, UP)
+```
+
+Good when the new persistent text would change structure too much:
+```python
+self.clear_scene_keep_bg()
+
+title = self.safe_top_title("Next Step", font_size=28)
+body = Group(new_visual_block, new_note_block).arrange(DOWN, buff=0.24)
+self.fit_group(body, max_width=11.6, center=UP * 0.15)
+```
+"""
+
+_VISUAL_CLARITY_CONTRACT = """\
+VISUAL CLARITY / SIMPLICITY CONTRACT:
+- The goal of a teaching visual is NOT maximal complexity. The goal is dynamic
+  clarity, easy comprehension, and at-a-glance legibility.
+- Prefer the simplest visual that makes the current teaching point obvious.
+- Do NOT add extra nodes, edges, branches, labels, panels, arrows, icons,
+  or decorative shapes unless they materially improve the current explanation.
+- Every visible element must earn its place by clarifying a relation, change,
+  comparison, motion, or causal step that the student needs right now.
+- If the lesson is about how a process moves or changes, make that motion or
+  state change the main visual. Let the diagram or graph act as supporting
+  skeleton rather than stealing attention through unnecessary detail.
+- If a simplified graph, diagram, path, or comparison can teach the same point
+  more clearly, use the simplified version.
+- Do NOT duplicate a full complex diagram on multiple sides of the page unless
+  the full duplication is necessary for the comparison. Prefer lighter
+  comparison copies that keep only the structure needed for that contrast.
+- If some detail matters only later, introduce it later on the same stable page
+  or move it to a follow-up page. Do NOT front-load completeness.
+- Prefer one clear visual idea per beat. If several details compete for
+  attention, simplify the figure or split the explanation into more beats/pages.
+"""
+
+_CLAUDE_REVIEW_NOTICE = (
+    "Claude will review your work and code afterward, so every decision must be "
+    "rigorous, defensible, and implementation-ready.\n\n"
+)
+
 _SYSTEM_GENERATE = (
-"""\
+_CLAUDE_REVIEW_NOTICE
+    + """\
 You are an expert educational animation designer AND Manim CE (v0.18+) developer.
 Your job is to create animations that help students truly UNDERSTAND math/physics
 concepts, not just show formulas.
@@ -192,6 +338,9 @@ STEP 1 - OPENING HOOK (5-10 seconds):
   Use simple language.  Make the student feel "I want to know the answer."
 STEP 2+ - TEACH EACH CONCEPT with VISUAL + FORMULA TOGETHER:
   This is the CORE of the animation.  For EACH concept in the planned lesson path:
+  A section may use multiple pages when the content needs it. When one page
+  ends, clear it and build the next page fresh instead of squeezing new
+  persistent content into the old page.
   A) TOP title + MIDDLE visual + BOTTOM formula/text
      Best for: wide diagrams, process flows, timelines
   B) LEFT visual + RIGHT formula/text (each ~half width)
@@ -211,6 +360,10 @@ STEP 2+ - TEACH EACH CONCEPT with VISUAL + FORMULA TOGETHER:
     LEFT: block diagram  RIGHT: equations
   Example for "Punnett square":
     TOP: title  CENTER: 4x4 grid  BOTTOM: ratio summary
+
+  These are REFERENCE PATTERNS, not fixed templates. Choose, adapt, or combine
+  them according to the lesson content. Do not force every section into one of
+  these layouts literally.
 
   KEY PRINCIPLE: never show a formula without context.  The student should
   see what the formula describes - either a visual next to it, or a clear
@@ -245,45 +398,92 @@ PART 2: MANIM CODE RULES (avoid crashes and visual bugs)
 
 """
     + _COMMON_RUNTIME_SAFETY_RULES
+    + "\n\n"
+    + _PAGE_BLOCK_LAYOUT_CONTRACT
+    + "\n\n"
+    + _VISUAL_CLARITY_CONTRACT
     + """
 
 LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
-- ALWAYS group ALL elements of a "page" into one Group by default and THEN:
-    group.arrange(DOWN, buff=0.3)  # or RIGHT for side-by-side
-    if group.width > 12: group.scale_to_fit_width(12)
-    if group.height > 6.5: group.scale_to_fit_height(6.5)
-    group.move_to(ORIGIN)
-  This guarantees nothing goes off-screen.
-- For side-by-side: use Group(left, right).arrange(RIGHT, buff=0.5)
-  then apply the same width/height check.
-- For top-down: title at top, visual in middle, formula at bottom.
-- BETWEEN CONCEPTS: use `self.clear_scene_keep_bg()` so the persistent
-  background stays visible across section transitions.
-- Font sizes: titles 26-32, body 18-24, formulas 24-30, labels 16-20.
-  SMALLER is better than clipped!  When in doubt, reduce font size.
-- Never use `.to_edge(UP)` on its own - put the title inside the
-  outer Group so it scales together with everything else.
-- ALWAYS reserve a dedicated title row above the content; the title must not
-    overlap the graph or diagram below it.
-- But if a section already uses `self.show_section_header(...)`, do NOT create
+- HARD RULES (must follow):
+  - Think in terms of pages and blocks:
+    1. decide the page regions,
+    2. build the stable blocks,
+    3. arrange leaf objects inside each block,
+    4. clamp the finished block safely.
+  - Every page uses a fixed `top band + body band + subtitle band` structure.
+  - Put only title/badge content in the top band.
+  - Put only subtitle content in the subtitle band.
+  - Put all teaching content in the body band. This includes graph/diagram
+    blocks, formula blocks, explanation panels, task rows, prompt panels,
+    roadmap/promise/takeaway/mechanism/misconception/summary strips,
+    queue/stack/table/card blocks, example rows, and persistent local teaching
+    text.
+  - Any standalone sentence-like teaching text belongs to the body band by
+    default, even if it is only one line. Do not classify sentence-like text as
+    a local overlay.
+  - Visual graphics and text blocks must not overlap each other. Body blocks
+    must not overlap other body blocks.
+  - Use `self.safe_top_title(...)` or `self.fit_to_top_band(...)` for title-like
+    objects in the top band.
+  - Use `self.fit_group(block, max_width=..., max_height=..., center=...)`
+    only for finished body blocks in the body band.
+  - `self.fit_group(...)` is a body-band safety helper, not a layout author.
+  - In most pages, call `self.fit_group(...)` once on the main body block before
+    the first reveal, not repeatedly on later small text panels.
+  - After calling `self.fit_group(...)` on a whole body block, do NOT call
+    `.move_to()`, `.shift()`, or `.to_edge()` on that same whole block again.
+  - Never use `.to_edge(UP)` on its own for page titles. Put title-like objects
+    in the top band.
+  - If a section already uses `self.show_section_header(...)`, do NOT create
     another large page title with the same wording inside the page body.
-- Avoid duplicate title rendering: one section marker is enough. Use either the
+  - ALWAYS reserve the bottom band for subtitles. Do NOT place formulas,
+    diagrams, captions, or explanatory text in the subtitle band.
+  - If you are unsure where something belongs, default to the body band unless
+    it is literally the page title/badge or the subtitle module.
+  - If a page needs roadmap text, promise text, a takeaway, or a summary line
+    that should persist on that page, include it in a preplanned body-band block
+    instead of attaching it ad hoc after reveal.
+  - Only symbolic labels such as `A`, `B`, `C`, `D`, `T`, `x`, `y`, `q1`, or
+    similarly short object identifiers may stay as local labels near graphics.
+  - Use `next_to(...)` for those symbolic labels and for non-text geometric
+    overlays only. Do not use `next_to(...)` to place sentence-like teaching
+    text.
+  - Bad pattern: `prompt_panel.next_to(body, DOWN, ...); self.fit_group(prompt_panel, ...)`.
+    If the prompt should persist, include it in the preplanned body block. If it
+    is local text, it still belongs in a body block unless it is only a
+    symbolic label.
+  - Bad pattern: `takeaway_panel.move_to(DOWN * ...)`.
+    Persistent takeaway text belongs in the planned body layout or on a new page,
+    not as late absolute-positioned loose text.
+  - BETWEEN CONCEPTS: use `self.clear_scene_keep_bg()` so the persistent
+    background stays visible across section transitions.
+- SOFT PREFERENCES (follow unless content clearly needs otherwise):
+  - Font sizes: titles 26-32, body 18-24, formulas 24-30, labels 16-20.
+    Smaller is better than clipped. When in doubt, reduce font size.
+  - Prefer a clear page structure: top band for title/badge, body band for all
+    teaching blocks, subtitle band reserved below.
+  - For side-by-side pages, a good default is
+    `Group(left, right).arrange(RIGHT, buff=0.5)` and then `self.fit_group(...)`
+    with an explicit center if needed.
+  - For top-down pages, a good default is title at top, visual in middle,
+    formula or short text below.
+  - Avoid duplicate title rendering: one section marker is enough. Use either the
     shrinking section header badge or a local page heading, not both with the
     same text on screen at the same time.
-- ALWAYS reserve the bottom band for subtitles.  Do NOT place formulas,
-    diagrams, captions, or explanatory text in the bottom subtitle area.
-- Prefer a clean two-row structure: title row on top, content row below.
-- Do NOT default every section to left graphic + right text.
-- For graph + explanation slides, keep the graph fully in one region and the
-    explanation in a separate region, but that region may be below, above, or
-    beside the graph depending on the scene.
-- If a visual needs extra explanation, use a caption BELOW the visual or a
-    separate text panel.  Do not float paragraph text over the diagram.
-- Across a full lesson, vary layouts naturally: some sections can be top-down,
+  - Keep a dedicated title row above the content so the title does not visually
+    collide with the graph or diagram below it.
+  - Do NOT default every section to left graphic + right text.
+  - For graph + explanation slides, keep the graph fully in one region and the
+    explanation in another region. That explanation region may be below, above,
+    or beside the graph depending on the scene.
+  - If a visual needs extra explanation, prefer a caption BELOW the visual or a
+    separate text panel rather than floating paragraph text over the diagram.
+  - Across a full lesson, vary layouts naturally: some sections can be top-down,
     some full-width visual, some two-panel, some centered formula focus.
-- Do not repeat the exact same layout pattern for 3 or more consecutive sections
-    unless the content truly requires it.
-- If the bottom area starts feeling crowded, move content upward or split the
+  - Do not repeat the exact same layout pattern for 3 or more consecutive
+    sections unless the content truly requires it.
+  - If the bottom area starts feeling crowded, move content upward or split the
     current teaching point into the next slide.
 
 VECTOR DIAGRAM RULES:
@@ -314,7 +514,10 @@ VECTOR DIAGRAM RULES:
     into the explanation panel.
 
 AVAILABLE LAYOUT HELPERS (already defined on AI4LearningBaseScene):
-- `self.fit_group(group, max_width=12, max_height=6.5)`
+- `self.fit_group(group, max_width=12, max_height=None, center=None)`
+- `self.fit_to_body_band(group, max_width=12, max_height=None, center=None)`
+- `self.fit_to_top_band(group, max_width=11.8, max_height=None, center=None)`
+- `self.safe_top_title("Title", font_size=34, max_width=11.4)`
 - `self.clear_scene_keep_bg(run_time=0.7, wait_time=0.3)`
 - `self.show_section_header("片段标题")`
 - `self.make_subtitle_panel("字幕内容")`
@@ -322,10 +525,10 @@ AVAILABLE LAYOUT HELPERS (already defined on AI4LearningBaseScene):
 - `self.clear_subtitle()`
 - `self.speak_with_subtitle("旁白文本", *animations, run_time=...)`
 - `self.make_page(title, body, buff=0.35)`
-- `self.make_two_panel_page(title, left, right, panel_gap=0.6)`
+- `self.make_two_panel_page(title, left, right, panel_gap=0.8)`
 - `self.make_graph_text_page(title, graph_group, text_group, panel_gap=1.0)`
 - `self.limit_text_block(block, max_width=4.0, max_height=4.5)`
-- `self.stack_panel(top, bottom, buff=0.18, max_width=5.4, max_height=4.8)`
+- `self.stack_panel(top, bottom, buff=0.18, max_width=5.4, max_height=4.2)`
 - `self.connect_side(source, target, direction=RIGHT, buff=0.12, **kwargs)`
 - `self.connect_vertical(source, target, buff=0.12, **kwargs)`
 - `self.load_local_icon("calculator.png", height=0.9)`
@@ -339,7 +542,9 @@ AVAILABLE LAYOUT HELPERS (already defined on AI4LearningBaseScene):
 - `self.make_panel_style()`
 - `self.get_warning_color()`, `self.get_success_color()`
 - `self.get_border_color()`, `self.get_axis_color()`
-Use these helpers instead of many manual `.shift()` / `.to_edge()` calls.
+Use `self.safe_top_title(...)` / `self.fit_to_top_band(...)` for top-band
+titles, and `self.fit_group(...)` / `self.fit_to_body_band(...)` for body-band
+blocks. Do not fit first and then manually move the same whole block again.
 For graph + explanation pages, prefer `self.make_graph_text_page(...)`.
 You do NOT need to use the same helper for every section.
 
@@ -383,8 +588,10 @@ SUBTITLE RULES:
 
 CONTENT DENSITY RULES:
 - Do NOT try to fit all explanation text on one slide.
-- If one page needs more than about 5 visible teaching objects, split it into
-    2 or more beats instead of forcing everything onto one frame.
+- Do NOT use a fixed cap on block count. Judge the page by readability,
+  hierarchy, and overlap.
+- If the page loses a clear focal structure, split it into another page or a
+  cleaner follow-up beat instead of cramming more into the current page.
 - On any single slide, an explanation panel may contain at most 1 short heading
     plus 3 short body lines.
 - If a concept needs more text, split it into the next slide while preserving
@@ -442,6 +649,8 @@ STABILITY RULES (reduce messy motion):
 - Once a page layout appears, keep its title, panels, and axes FIXED in place.
 - Do NOT animate whole pages with `.animate.shift(...)` or move large groups
     around after they are already on screen.
+- Do NOT call `self.fit_group(...)` again on an already visible whole page just
+  because a late takeaway, note, or other persistent element appears.
 - Reveal new information in place with FadeIn, Write, Create, or small local
     transforms.
 - If a section needs a new layout, FadeOut the old page and build a new stable
@@ -452,6 +661,8 @@ STABILITY RULES (reduce messy motion):
 
 REVEAL RHYTHM RULES:
 - Think like a teacher building the board live.
+- Define the page objects before the first reveal of that page. Then reveal
+  them in the order the narration needs.
 - At the start of a section, show only the minimum needed to begin the
   explanation.
 - When narration says "now look at this label / this step / this formula",
@@ -460,6 +671,9 @@ REVEAL RHYTHM RULES:
   by one. Reveal those lines progressively.
 - Do NOT pre-place the final formula before the intuition or derivation has
   happened.
+- Do NOT pre-place a late persistent note or takeaway by repacking the current
+  visible page. If it needs its own stable region, plan it as part of the page
+  before reveal or move it to the next page.
 - If a section has 3 teaching beats, implement 3 reveals, not one full-page
   reveal plus 3 repeated explanations.
 - Page/layout helpers are for positioning and stable composition, not for
@@ -551,7 +765,8 @@ Output ONLY the Python code inside a ```python``` block.
 )
 
 _SYSTEM_FIX = (
-"""\
+_CLAUDE_REVIEW_NOTICE
+    + """\
 You are an expert Manim debugger.  The code below failed to render.
 Fix ALL errors so it renders successfully.
 
@@ -577,7 +792,8 @@ Output ONLY the corrected Python code inside a ```python``` block.
 )
 
 _SYSTEM_IMPROVE = (
-"""\
+_CLAUDE_REVIEW_NOTICE
+    + """\
 You are an expert Manim quality engineer AND educational designer.
 The code below rendered but the QA pipeline found problems.
 
@@ -612,7 +828,10 @@ RULE #2: Fix visual bugs surgically
 ## "overlap" / "truncated" / "cut off":
 - LOOK at the keyframe images - identify WHICH specific elements overflow.
 - FIX only those elements: shrink them, reposition them, or add spacing.
-- Group elements -> scale_to_fit_height(6.5) -> move_to(ORIGIN).
+- Rebuild the affected stable block, then use
+  `self.fit_group(block, max_width=..., max_height=..., center=...)`.
+- If a block was already fitted, do NOT fix it by fitting and then moving the
+  same whole block again.
 - FadeOut old elements before showing new ones in the same area.
 - For physics diagrams where block sits ON board: make block thinner or use
   outline-only (fill_opacity=0) so the overlap is not flagged.
@@ -628,10 +847,31 @@ RULE #2: Fix visual bugs surgically
     or split the page rather than letting it collide with subtitles.
 - If arrows, braces, or pointer lines are misaligned, rebuild them using stable
     object-edge anchors rather than tweaking raw coordinates by eye.
+- If a symbolic label is awkwardly placed, rebuild it from a stable anchor with
+  explicit side choice plus fine alignment/offset. Do not leave it at a bare
+  default `next_to(...)` position in a crowded area.
+- If the text is not a symbolic label, do not keep it as a local overlay during
+  fixes. Move it into a real body block or a new page.
+- If a late persistent note, takeaway, or summary caused the page to repack,
+  turn it into a preplanned note block for that page or move it to a new page.
+- That note block is part of the body band, not a subtitle replacement and not
+  floating late-added text.
+- If you see a pattern like `something.next_to(...); self.fit_group(something, ...)`
+  on a prompt/callout/takeaway strip, remove that pattern. Fold the text into
+  the preplanned body layout before reveal, unless it is only a symbolic label.
+- If you see late `.move_to(DOWN * ...)` placement for a takeaway/prompt panel,
+  replace it with a planned body-band block or move that teaching point to a
+  new page.
 
 ## "layout" / "dense":
 - Break crowded sections into sub-stages with FadeOut between them.
 - But keep the CONTENT the same - just spread it across more slides.
+- A section may become multiple pages. When the page structure changes, clear
+  the old page and rebuild the next one instead of squeezing all persistent
+  content into one fitted layout.
+- If a figure is hard to read because it is overly complete or visually busy,
+  simplify the figure itself before adding more spacing hacks. Keep only the
+  structure needed for the current teaching point.
 - If a section currently appears as a full finished page before the narration
   explains it, rebuild it as a staged reveal: keep the layout stable, but let
   labels, formulas, bullets, and takeaways appear only when that beat is
@@ -648,6 +888,10 @@ RULE #3: Never introduce new crashes
 
 """
     + _COMMON_RUNTIME_SAFETY_RULES
+    + "\n\n"
+    + _PAGE_BLOCK_LAYOUT_CONTRACT
+    + "\n\n"
+    + _VISUAL_CLARITY_CONTRACT
     + """
 - Keep body text and formula base in theme-driven defaults such as
   `self.get_text(...)`, `self.get_math(...)`, `self.theme_token("text_main")`,
@@ -662,6 +906,8 @@ RULE #3: Never introduce new crashes
     when revising scenes so title markers and subtitle rhythm remain consistent.
 - Keep the top-right title badge clear of other content, and split long
     narration into shorter subtitle-sized beats when needed.
+- Treat takeaways and notes as blocks when they occupy their own stable page
+  region, not as floating late-added loose text.
 - Use simple subtitle fade-in/fade-out only; avoid flashy subtitle transitions.
 - Prefer helper-based anchored connectors such as `self.connect_side(...)` and
     `self.connect_vertical(...)` when fixing arrow direction or pointer drift.
@@ -770,6 +1016,7 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
                 f"**VISUAL QUALITY / LAYOUT (score {layout_score:.2f})**: {_metric_note(layout)}\n"
                 "  -> The frame is too dense or poorly organized.\n"
                 "  -> FIX: show fewer objects at once, keep one clear focal region, and avoid squeezing two heavy panels into one shot.\n"
+                "  -> Simplify the figure itself when possible: remove unnecessary branches, labels, copies, arrows, or decorative blocks that do not teach the current beat.\n"
             )
 
         animation = visual_metrics.get("animation_continuity")
@@ -809,6 +1056,7 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
                 f"**TASK CORRECTNESS / PEDAGOGICAL CLARITY (score {clarity_score:.2f})**: {_metric_note(clarity)}\n"
                 "  -> The explanation order is unclear or too jumpy.\n"
                 "  -> FIX: simplify the narrative arc, make each shot do one teaching job, and tighten transitions between idea -> visual -> conclusion.\n"
+                "  -> If the visual itself is too busy, simplify it before adding more explanatory text.\n"
             )
 
         engagement = task_metrics.get("engagement")
@@ -818,6 +1066,7 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
                 f"**TASK CORRECTNESS / ENGAGEMENT (score {engagement_score:.2f})**: {_metric_note(engagement)}\n"
                 "  -> The pacing or visual storytelling is too flat.\n"
                 "  -> FIX: reduce dead time, reveal information progressively, and make the key insight appear through motion rather than static dumping.\n"
+                "  -> Prefer one strong visual idea at a time over a crowded frame with many competing details.\n"
             )
 
     audio_dim = dimension_map.get("Audio Quality")
@@ -1049,10 +1298,15 @@ class CodeGenAgent:
                 prompt_parts.append(theme_prompt)
         prompt_parts.append(
             "## Implementation priority\n"
-            "Keep each page visually stable after it appears. Use teacher-like sequencing, "
-            "self-drawn vector diagrams, varied layouts chosen by content, and stable section markers/subtitles. Keep all current teaching content, "
-            "but split dense slides into multiple pages instead of squeezing text and graphics together. Reserve the bottom band for subtitles only, keep the top-right badge area clear, "
-            "use a centered section title before each major segment, give sections informative titles rather than vague labels, and only use arrows/lines when they can be cleanly anchored to nearby objects."
+            "Plan each section as one or more stable pages. Compose each page before its first reveal. "
+            "Use blocks as the page layout units, place those blocks explicitly, and arrange leaf objects inside each block. "
+            "Use `self.safe_top_title(...)` or `self.fit_to_top_band(...)` for top-band title objects, and use "
+            "`self.fit_group(...)` only as the final body-band clamp for finished body blocks. Keep each page visually stable after it appears. "
+            "Use `next_to(...)` only for symbolic labels or non-text geometric overlays; all sentence-like teaching text must be real body blocks. "
+            "If a new persistent element would change the page structure, start a new page instead of repacking the current one. "
+            "Use teacher-like sequencing, self-drawn vector diagrams, varied layouts chosen by content, and stable section markers/subtitles. "
+            "Reserve the bottom band for subtitles only, keep the top-right badge area clear, use a centered section title before each major segment, "
+            "give sections informative titles rather than vague labels, and only use arrows/lines when they can be cleanly anchored to nearby objects."
         )
         content: list = [{"type": "input_text", "text": "\n\n".join(prompt_parts)}]
         if image_path and image_path.exists():

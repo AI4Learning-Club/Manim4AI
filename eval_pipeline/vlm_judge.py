@@ -511,11 +511,17 @@ Evaluate on THREE dimensions.
 2. **Pedagogical Clarity** (integer 0-100)
    How clear and logically coherent is the instructional presentation?
    Does the video follow the teaching plan's intended narrative arc?
+   Consider whether the visuals are as simple as they can be while still
+   teaching the point clearly. Unnecessary visual complexity, overly complete
+   diagrams, duplicated heavy figures, or too many simultaneous details should
+   lower this score.
    0 = incomprehensible, 40 = confusing, 60 = acceptable, 80 = clear, 100 = excellent
 
 3. **Engagement** (integer 0-100)
    To what degree does the output engage viewers and sustain attention?
    Consider animation quality, pacing, visual appeal, narrative flow.
+   Prefer dynamic clarity over visual busyness: a clean visual that reveals one
+   idea at a time is stronger than a crowded, overly complex frame.
    0 = boring/static, 40 = dull, 60 = adequate, 80 = engaging, 100 = captivating
 
 Return a JSON object with exactly these keys:
