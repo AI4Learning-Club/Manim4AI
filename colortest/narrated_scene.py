@@ -21,7 +21,8 @@ class NarratedScene(Scene):
     TOP_BAND_TOP = 3.68
     TOP_BAND_BOTTOM = 2.82
     BODY_BAND_TOP = TOP_BAND_BOTTOM
-    SUBTITLE_SAFE_BOTTOM = -0.9
+    SUBTITLE_SAFE_RATIO = 0.10  # Hard constraint: reserve exactly the bottom 10% for subtitles.
+    SUBTITLE_SAFE_BOTTOM = -config.frame_height / 2 + config.frame_height * SUBTITLE_SAFE_RATIO
     CONTENT_TOP_LIMIT = BODY_BAND_TOP
     CONTENT_SIDE_LIMIT = 6.1
     SUBTITLE_TRANSITION_TIME = 0.18

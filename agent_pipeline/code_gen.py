@@ -156,6 +156,9 @@ PAGE / BODY AUTHORING CONTRACT:
 - Do NOT build patterns such as `top_body`, `lower_body`, `main_body`,
   `content_block`, or multiple separately fitted mini-pages on one screen.
 - The subtitle band is permanently reserved for subtitles only.
+- Hard constraint: the subtitle band is exactly the bottom 10% of the frame
+  (0.8 units on the default 8-unit-high canvas). Do NOT reserve a larger
+  invisible subtitle-safe zone.
 - All actual teaching content belongs in the body band inside `bodyN`. This
   includes graphs, diagrams, formulas, comparisons, prompts, roadmap lines,
   takeaway lines, summary lines, note blocks, example rows, and other
@@ -193,12 +196,21 @@ PAGE / BODY AUTHORING CONTRACT:
   secants, tangents, helper lines, shaded regions, rectangles, bars, dots on a
   curve, icons attached to nodes, highlights, braces, arrows, connectors, and
   symbolic labels.
+- When you choose option (2) and create a dependent object after
+  `fit_body(...)`, compute it from the SAME anchor instance that is already on
+  screen inside the fitted `bodyN`. Do NOT rebuild a fresh copy of the anchor
+  (for example a new `Axes`, graph block, or helper return value) and then
+  borrow children from that stale copy.
 - A dependent object must be handled in one of three ways:
   1. include it in the same visual block inside `bodyN` before `fit_body(...)`,
   2. create it only after `bodyN` has reached final position, or
   3. make it dynamically follow the anchor if that anchor may still move.
 - Never precompute dependent geometry from one layout state and then fit
   `bodyN` afterward.
+- If a helper is used after `fit_body(...)`, it must accept the fitted anchor
+  as an argument and return only the dependent geometry tied to that anchor
+  (for example `build_secant_on_axes(axes, x2)`), rather than recreating the
+  full visual block.
 - After a page starts, do NOT refit or reposition the whole page. If a new
   persistent element would change the page structure, start a new page instead.
 
@@ -241,6 +253,27 @@ body3 = Group(graph_block, text_block).arrange(RIGHT, buff=0.5)
 self.fit_body(body3, max_width=11.6, center=UP * 0.2)
 
 secant_hint = Line(axes.c2p(x1, y1), axes.c2p(x2, y2))
+```
+
+Bad after fit:
+```python
+graph_block, axes, graph, secant, dot = self.build_secant_visual(x2)
+body3 = Group(graph_block, text_block).arrange(RIGHT, buff=0.5)
+self.fit_body(body3, max_width=11.6, center=UP * 0.2)
+
+new_graph_block, _, _, new_secant, new_dot = self.build_secant_visual(x3)
+self.play(ReplacementTransform(secant, new_secant), ReplacementTransform(dot, new_dot))
+```
+
+Good after fit:
+```python
+graph_block = Group(axes, graph, secant, dot)
+body3 = Group(graph_block, text_block).arrange(RIGHT, buff=0.5)
+self.fit_body(body3, max_width=11.6, center=UP * 0.2)
+
+new_secant = Line(axes.c2p(x1, y1), axes.c2p(x3, y3))
+new_dot = Dot(axes.c2p(x3, y3))
+self.play(ReplacementTransform(secant, new_secant), ReplacementTransform(dot, new_dot))
 ```
 
 Good when the structure must change:
@@ -414,9 +447,12 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
     2. build the stable blocks,
     3. arrange leaf objects inside each block,
     4. clamp the finished block safely.
-  - Every page uses a fixed `top band + body band + subtitle band` structure.
-  - Put only title/badge content in the top band.
-  - Put only subtitle content in the subtitle band.
+- Every page uses a fixed `top band + body band + subtitle band` structure.
+- The subtitle band is exactly the bottom 10% of the frame on the default
+  canvas. Body content may extend all the way down to the top edge of that
+  band, but must not enter it.
+- Put only title/badge content in the top band.
+- Put only subtitle content in the subtitle band.
   - Put all teaching content in the body band. This includes graph/diagram
     blocks, formula blocks, explanation panels, task rows, prompt panels,
     roadmap/promise/takeaway/mechanism/misconception/summary strips,
@@ -446,10 +482,20 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
     highlight, arrow, brace, connector) must either be inside the same fitted
     visual block, be created only after that parent block reaches final
     position, or be defined as a live follower.
+  - If such an object is created after `self.fit_body(bodyN, ...)`, it MUST be
+    computed from the same fitted anchor instance already inside `bodyN`.
+    Rebuilding a new `Axes`, graph block, panel, or helper-returned layout and
+    taking children from that rebuilt copy is forbidden.
   - Bad pattern: precompute a line/rectangle/icon/label from `axes.c2p(...)`,
     `get_center()`, `get_corner(...)`, `get_edge_center(...)`, `next_to(...)`,
     or similar anchor geometry, then fit or move the parent block, then reveal
     that stale dependent object later.
+  - Bad pattern: call `build_graph_visual(...)` or `build_secant_visual(...)`
+    again after `fit_body(...)` just to get `new_line`, `new_dot`, `new_label`,
+    or similar dependent objects. That creates a second layout state.
+  - Good pattern: write helpers such as `build_secant_on_axes(axes, x2)` or
+    `build_rectangles_on_axes(axes, graph, n)` that consume the fitted anchor
+    and return only the dependent geometry for that exact on-screen anchor.
   - In most pages, call `self.fit_body(bodyN, ...)` once on the page's unique
     `bodyN` before the first reveal, not repeatedly on later small text panels.
   - After calling `self.fit_body(bodyN, ...)`, do NOT call `.move_to()`,
@@ -591,8 +637,8 @@ SUBTITLE RULES:
 - Update subtitles when the spoken focus changes, and clear them before dense
     transitions if necessary.
 - Nothing except the subtitle module itself should occupy the subtitle band.
-- Leave extra vertical breathing room above the subtitle band; do not place
-    low formulas, captions, or diagram labels close to it.
+- Keep the subtitle-safe margin tight. Leave only a small visual buffer above
+  the subtitle band; do not invent oversized empty bottom margins.
 
 CONTENT DENSITY RULES:
 - Do NOT try to fit all explanation text on one slide.
@@ -1321,6 +1367,7 @@ class CodeGenAgent:
             "Use blocks as the page layout units, place those blocks explicitly inside that page's bodyN, and arrange leaf objects inside each block. "
             "Use `self.show_section_badge_once(...)` only at the start of a section, then use `self.make_page_title(...)` or `self.fit_to_top_band(...)` for the long top title of each page. "
             "Call `self.fit_body(bodyN, ...)` exactly once for that page's bodyN. Keep each page visually stable after it appears. "
+            "If you create dependent geometry after `fit_body(...)`, build it from the same fitted anchor instance already inside bodyN; do not call a helper that rebuilds a fresh axes/graph/layout copy just to obtain replacement lines, dots, labels, or rectangles. "
             "Use `next_to(...)` only for symbolic labels or non-text geometric overlays; all sentence-like teaching text must be real body blocks. "
             "Respect font floors: titles >= 28, body sentence text >= 20, secondary explanatory text >= 18, formulas >= 24, symbolic labels >= 16. "
             "If a layout would force text below those floors, reallocate space or split the page instead of shrinking further. "
