@@ -81,7 +81,7 @@ APP_PORT=8000
 - `code_llm` 可通过 `A4L_CODE_*` 单独覆盖
 - `eval_pipeline` 默认模型读取同一个 `OPENAI_MODEL`
 - `MANIM_QUALITY` 默认是 `-qm --fps 60`，也就是 `720p60`
-- `eval_pipeline` 当前默认 `frame_step=30`，即每 30 帧抽 1 帧做 CV 评测
+- `eval_pipeline` 当前默认 `frame_step=10`，即每 10 帧抽 1 帧做 CV 评测
 
 ## 使用
 
@@ -90,7 +90,7 @@ APP_PORT=8000
 最常用入口：
 
 ```bash
-python -m agent_pipeline "用动画讲解一下拉普拉斯变换"
+python -m agent_pipeline "用动画讲解一下微积分的基本原理"
 ```
 
 更多示例：
@@ -151,7 +151,7 @@ python -m eval_pipeline path/to/video.mp4 --skip-vlm
 - `-o, --output-dir`：评测输出目录
 - `--skip-vlm`：跳过 VLM，只做 CV 与音频评测
 - `--skip-audio`：跳过音频分析
-- `--frame-step`：设置抽帧步长，当前默认 `30`
+- `--frame-step`：设置抽帧步长，当前默认 `10`
 - `--api-key` / `--base-url` / `--model`：覆盖评测阶段模型配置
 - `--max-vlm-segments`：限制送去 VLM 的片段数量
 - `--vlm-all`：把所有片段都送给 VLM

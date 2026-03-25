@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("--text-min-val", type=int, default=145)
     cv.add_argument("--solid-min-sat", type=int, default=20)
     cv.add_argument("--solid-min-val", type=int, default=20)
-    cv.add_argument("--frame-step", type=int, default=30, help="Process every N-th frame (default: 30, i.e. sample ~1fps for 30fps video)")
+    cv.add_argument("--frame-step", type=int, default=10, help="Process every N-th frame (default: 10)")
     cv.add_argument("--candidate-min-pixels", type=int, default=90)
 
     # --- Audio options ---

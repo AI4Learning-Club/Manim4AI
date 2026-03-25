@@ -79,7 +79,7 @@ class CVConfig:
     color_shift_thresh: float = 0.15        # chi-square distance between histograms
 
     # --- Frame sampling ---
-    frame_step: int = 30                     # process every 30th frame by default
+    frame_step: int = 10                     # process every 10th frame by default
 
     # --- Segment merge / filter ---
     merge_gap_sec: float = 0.15

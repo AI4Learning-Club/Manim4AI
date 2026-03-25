@@ -15,7 +15,7 @@ class _ThemePackPreviewBase(AI4LearningBaseScene):
             color=self.theme_token("text_secondary"),
             font_size=20,
         )
-        header = VGroup(title, subtitle).arrange(DOWN, buff=0.16, aligned_edge=LEFT)
+        page_title = self.make_page_title(title)
 
         text_column = VGroup(
             self._make_text_chip("Text Main", self.theme_token("text_main"), "primary title / body"),
@@ -44,10 +44,11 @@ class _ThemePackPreviewBase(AI4LearningBaseScene):
         graph_demo = self._make_graph_demo()
         bottom_row = VGroup(panel_demo, graph_demo).arrange(RIGHT, buff=0.58, aligned_edge=UP)
 
-        page = VGroup(header, top_row, bottom_row).arrange(DOWN, buff=0.26, aligned_edge=LEFT)
-        self.fit_group(page, max_width=12.0, max_height=6.0)
+        body1 = VGroup(subtitle, top_row, bottom_row).arrange(DOWN, buff=0.26, aligned_edge=LEFT)
+        self.fit_body(body1, max_width=12.0, max_height=6.0)
 
-        self.play(FadeIn(header, shift=DOWN * 0.12), run_time=0.45)
+        self.play(FadeIn(page_title, shift=DOWN * 0.12), run_time=0.45)
+        self.play(FadeIn(subtitle, shift=DOWN * 0.08), run_time=0.35)
         self.play(
             LaggedStart(*[FadeIn(chip, shift=RIGHT * 0.08) for chip in text_column], lag_ratio=0.08),
             LaggedStart(*[FadeIn(chip, shift=LEFT * 0.08) for chip in accent_column], lag_ratio=0.08),

@@ -4,7 +4,7 @@ Wrapper around the new eval_pipeline for programmatic video evaluation.
 Runs the full structured evaluation stack and returns the new report.json
 schema produced by eval_pipeline.
 
-Uses a fixed frame sampling rate by default: process every 30th frame.
+Uses a fixed frame sampling rate by default: process every 10th frame.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from eval_pipeline.config import AudioConfig, CVConfig, ExternalMeta, PipelineConfig, VLMConfig
 from eval_pipeline.run import evaluate_video
 
-DEFAULT_FRAME_STEP = 30
+DEFAULT_FRAME_STEP = 10
 
 
 def collect_keyframes(eval_dir: Path) -> List[Path]:

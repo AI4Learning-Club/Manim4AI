@@ -68,7 +68,6 @@ def _int_env(name: str, default: int) -> int:
 SYNTAX_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_SYNTAX_FIX_MAX_ATTEMPTS", 4))
 RENDER_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_RENDER_FIX_MAX_ATTEMPTS", 4))
 LANGUAGE_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_LANGUAGE_FIX_MAX_ATTEMPTS", 2))
-MANIM_TIMEOUT_SEC = max(300, _int_env("MANIM_TIMEOUT_SEC", 1200))
 
 # =====================================================================
 # Helpers
@@ -166,9 +165,10 @@ _USER_FACING_TEXT_CALLS = {
     "get_success_text",
     "get_text",
     "get_warning_text",
+    "make_page_title",
     "make_subtitle_panel",
     "set_subtitle",
-    "show_section_header",
+    "show_section_badge_once",
     "speak",
     "speak_with_subtitle",
 }
@@ -353,7 +353,6 @@ def _try_render(
                 code,
                 round_dir,
                 quality_flags=quality_flags,
-                timeout_sec=MANIM_TIMEOUT_SEC,
                 enable_tts=enable_tts,
                 tts_voice=tts_voice,
             )
@@ -371,12 +370,16 @@ def _try_render(
 
         if attempt >= RENDER_FIX_MAX_ATTEMPTS:
             _log(f"{label}: render still failed after {attempt} fix attempt(s)")
+            if result.error_log.strip():
+                _log(f"{label}: latest render error:\n{result.error_log.strip()}")
             break
 
         _log(
             f"{label}: render FAILED - asking LLM to fix "
             f"(attempt {attempt + 1}/{RENDER_FIX_MAX_ATTEMPTS}) ..."
         )
+        if result.error_log.strip():
+            _log(f"{label}: render error details:\n{result.error_log.strip()}")
         error_info = result.error_log + _detect_chinese_in_mathtex(code)
         code = agent.fix(code, error_info, output_language=output_language)
         (round_dir / f"scene_fixed_{attempt + 1}.py").write_text(code, encoding="utf-8")

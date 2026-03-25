@@ -25,7 +25,7 @@ class HighlightPreviewScene(AI4LearningBaseScene):
             color=GREY_200,
             font_size=20,
         )
-        header = VGroup(title, subtitle).arrange(DOWN, buff=0.18)
+        page_title = self.make_page_title(title)
 
         chips = VGroup(
             self._make_chip("Ice Blue", CYAN_400),
@@ -85,10 +85,11 @@ class HighlightPreviewScene(AI4LearningBaseScene):
         )
 
         body = VGroup(chips, demo_panel).arrange(RIGHT, buff=0.9, aligned_edge=UP)
-        page = VGroup(header, formula, body).arrange(DOWN, buff=0.34)
-        self.fit_group(page, max_width=11.9, max_height=5.9)
+        body1 = VGroup(subtitle, formula, body).arrange(DOWN, buff=0.34)
+        self.fit_body(body1, max_width=11.9, max_height=5.9)
 
-        self.play(FadeIn(header, shift=DOWN * 0.2), run_time=0.6)
+        self.play(FadeIn(page_title, shift=DOWN * 0.12), run_time=0.45)
+        self.play(FadeIn(subtitle, shift=DOWN * 0.12), run_time=0.35)
         self.play(Write(formula), run_time=1.0)
         self.play(
             LaggedStart(*[FadeIn(chip, shift=RIGHT * 0.15) for chip in chips], lag_ratio=0.1),
@@ -140,7 +141,7 @@ class BodyColorPreviewScene(AI4LearningBaseScene):
             font_size=18,
             color=GREY_200,
         )
-        header = VGroup(title, subtitle).arrange(DOWN, buff=0.16)
+        page_title = self.make_page_title(title)
 
         panel = RoundedRectangle(
             corner_radius=0.22,
@@ -170,10 +171,11 @@ class BodyColorPreviewScene(AI4LearningBaseScene):
         content.move_to(panel.get_center())
         content.align_to(panel, LEFT).shift(RIGHT * 0.5)
 
-        page = VGroup(header, VGroup(panel, content)).arrange(DOWN, buff=0.28)
-        self.fit_group(page, max_width=12.0, max_height=6.0)
+        body1 = VGroup(subtitle, VGroup(panel, content)).arrange(DOWN, buff=0.28)
+        self.fit_body(body1, max_width=12.0, max_height=6.0)
 
-        self.play(FadeIn(header, shift=DOWN * 0.15), run_time=0.6)
+        self.play(FadeIn(page_title, shift=DOWN * 0.12), run_time=0.45)
+        self.play(FadeIn(subtitle, shift=DOWN * 0.1), run_time=0.35)
         self.play(Create(panel), run_time=0.7)
         self.play(FadeIn(line_1, shift=DOWN * 0.12), run_time=0.45)
         self.play(FadeIn(line_2, shift=DOWN * 0.12), run_time=0.45)
@@ -206,7 +208,7 @@ class ShapeStructurePreviewScene(AI4LearningBaseScene):
             font_size=18,
             color=GREY_200,
         )
-        header = VGroup(title, subtitle).arrange(DOWN, buff=0.16)
+        page_title = self.make_page_title(title)
 
         chips = VGroup(
             self._make_structure_chip("BLUE_300", BLUE_300, "soft border / panel"),
@@ -277,13 +279,17 @@ class ShapeStructurePreviewScene(AI4LearningBaseScene):
         demo_panel = VGroup(panel, demo)
         demo.move_to(panel.get_center())
 
-        page = VGroup(header, VGroup(chips, demo_panel).arrange(RIGHT, buff=0.7, aligned_edge=UP)).arrange(
+        body1 = VGroup(
+            subtitle,
+            VGroup(chips, demo_panel).arrange(RIGHT, buff=0.7, aligned_edge=UP),
+        ).arrange(
             DOWN,
             buff=0.28,
         )
-        self.fit_group(page, max_width=12.0, max_height=6.0)
+        self.fit_body(body1, max_width=12.0, max_height=6.0)
 
-        self.play(FadeIn(header, shift=DOWN * 0.15), run_time=0.6)
+        self.play(FadeIn(page_title, shift=DOWN * 0.12), run_time=0.45)
+        self.play(FadeIn(subtitle, shift=DOWN * 0.1), run_time=0.35)
         self.play(LaggedStart(*[FadeIn(chip, shift=RIGHT * 0.1) for chip in chips], lag_ratio=0.1), run_time=1.0)
         self.play(Create(panel), run_time=0.7)
         self.play(FadeIn(left_group, shift=DOWN * 0.1), FadeIn(right_group, shift=DOWN * 0.1), run_time=0.6)

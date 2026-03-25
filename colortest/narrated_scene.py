@@ -24,14 +24,12 @@ class NarratedScene(Scene):
     SUBTITLE_SAFE_BOTTOM = -0.9
     CONTENT_TOP_LIMIT = BODY_BAND_TOP
     CONTENT_SIDE_LIMIT = 6.1
-    SECTION_BADGE_BUFF = 0.34
     SUBTITLE_TRANSITION_TIME = 0.18
     SUBTITLE_TEXT_COLOR = "#EDF5FF"
     SUBTITLE_STROKE_COLOR = "#08182D"
 
     def setup(self):
         self._section_badge = None
-        self._section_badge_text = None
         self._subtitle_mob = None
 
     def _audio_duration(self, fp: str, text: str) -> float:
@@ -154,27 +152,6 @@ class NarratedScene(Scene):
             group.move_to(center)
         return self._clamp_vertical_band(group, top_limit=band_top, bottom_limit=band_bottom)
 
-    def clamp_group(self, group):
-        """Clamp a finished body block into the body band above subtitles."""
-        return self._clamp_vertical_band(
-            group,
-            top_limit=self.BODY_BAND_TOP,
-            bottom_limit=self._content_bottom_limit(),
-        )
-
-    def fit_group(self, group, max_width: float = 12.0, max_height: float | None = None, center=None):
-        """Scale/place a finished body block into the body band above subtitles."""
-        if center is None:
-            center = self.body_band_center()
-        return self._fit_to_vertical_band(
-            group,
-            band_top=self.BODY_BAND_TOP,
-            band_bottom=self._content_bottom_limit(),
-            max_width=max_width,
-            max_height=max_height,
-            center=center,
-        )
-
     def fit_to_top_band(self, group, max_width: float = 11.8, max_height: float | None = None, center=None):
         """Scale/place a title-like block into the shared top band."""
         if max_height is None:
@@ -190,11 +167,21 @@ class NarratedScene(Scene):
             center=center,
         )
 
-    def fit_to_body_band(self, group, max_width: float = 12.0, max_height: float | None = None, center=None):
-        """Scale/place a finished body block into the body band above subtitles."""
-        return self.fit_group(group, max_width=max_width, max_height=max_height, center=center)
+    def fit_body(self, body, max_width: float = 12.0, max_height: float | None = None, center=None):
+        """Preferred helper: fit a page's single body root into the body band."""
+        if center is None:
+            center = self.body_band_center()
+        return self._fit_to_vertical_band(
+            body,
+            band_top=self.BODY_BAND_TOP,
+            band_bottom=self._content_bottom_limit(),
+            max_width=max_width,
+            max_height=max_height,
+            center=center,
+        )
 
-    def safe_top_title(self, title, font_size: float = 34, max_width: float = 11.4):
+    def make_page_title(self, title, font_size: float = 34, max_width: float = 11.4):
+        """Preferred helper: build the long top title for a page."""
         title = self._coerce_page_title(title, font_size=font_size)
         return self.fit_to_top_band(title, max_width=max_width, max_height=self.top_band_height() * 0.95)
 
@@ -213,37 +200,31 @@ class NarratedScene(Scene):
         )
         return VGroup(box, label.move_to(box.get_center()))
 
-    def show_section_header(self, text: str):
-        if self._section_badge is not None and self._section_badge_text == text:
-            return self._section_badge
+    def show_section_badge_once(
+        self,
+        text: str,
+        run_time: float = 0.38,
+        hold_time: float = 0.08,
+        fade_time: float = 0.22,
+    ):
+        """Show a short section badge once, then clear it before page content begins."""
+        badge = self._build_title_chip(text, font_size=32, max_width=8.4)
+        self.fit_to_top_band(badge, max_width=8.4, max_height=self.top_band_height() * 0.96)
 
-        intro = self._build_title_chip(text, font_size=32, max_width=8.4)
-        self.fit_to_top_band(intro, max_width=8.4, max_height=self.top_band_height() * 0.96)
-
-        animations = []
         if self._section_badge is not None:
-            animations.append(FadeOut(self._section_badge, shift=UP * 0.15))
-        if animations:
-            self.play(*animations, run_time=0.25)
+            self.play(FadeOut(self._section_badge, shift=UP * 0.12), run_time=min(fade_time, 0.18))
 
+        self._section_badge = badge
         self.play(
-            DrawBorderThenFill(intro[0]),
-            FadeIn(intro[1], shift=UP * 0.08),
-            run_time=0.38,
+            DrawBorderThenFill(badge[0]),
+            FadeIn(badge[1], shift=UP * 0.08),
+            run_time=run_time,
         )
-        target = intro.copy().scale(0.64).to_corner(UR, buff=self.SECTION_BADGE_BUFF)
-        self._clamp_vertical_band(
-            target,
-            top_limit=self.TOP_BAND_TOP,
-            bottom_limit=self.TOP_BAND_BOTTOM,
-        )
-        self.play(
-            Transform(intro, target),
-            run_time=0.38,
-        )
-        self._section_badge = intro
-        self._section_badge_text = text
-        return self._section_badge
+        if hold_time > 0:
+            self.wait(hold_time)
+        self.play(FadeOut(badge, shift=UP * 0.08), run_time=fade_time)
+        self._section_badge = None
+        return badge
 
     def _normalize_subtitle_text(self, text: str):
         cleaned = re.sub(r"\s+", " ", text).strip()
@@ -326,50 +307,6 @@ class NarratedScene(Scene):
             except Exception:
                 pass
         return Text(title, font_size=font_size, weight=BOLD)
-
-    def make_page(self, title, body, buff: float = 0.35):
-        title = self.safe_top_title(title)
-        self.fit_to_body_band(body)
-        return Group(title, body)
-
-    def make_two_panel_page(self, title, left, right, panel_gap: float = 0.8):
-        if left.width > 5.0:
-            left.scale_to_fit_width(5.0)
-        if right.width > 4.4:
-            right.scale_to_fit_width(4.4)
-        if left.height > 4.35:
-            left.scale_to_fit_height(4.35)
-        if right.height > 4.35:
-            right.scale_to_fit_height(4.35)
-        body = Group(left, right).arrange(RIGHT, buff=panel_gap, aligned_edge=UP)
-        if body.width > 10.6:
-            body.scale_to_fit_width(10.6)
-        return self.make_page(title, body)
-
-    def make_graph_text_page(self, title, graph_group, text_group, panel_gap: float = 1.0):
-        if graph_group.width > 4.8:
-            graph_group.scale_to_fit_width(4.8)
-        if graph_group.height > 4.15:
-            graph_group.scale_to_fit_height(4.15)
-        if text_group.width > 4.0:
-            text_group.scale_to_fit_width(4.0)
-        if text_group.height > 4.15:
-            text_group.scale_to_fit_height(4.15)
-        body = Group(graph_group, text_group).arrange(
-            RIGHT,
-            buff=panel_gap,
-            aligned_edge=UP,
-        )
-        if body.width > 10.4:
-            body.scale_to_fit_width(10.4)
-        return self.make_page(title, body, buff=0.4)
-
-    def limit_text_block(self, block, max_width: float = 4.0, max_height: float = 4.0):
-        if block.width > max_width:
-            block.scale_to_fit_width(max_width)
-        if block.height > max_height:
-            block.scale_to_fit_height(max_height)
-        return block
 
     def stack_panel(
         self,

@@ -37,16 +37,18 @@ class FontPreviewScene(AI4LearningBaseScene):
 
         subtitle = self.make_subtitle_panel("字幕预览：这里也会跟随新的字体策略。", font_size=18)
 
-        page = Group(
-            VGroup(title, intro).arrange(DOWN, buff=0.14, aligned_edge=LEFT),
+        page_title = self.make_page_title(title)
+        body1 = Group(
+            intro,
             chinese_block,
             english_block,
             mixed_block,
             panel_note,
         ).arrange(DOWN, buff=0.28, aligned_edge=LEFT)
 
-        self.fit_group(page, max_width=12.0, max_height=5.8)
+        self.fit_body(body1, max_width=12.0, max_height=5.8)
 
-        self.play(FadeIn(page, shift=DOWN * 0.15), run_time=0.8)
+        self.play(FadeIn(page_title, shift=DOWN * 0.12), run_time=0.5)
+        self.play(FadeIn(body1, shift=DOWN * 0.15), run_time=0.8)
         self.play(FadeIn(subtitle, shift=UP * 0.06), run_time=0.4)
         self.wait(1.0)

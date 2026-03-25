@@ -247,7 +247,6 @@ class AI4LearningBaseScene(NarratedScene):
             self.play(FadeOut(Group(*to_fade)), run_time=run_time)
         self._subtitle_mob = None
         self._section_badge = None
-        self._section_badge_text = None
         self.wait(wait_time)
 
     # --- 本地图标加载：只从项目 icon 目录取资源 ---
