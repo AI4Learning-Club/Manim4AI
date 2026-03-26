@@ -47,7 +47,6 @@ THEME = ThemePack(
         "section_badge_stroke": "#FBBF24",  # 亮金黄色：章节徽标描边
         "section_badge_text": "#EFF6FF",  # 冷白淡蓝色：章节徽标文字
         "subtitle_text": "#EFF6FF",  # 冷白淡蓝色：底部字幕文字
-        "subtitle_stroke": "#081225",  # 深黑蓝色：字幕描边，压住星点干扰
     },
     behavior=ThemeBehavior(
         recommended_opening_style=("visual_first", "statement_first"),  # 先给视觉氛围，再给论断

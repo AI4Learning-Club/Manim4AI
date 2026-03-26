@@ -27,7 +27,6 @@ class NarratedScene(Scene):
     CONTENT_SIDE_LIMIT = 6.1
     SUBTITLE_TRANSITION_TIME = 0.18
     SUBTITLE_TEXT_COLOR = "#EDF5FF"
-    SUBTITLE_STROKE_COLOR = "#08182D"
 
     def setup(self):
         self._section_badge = None
@@ -240,7 +239,6 @@ class NarratedScene(Scene):
             label.scale_to_fit_width(max_width)
         if label.height > 0.42:
             label.scale_to_fit_height(0.42)
-        label.set_stroke(color=self.SUBTITLE_STROKE_COLOR, width=6, background=True)
         label.to_edge(DOWN, buff=0.18)
         label.set_z_index(100)
         return label

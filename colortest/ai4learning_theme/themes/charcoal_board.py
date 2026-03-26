@@ -47,7 +47,6 @@ THEME = ThemePack(
         "section_badge_stroke": "#FBBF24",  # 亮金黄色：章节徽标描边
         "section_badge_text": "#F8FAFC",  # 冷白色：章节徽标文字
         "subtitle_text": "#F8FAFC",  # 冷白色：底部字幕文字
-        "subtitle_stroke": "#020617",  # 近黑藏蓝色：字幕描边，压住背景噪点
     },
     behavior=ThemeBehavior(
         recommended_opening_style=("question_first", "board_first"),  # 先提问，再像板书一样展开

@@ -47,7 +47,6 @@ THEME = ThemePack(
         "section_badge_stroke": "#FDBA74",  # 柔暖橙：章节徽标描边
         "section_badge_text": "#EEF6FF",  # 冷白蓝：章节徽标文字
         "subtitle_text": "#EEF6FF",  # 冷白蓝：底部字幕文字
-        "subtitle_stroke": "#0A132A",  # 深海军蓝：字幕描边，压住蓝雾背景
     },
     behavior=ThemeBehavior(
         recommended_opening_style=("visual_first", "question_first"),  # 先给画面，再抛问题

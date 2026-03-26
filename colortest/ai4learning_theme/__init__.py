@@ -48,7 +48,7 @@ from .legacy_palette import (
 )
 from .registry import DEFAULT_THEME, DEFAULT_THEME_ID, THEMES, get_theme
 from .schema import ThemeBackground, ThemeBehavior, ThemePack
-from .themes import CHARCOAL_BOARD, DEEP_SPACE_BOARD, MIST_BLUE_FOCUS, SOFT_GLASS_WHITE
+from .themes import CHARCOAL_BOARD, DEEP_SPACE_BOARD, MIST_BLUE_FOCUS, SLATE_MIST, SOFT_GLASS_WHITE
 
 __all__ = [
     "AI4LearningBaseScene",
@@ -63,6 +63,7 @@ __all__ = [
     "CHARCOAL_BOARD",
     "SOFT_GLASS_WHITE",
     "DEEP_SPACE_BOARD",
+    "SLATE_MIST",
     "A4L_BG",
     "A4L_BLUE",
     "A4L_PINK",

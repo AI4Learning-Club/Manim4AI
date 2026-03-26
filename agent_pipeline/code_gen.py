@@ -1233,6 +1233,7 @@ def _build_selected_theme_prompt(teaching_plan: Optional[Dict]) -> str:
         "theme_id": theme_id,
         "display_name": selected_theme.get("display_name"),
         "brightness": selected_theme.get("brightness"),
+        "background_asset": selected_theme.get("background_asset"),
         "notes": selected_theme.get("notes"),
         "recommended_opening_style": selected_theme.get("recommended_opening_style", []),
         "recommended_scene_density": selected_theme.get("recommended_scene_density"),
@@ -1246,6 +1247,8 @@ def _build_selected_theme_prompt(teaching_plan: Optional[Dict]) -> str:
         + "\n\nThis theme choice is already fixed for the lesson.\n"
         + f'- Your Scene class MUST set `theme_id = "{theme_id}"`.\n'
         + "OVERRIDE any older legacy-palette examples in the generic prompt.\n"
+        + "Respect the registered theme background treatment and contrast strategy already encoded in the theme pack.\n"
+        + "Do not simulate a different mood by adding a new full-screen recolor overlay, replacing the background image, or hardcoding a separate palette on top of the selected theme.\n"
         + "For new code, prefer theme-aware APIs:\n"
         + "- `self.get_text(...)` for default text\n"
         + "- `self.get_math(...)` for default formulas\n"
@@ -1255,6 +1258,11 @@ def _build_selected_theme_prompt(teaching_plan: Optional[Dict]) -> str:
         + "- `self.theme_token(\"panel_stroke\")`, `self.theme_token(\"panel_fill_color\")`, and `self.theme_token(\"panel_fill_opacity\")` for panels\n"
         + "- `self.theme_token(\"grid_or_axis_color\")` for axes and grids\n"
         + "Do not import or rely on legacy palette names like `BLUE_100` or `CYAN_400` in newly generated scenes unless you are preserving existing code."
+        + (
+            "\n- `slate_mist` should read as a cool gray-blue textured background with near-white text, cyan primary structure, and amber secondary emphasis. Preserve that hierarchy through theme helpers instead of ad-hoc styling."
+            if theme_id == "slate_mist"
+            else ""
+        )
     )
 
 

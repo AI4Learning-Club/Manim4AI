@@ -203,7 +203,6 @@ class AI4LearningBaseScene(NarratedScene):
     def setup(self):
         self.theme = self.resolve_theme()
         self.SUBTITLE_TEXT_COLOR = self.theme_token("subtitle_text", "#EDF5FF")
-        self.SUBTITLE_STROKE_COLOR = self.theme_token("subtitle_stroke", "#08182D")
         super().setup()
         self.camera.background_color = self.theme_token("canvas_bg", config.background_color)
         self._bg_image = self._build_background()
@@ -315,7 +314,6 @@ class AI4LearningBaseScene(NarratedScene):
             label.scale_to_fit_width(max_width)
         if label.height > 0.42:
             label.scale_to_fit_height(0.42)
-        label.set_stroke(color=self.SUBTITLE_STROKE_COLOR, width=6, background=True)
         label.to_edge(DOWN, buff=0.18)
         label.set_z_index(100)
         return label

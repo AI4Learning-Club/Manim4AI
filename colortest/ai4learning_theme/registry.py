@@ -5,6 +5,7 @@ from .themes import (
     CHARCOAL_BOARD,
     DEEP_SPACE_BOARD,
     MIST_BLUE_FOCUS,
+    SLATE_MIST,
     SOFT_GLASS_WHITE,
 )
 
@@ -16,6 +17,7 @@ THEMES: dict[str, ThemePack] = {
         CHARCOAL_BOARD,
         SOFT_GLASS_WHITE,
         DEEP_SPACE_BOARD,
+        SLATE_MIST,
     )
 }
 
