@@ -1,9 +1,9 @@
-"""
-Layer 2 – VLM semantic judgment.
+﻿"""
+Layer 2 鈥?VLM semantic judgment.
 
 Two VLM stages:
-  2a. Overlap / rendering review  – per-segment PASS/FAIL/INTENTIONAL
-  2b. Task correctness review     – whole-video Content Accuracy,
+  2a. Segment visual review       - per-segment hard_bug / soft_layout_note
+  2b. Task correctness review     鈥?whole-video Content Accuracy,
                                     Pedagogical Clarity, Engagement
 
 Supports OpenAI-compatible APIs.
@@ -16,9 +16,10 @@ import base64
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional  # noqa: F811 – Optional used for video_path
+from typing import Any
+from typing import Dict, List, Optional  # noqa: F811 鈥?Optional used for video_path
 
 from .config import VLMConfig
 from .cv_features import SegmentFeatures
@@ -46,51 +47,16 @@ class VLMVerdict:
     end_sec: float
     cv_label: str
     cv_score: float
-    vlm_verdict: str        # PASS | FAIL | INTENTIONAL
+    vlm_verdict: str        # PASS | FAIL
     vlm_confidence: float   # 0-1
     vlm_reason: str
+    vlm_issues: List[Dict[str, Any]] = field(default_factory=list)
     raw_response: str = ""
 
 
 # =====================================================================
 # Prompt construction
 # =====================================================================
-
-SYSTEM_PROMPT = """\
-You are a STRICT quality reviewer for Manim-rendered educational math/physics videos.
-Your task is to judge whether a flagged video segment contains a genuine rendering bug.
-
-CRITICAL — you must be STRICT about overlap.  When in doubt, verdict should be FAIL.
-
-## FAIL conditions (any ONE means FAIL):
-- Two or more FILLED shapes overlap visually (e.g. a red square covering part of
-  a blue square).  Even in educational contexts this is a layout BUG.
-- Text or formulas are partially covered by shapes or other text.
-- Elements extend beyond the visible canvas (truncated/cut off).
-- Garbled text, duplicated formula fragments (e.g. "y²y²"), broken LaTeX.
-
-## INTENTIONAL conditions (ALL must be true):
-- Elements are deliberately placed side-by-side (not overlapping).
-- Text annotations are clearly readable and not occluded.
-- The layout serves an obvious pedagogical purpose.
-- No filled shapes overlap each other in area.
-
-## PASS conditions:
-- No overlap issues at all; clean layout.
-
-IMPORTANT: For geometry demonstrations (Pythagorean theorem, area proofs, etc.),
-auxiliary shapes (squares on triangle sides) MUST NOT overlap each other.
-If they do, it is a BUG, not intentional design.
-
-Return a JSON object with exactly these keys:
-{
-  "verdict": "PASS" | "FAIL" | "INTENTIONAL",
-  "confidence": <float 0-1>,
-  "reason": "<one-sentence explanation>",
-  "severity": "none" | "minor" | "moderate" | "severe",
-  "dimensions_affected": ["overlap", "rendering", "layout", "animation"]
-}
-"""
 
 OVERLAP_REVIEW_PROMPT = """\
 You are a STRICT visual quality reviewer for Manim-rendered educational videos.
@@ -112,6 +78,47 @@ Return a JSON object:
     {"frame_index": <int>, "description": "<what's wrong>", "severity": "minor"|"moderate"|"severe"}
   ],
   "reason": "<one-sentence summary>"
+}
+"""
+
+SEGMENT_REVIEW_PROMPT = """\
+You are a strict visual QA reviewer for Manim-rendered educational videos.
+Your task is to review one flagged segment and return only actionable visual issues.
+
+Important judging rules:
+- A staged reveal is legal. If one panel, note block, or label appears first and
+  another companion element appears later on the same stable page, do NOT flag
+  that as a layout problem.
+- Do NOT invent issues just because you would prefer a different composition.
+- Report only issues that are clearly visible in the provided keyframes.
+
+Use exactly these issue taxonomies:
+- `hard_bug`
+  Use this for clear rendering or readability bugs: text covered by shapes,
+  garbled text, truncated objects, drifted transform targets, overlays covering
+  labels, severe collisions, or other plainly broken visuals.
+- `soft_layout_note`
+  Use this only for mild polish issues that remain readable: slightly cramped
+  layout, awkward arrow placement, tight spacing, or similar local refinements.
+
+Verdict policy:
+- Return `FAIL` if the segment contains one or more `hard_bug` issues.
+- Return `PASS` if the segment has no hard bug. A segment with only
+  `soft_layout_note` issues should still return `PASS`.
+
+Return JSON only with exactly these keys:
+{
+  "verdict": "PASS" | "FAIL",
+  "confidence": <float 0-1>,
+  "reason": "<one-sentence explanation>",
+  "issues": [
+    {
+      "taxonomy": "hard_bug" | "soft_layout_note",
+      "severity": "low" | "medium" | "high",
+      "description": "<specific visible problem>",
+      "confidence": <float 0-1>
+    }
+  ]
 }
 """
 
@@ -198,7 +205,8 @@ def _build_user_content(
         f"  color_shift_max={seg.color_shift_max:.4f}\n"
         f"  ocr_artifact_frames={seg.ocr_artifact_frames}\n"
         f"  flash_events={seg.total_flash_events}\n"
-        "\nJudge from these keyframes and CV metadata."
+        "\nJudge from these keyframes and CV metadata.\n"
+        "A normal staged reveal on a stable page is legal and should not be flagged."
     )
     content.append({"type": "input_text", "text": meta})
 
@@ -245,6 +253,39 @@ def _parse_vlm_json(text: str) -> Dict:
     return {"verdict": "UNKNOWN", "confidence": 0.0, "reason": text}
 
 
+def _normalize_segment_issues(raw_issues: Any) -> List[Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    if not isinstance(raw_issues, list):
+        return issues
+
+    for item in raw_issues:
+        if not isinstance(item, dict):
+            continue
+        taxonomy = str(item.get("taxonomy", "")).strip()
+        if taxonomy not in {"hard_bug", "soft_layout_note"}:
+            continue
+        severity = str(item.get("severity", "medium")).strip().lower()
+        if severity not in {"low", "medium", "high"}:
+            severity = "medium"
+        description = str(item.get("description", "")).strip()
+        if not description:
+            continue
+        try:
+            confidence = float(item.get("confidence", 0.7))
+        except (TypeError, ValueError):
+            confidence = 0.7
+        confidence = max(0.0, min(1.0, confidence))
+        issues.append(
+            {
+                "taxonomy": taxonomy,
+                "severity": severity,
+                "description": description,
+                "confidence": confidence,
+            }
+        )
+    return issues
+
+
 # =====================================================================
 # Main review function
 # =====================================================================
@@ -260,7 +301,7 @@ def review_segments(
     Send each segment to the VLM and collect verdicts.
 
     *frames_dir* should contain sub-directories named by segment_id,
-    each with start_*.jpg, mid_*.jpg, end_*.jpg keyframes.
+    each with multiple chronological keyframes.
     """
 
     # Resolve API key
@@ -287,18 +328,34 @@ def review_segments(
         seg_dir = frames_dir / seg.segment_id
         images = sorted(seg_dir.glob("*.jpg")) if seg_dir.exists() else []
         user_content = _build_user_content(seg, images, video_name)
-        full_content = [{"type": "input_text", "text": SYSTEM_PROMPT}] + user_content
+        full_content = [{"type": "input_text", "text": SEGMENT_REVIEW_PROMPT}] + user_content
         raw_text = _call_vlm(local_client, vlm_cfg, full_content)
         parsed = _parse_vlm_json(raw_text)
+        normalized_issues = _normalize_segment_issues(parsed.get("issues", []))
+        parsed_verdict = str(parsed.get("verdict", "")).strip().upper()
+        has_hard_bug = any(
+            issue["taxonomy"] == "hard_bug" for issue in normalized_issues
+        )
+        inferred_verdict = "FAIL" if has_hard_bug else "PASS"
+        if parsed_verdict == "FAIL" and not has_hard_bug:
+            # Preserve an explicit FAIL when the model reason is strong but the
+            # issues array is missing or malformed. Fusion can still fall back
+            # to a single hard_bug entry from the segment reason.
+            inferred_verdict = "FAIL"
+        try:
+            parsed_confidence = float(parsed.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            parsed_confidence = 0.0
         verdict = VLMVerdict(
             segment_id=seg.segment_id,
             start_sec=seg.start_sec,
             end_sec=seg.end_sec,
             cv_label=seg.label,
             cv_score=seg.score,
-            vlm_verdict=str(parsed.get("verdict", "UNKNOWN")).upper(),
-            vlm_confidence=float(parsed.get("confidence", 0.0)),
+            vlm_verdict=inferred_verdict,
+            vlm_confidence=max(0.0, min(1.0, parsed_confidence)),
             vlm_reason=str(parsed.get("reason", "")),
+            vlm_issues=normalized_issues,
             raw_response=raw_text,
         )
         return index, verdict
@@ -401,7 +458,7 @@ def review_av_alignment(
 
     client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=180.0)
 
-    # Build content — prefer video (MLLM can hear audio)
+    # Build content 鈥?prefer video (MLLM can hear audio)
     content: list = [{"type": "input_text", "text": AV_ALIGNMENT_PROMPT}]
 
     use_video = False
@@ -432,7 +489,7 @@ def review_av_alignment(
             "text": (
                 f"Video: {video_name}\n\n"
                 "Below are keyframes from the video.  Audio is not available in "
-                "this mode — evaluate visual pacing and layout transitions only.\n"
+                "this mode 鈥?evaluate visual pacing and layout transitions only.\n"
                 "For narration_naturalness, return 3 (neutral) since audio is not provided."
             ),
         })
@@ -816,7 +873,7 @@ def review_visual_coverage(
 
 SEMANTIC_COHERENCE_PROMPT = """\
 You are evaluating an educational animation video for **semantic coherence**.
-You do NOT have a teaching plan — judge purely from what you see.
+You do NOT have a teaching plan 鈥?judge purely from what you see.
 
 Score the video on these criteria (each 0-100):
 
@@ -825,7 +882,7 @@ Score the video on these criteria (each 0-100):
    100 = perfectly focused on one topic; 0 = random unrelated content.
 
 2. **logical_progression**: Do the visuals follow a logical order
-   (e.g., introduce concept → explain → example → summary)?
+   (e.g., introduce concept 鈫?explain 鈫?example 鈫?summary)?
    100 = clear logical flow; 0 = chaotic ordering.
 
 3. **visual_relevance**: Are the on-screen visuals (graphs, diagrams, formulas)
@@ -860,7 +917,7 @@ def review_semantic_coherence(
     keyframe_paths: Optional[List[Path]] = None,
 ) -> SemanticCoherenceVerdict:
     """
-    VLM-based semantic coherence check — no teaching plan required.
+    VLM-based semantic coherence check 鈥?no teaching plan required.
     Judges whether the video presents a coherent educational narrative.
     """
     if video_path is None and not keyframe_paths:
@@ -951,6 +1008,8 @@ def save_verdicts_jsonl(verdicts: List[VLMVerdict], path: Path) -> None:
                 "vlm_verdict": v.vlm_verdict,
                 "vlm_confidence": round(v.vlm_confidence, 3),
                 "vlm_reason": v.vlm_reason,
+                "vlm_issues": v.vlm_issues,
                 "raw_response": v.raw_response,
             }
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+

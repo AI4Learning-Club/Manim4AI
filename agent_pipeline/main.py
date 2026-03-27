@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 from .asset_resolver import resolve_local_assets
+from .code_eval import CodeEvalAgent
 from .code_gen import CodeGenAgent
 from .evaluator import collect_keyframes, evaluate
 from .llm import resolve_pipeline_llm_configs, validate_pipeline_llm_configs
@@ -42,7 +43,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
 
 EVAL_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-EVAL_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+EVAL_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api2.tabcode.cc/openai")
 EVAL_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 MANIM_QUALITY = os.environ.get("MANIM_QUALITY", "-qm --fps 60")
 ROUND1_MANIM_QUALITY = os.environ.get("ROUND1_MANIM_QUALITY", "-r 854,480 --fps 30")
@@ -68,6 +69,7 @@ def _int_env(name: str, default: int) -> int:
 SYNTAX_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_SYNTAX_FIX_MAX_ATTEMPTS", 4))
 RENDER_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_RENDER_FIX_MAX_ATTEMPTS", 4))
 LANGUAGE_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_LANGUAGE_FIX_MAX_ATTEMPTS", 2))
+CODE_EVAL_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_CODE_EVAL_FIX_MAX_ATTEMPTS", 2))
 
 # =====================================================================
 # Helpers
@@ -297,7 +299,99 @@ def _repair_output_language_before_render(
     return code, mismatch_report, attempt
 
 
+def _code_eval_issues(report: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not report:
+        return []
+    issues = report.get("issues")
+    return issues if isinstance(issues, list) else []
+
+
+def _code_eval_has_blockers(report: Optional[Dict[str, Any]]) -> bool:
+    return any(
+        str(issue.get("severity", "")).lower() == "error"
+        for issue in _code_eval_issues(report)
+        if isinstance(issue, dict)
+    )
+
+
+def _format_code_eval_report(report: Optional[Dict[str, Any]]) -> str:
+    if not report:
+        return "Pre-render code_eval failed without a structured report."
+    lines: list[str] = []
+    summary = str(report.get("summary", "")).strip()
+    if summary:
+        lines.append(summary)
+    for issue in _code_eval_issues(report):
+        if not isinstance(issue, dict):
+            continue
+        severity = str(issue.get("severity", "error")).upper()
+        rule_id = str(issue.get("rule_id", "unknown")).strip()
+        obj = str(issue.get("object_name", "")).strip()
+        body = str(issue.get("body_name", "")).strip()
+        line = issue.get("line")
+        location = f"line {line}" if isinstance(line, int) else "line ?"
+        subject = obj or body or "object"
+        detail = str(issue.get("message", "")).strip()
+        evidence = str(issue.get("evidence", "")).strip()
+        fix_hint = str(issue.get("fix_hint", "")).strip()
+        parts = [f"[{severity}] {rule_id} @ {location}: {subject}"]
+        if detail:
+            parts.append(detail)
+        if evidence:
+            parts.append(f"Evidence: {evidence}")
+        if fix_hint:
+            parts.append(f"Fix: {fix_hint}")
+        lines.append(" | ".join(parts))
+    return "\n".join(lines) or "Pre-render code_eval found unresolved structural issues."
+
+
+def _repair_code_eval_before_render(
+    code_eval_agent: CodeEvalAgent,
+    agent: CodeGenAgent,
+    code: str,
+    round_dir: Path,
+    label: str,
+    output_language: str,
+    max_attempts: int = CODE_EVAL_FIX_MAX_ATTEMPTS,
+) -> tuple[str, Dict[str, Any], int]:
+    try:
+        report = code_eval_agent.review(code)
+    except Exception as exc:
+        _log(f"{label}: code_eval unavailable before render - {exc}")
+        return code, {"passed": True, "summary": f"code_eval skipped: {exc}", "issues": []}, 0
+
+    (round_dir / "scene_code_eval_report_0.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    attempt = 0
+    while _code_eval_issues(report) and attempt < max_attempts:
+        attempt += 1
+        _log(
+            f"{label}: pre-render code_eval found {len(_code_eval_issues(report))} issue(s) - "
+            f"asking LLM to repair (attempt {attempt}) ..."
+        )
+        code = agent.fix_from_code_eval(code, report, output_language=output_language)
+        (round_dir / f"scene_code_eval_fixed_{attempt}.py").write_text(code, encoding="utf-8")
+        try:
+            report = code_eval_agent.review(code)
+        except Exception as exc:
+            _log(f"{label}: code_eval recheck unavailable after repair - {exc}")
+            report = {
+                "passed": True,
+                "summary": f"code_eval recheck skipped: {exc}",
+                "issues": [],
+            }
+            break
+        (round_dir / f"scene_code_eval_report_{attempt}.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    return code, report, attempt
+
+
 def _try_render(
+    code_eval_agent: CodeEvalAgent,
     agent: CodeGenAgent,
     code: str,
     round_dir: Path,
@@ -312,6 +406,7 @@ def _try_render(
     result = RenderResult(success=False, error_log="", scene_name="")
     syntax_fix_rounds = 0
     language_fix_rounds = 0
+    code_eval_fix_rounds = 0
     tts_voice = voice_for_language(output_language)
 
     for attempt in range(RENDER_FIX_MAX_ATTEMPTS + 1):
@@ -345,6 +440,61 @@ def _try_render(
                 result = RenderResult(success=False, error_log=language_error, scene_name="")
                 continue
 
+            code, code_eval_report, code_eval_attempts = _repair_code_eval_before_render(
+                code_eval_agent,
+                agent,
+                code,
+                round_dir,
+                label,
+                output_language=output_language,
+            )
+            code_eval_fix_rounds += code_eval_attempts
+            if code_eval_attempts:
+                code, syntax_error, syntax_attempts = _repair_syntax_before_render(
+                    agent, code, round_dir, label, output_language=output_language
+                )
+                syntax_fix_rounds += syntax_attempts
+                if syntax_error:
+                    _log(f"{label}: syntax fix failed after code_eval repair")
+                    result = RenderResult(success=False, error_log=syntax_error, scene_name="")
+                    continue
+
+                code, language_error, language_attempts = _repair_output_language_before_render(
+                    agent,
+                    code,
+                    round_dir,
+                    label,
+                    output_language=output_language,
+                )
+                language_fix_rounds += language_attempts
+                if language_attempts:
+                    code, syntax_error, syntax_attempts = _repair_syntax_before_render(
+                        agent, code, round_dir, label, output_language=output_language
+                    )
+                    syntax_fix_rounds += syntax_attempts
+                if syntax_error:
+                    _log(f"{label}: syntax fix failed after code_eval language repair")
+                    result = RenderResult(success=False, error_log=syntax_error, scene_name="")
+                    continue
+                if language_error:
+                    _log(f"{label}: target-language fix did not converge after code_eval repair")
+                    result = RenderResult(success=False, error_log=language_error, scene_name="")
+                    continue
+
+            if _code_eval_has_blockers(code_eval_report):
+                _log(f"{label}: unresolved code_eval blockers remain before render")
+                result = RenderResult(
+                    success=False,
+                    error_log=_format_code_eval_report(code_eval_report),
+                    scene_name="",
+                )
+                continue
+            if _code_eval_issues(code_eval_report):
+                _log(
+                    f"{label}: code_eval left {len(_code_eval_issues(code_eval_report))} "
+                    "warning issue(s); continuing to render"
+                )
+
             render_msg = f"{label}: rendering"
             if attempt:
                 render_msg += f" after fix {attempt}"
@@ -364,8 +514,9 @@ def _try_render(
                 return code, result, {
                     "syntax_fix_rounds": syntax_fix_rounds,
                     "language_fix_rounds": language_fix_rounds,
+                    "code_eval_fix_rounds": code_eval_fix_rounds,
                     "render_fix_rounds": attempt,
-                    "total_fix_rounds": syntax_fix_rounds + language_fix_rounds + attempt,
+                    "total_fix_rounds": syntax_fix_rounds + language_fix_rounds + code_eval_fix_rounds + attempt,
                 }
 
         if attempt >= RENDER_FIX_MAX_ATTEMPTS:
@@ -387,8 +538,9 @@ def _try_render(
     return code, result, {
         "syntax_fix_rounds": syntax_fix_rounds,
         "language_fix_rounds": language_fix_rounds,
+        "code_eval_fix_rounds": code_eval_fix_rounds,
         "render_fix_rounds": RENDER_FIX_MAX_ATTEMPTS,
-        "total_fix_rounds": syntax_fix_rounds + language_fix_rounds + RENDER_FIX_MAX_ATTEMPTS,
+        "total_fix_rounds": syntax_fix_rounds + language_fix_rounds + code_eval_fix_rounds + RENDER_FIX_MAX_ATTEMPTS,
     }
 
 
@@ -528,6 +680,7 @@ def run_pipeline(
     stage_started_at = time.time()
     planner = TeachingPlannerAgent(analysis_llm)
     agent = CodeGenAgent(code_llm)
+    code_eval_agent = CodeEvalAgent(analysis_llm)
     teaching_plan: Dict[str, Any] = planner.plan(request_text, image_path)
     stage_times["planning"] = time.time() - stage_started_at
     _log(f"Teaching planner: {len(teaching_plan.get('sections', []))} section(s) ready")
@@ -625,6 +778,7 @@ def run_pipeline(
     r1_dir = run_dir / "round1"
     stage_started_at = time.time()
     code, r1_render, r1_fix_stats = _try_render(
+        code_eval_agent,
         agent,
         code,
         r1_dir,
@@ -681,6 +835,7 @@ def run_pipeline(
     r2_dir = run_dir / "round2"
     stage_started_at = time.time()
     code, r2_render, r2_fix_stats = _try_render(
+        code_eval_agent,
         agent,
         code,
         r2_dir,

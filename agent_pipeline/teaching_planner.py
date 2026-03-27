@@ -324,7 +324,7 @@ class TeachingPlannerAgent:
     def __init__(
         self,
         api_key: str | LLMConfig,
-        base_url: str = "https://api.tabcode.cc/openai",
+        base_url: str = "https://api2.tabcode.cc/openai",
         model: str = "gpt-5.4",
     ):
         if isinstance(api_key, LLMConfig):

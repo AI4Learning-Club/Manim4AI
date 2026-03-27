@@ -84,10 +84,6 @@ class EvalReport:
     # Issue inventory
     issues: List[Dict] = field(default_factory=list)
 
-    # Raw references
-    cv_fail_segments: List[str] = field(default_factory=list)
-    vlm_fail_segments: List[str] = field(default_factory=list)
-
 
 # =====================================================================
 # CV scoring helpers (unchanged logic, new wrappers)
@@ -212,7 +208,8 @@ def _collect_issues(
         if seg.label not in ("cv_fail", "needs_vlm"):
             continue
 
-        issue: Dict = {
+        vlm_v = vlm_map.get(seg.segment_id)
+        base_issue: Dict[str, Any] = {
             "segment_id": seg.segment_id,
             "time_range": f"{seg.start_sec:.2f}s -> {seg.end_sec:.2f}s",
             "cv_label": seg.label,
@@ -220,22 +217,71 @@ def _collect_issues(
             "cv_reason": seg.reason,
         }
 
-        vlm_v = vlm_map.get(seg.segment_id)
-        if vlm_v:
-            issue["vlm_verdict"] = vlm_v.vlm_verdict
-            issue["vlm_confidence"] = round(vlm_v.vlm_confidence, 3)
-            issue["vlm_reason"] = vlm_v.vlm_reason
+        if vlm_v and vlm_v.vlm_issues:
+            for idx, vlm_issue in enumerate(vlm_v.vlm_issues, start=1):
+                taxonomy = str(vlm_issue.get("taxonomy", "")).strip()
+                severity = str(vlm_issue.get("severity", "medium")).strip().lower()
+                description = str(vlm_issue.get("description", "")).strip()
+                if taxonomy not in {"hard_bug", "soft_layout_note"} or not description:
+                    continue
+                issue = dict(base_issue)
+                issue.update(
+                    {
+                        "issue_id": f"{seg.segment_id}_issue_{idx:02d}",
+                        "taxonomy": taxonomy,
+                        "severity": severity,
+                        "description": description,
+                        "confidence": round(float(vlm_issue.get("confidence", vlm_v.vlm_confidence)), 3),
+                        "source": "vlm",
+                        "vlm_verdict": vlm_v.vlm_verdict,
+                        "vlm_confidence": round(vlm_v.vlm_confidence, 3),
+                        "vlm_reason": vlm_v.vlm_reason,
+                    }
+                )
+                issues.append(issue)
+            continue
+
+        if vlm_v and vlm_v.vlm_verdict == "PASS":
+            continue
 
         if vlm_v and vlm_v.vlm_verdict == "FAIL":
-            issue["final_status"] = "FAIL"
-        elif vlm_v and vlm_v.vlm_verdict in ("PASS", "INTENTIONAL"):
-            issue["final_status"] = vlm_v.vlm_verdict
-        elif seg.label == "cv_fail":
-            issue["final_status"] = "FAIL (CV-only)"
-        else:
-            issue["final_status"] = "UNCERTAIN"
+            issue = dict(base_issue)
+            issue.update(
+                {
+                    "issue_id": f"{seg.segment_id}_issue_01",
+                    "taxonomy": "hard_bug",
+                    "severity": "high",
+                    "description": str(vlm_v.vlm_reason or seg.reason).strip(),
+                    "confidence": round(vlm_v.vlm_confidence, 3),
+                    "source": "vlm",
+                    "vlm_verdict": vlm_v.vlm_verdict,
+                    "vlm_confidence": round(vlm_v.vlm_confidence, 3),
+                    "vlm_reason": vlm_v.vlm_reason,
+                }
+            )
+            issues.append(issue)
+            continue
 
-        issues.append(issue)
+        if seg.label == "cv_fail":
+            issue = dict(base_issue)
+            issue.update(
+                {
+                    "issue_id": f"{seg.segment_id}_issue_01",
+                    "taxonomy": "hard_bug",
+                    "severity": "high",
+                    "description": (
+                        str(vlm_v.vlm_reason).strip()
+                        if vlm_v and vlm_v.vlm_reason
+                        else f"CV detected a likely rendering or overlap bug: {seg.reason}"
+                    ),
+                    "confidence": round(vlm_v.vlm_confidence, 3) if vlm_v else round(seg.score, 3),
+                    "source": "cv+vlm" if vlm_v else "cv",
+                    "vlm_verdict": vlm_v.vlm_verdict if vlm_v else "",
+                    "vlm_confidence": round(vlm_v.vlm_confidence, 3) if vlm_v else None,
+                    "vlm_reason": vlm_v.vlm_reason if vlm_v else "",
+                }
+            )
+            issues.append(issue)
 
     return issues
 
@@ -402,15 +448,16 @@ def compute_report(
         consistency_details = "no teaching plan or coherence check — skipped"
         consistency_source = "n/a"
 
+    layout_weight = 0.0
     visual_agg = (
         fusion_cfg.w_overlap * s_overlap +
-        fusion_cfg.w_layout * s_layout +
+        layout_weight * s_layout +
         fusion_cfg.w_animation * s_anim +
         fusion_cfg.w_color_consistency * s_color +
         fusion_cfg.w_vlm_semantic * s_consistency +
         fusion_cfg.w_rendering * s_render
     )
-    visual_w = (fusion_cfg.w_overlap + fusion_cfg.w_layout + fusion_cfg.w_animation +
+    visual_w = (fusion_cfg.w_overlap + layout_weight + fusion_cfg.w_animation +
                 fusion_cfg.w_color_consistency + fusion_cfg.w_vlm_semantic + fusion_cfg.w_rendering)
     visual_score = visual_agg / max(visual_w, 1e-6)
 
@@ -426,10 +473,10 @@ def compute_report(
                 source=overlap_source,
             ),
             MetricResult(
-                name="layout", scale="continuous", value=round(s_layout, 4),
-                description="Adherence to layout constraints and spatial organization quality",
-                details=f"dense_frame_ratio={global_cv.layout_dense_frame_ratio:.3f}",
-                source="cv",
+                name="layout", scale="continuous", value=None,
+                description="Layout density evaluation temporarily disabled",
+                details="disabled",
+                source="disabled",
             ),
             MetricResult(
                 name="animation_continuity", scale="continuous", value=round(s_anim, 4),
@@ -591,7 +638,7 @@ def compute_report(
     weights = {
         "overlap": fusion_cfg.w_overlap,
         "rendering": fusion_cfg.w_rendering,
-        "layout": fusion_cfg.w_layout,
+        "layout": 0.0,
         "animation": fusion_cfg.w_animation,
         "color_consistency": fusion_cfg.w_color_consistency,
         "vlm_semantic": fusion_cfg.w_vlm_semantic,
@@ -621,8 +668,6 @@ def compute_report(
 
     # Issues
     report.issues = _collect_issues(segments, verdicts)
-    report.cv_fail_segments = [s.segment_id for s in segments if s.label == "cv_fail"]
-    report.vlm_fail_segments = [v.segment_id for v in verdicts if v.vlm_verdict == "FAIL"]
 
     return report
 
@@ -663,8 +708,6 @@ def save_report_json(report: EvalReport, path: Path) -> None:
         ],
         "dimension_scores_flat": report.dimension_scores,
         "issues": report.issues,
-        "cv_fail_segments": report.cv_fail_segments,
-        "vlm_fail_segments": report.vlm_fail_segments,
     }
 
     with path.open("w", encoding="utf-8") as f:
@@ -725,12 +768,13 @@ def print_report(report: EvalReport) -> None:
         for issue in report.issues:
             seg = issue["segment_id"]
             tr = issue["time_range"]
-            status = issue["final_status"]
-            reason = issue.get("vlm_reason") or issue.get("cv_reason", "")
-            print(f"  [{status:^16s}] {seg}  {tr}")
-            if reason:
-                safe_reason = reason.encode("ascii", errors="replace").decode("ascii")
-                print(f"  {'':18s} {safe_reason}")
+            taxonomy = issue.get("taxonomy", "hard_bug")
+            severity = issue.get("severity", "medium")
+            desc = issue.get("description") or issue.get("vlm_reason") or issue.get("cv_reason", "")
+            print(f"  [{taxonomy:^16s}] {seg}  {tr}  severity={severity}")
+            if desc:
+                safe_desc = str(desc).encode("ascii", errors="replace").decode("ascii")
+                print(f"  {'':18s} {safe_desc}")
     else:
         print("  No issues detected.")
 

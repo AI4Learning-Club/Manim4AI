@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from openai import OpenAI
 
 
-DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_OPENAI_BASE_URL = "https://api2.tabcode.cc/openai"
 
 
 def _first_non_empty(*values: str | None) -> str:

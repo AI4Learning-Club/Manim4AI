@@ -75,7 +75,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
 
 DEFAULT_API_KEY = os.environ.get("OPENAI_API_KEY")
-DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.tabcode.cc/openai")
+DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api2.tabcode.cc/openai")
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
 
 
@@ -121,7 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
     vlm.add_argument("--base-url", type=str, default=DEFAULT_BASE_URL, help="Custom API base URL (default: OPENAI_BASE_URL from .env/env)")
     vlm.add_argument("--model", type=str, default=DEFAULT_MODEL, help="VLM model name (default: OPENAI_MODEL from .env/env)")
     vlm.add_argument("--max-vlm-segments", type=int, default=0, help="Max segments to send to VLM (0=all)")
-    vlm.add_argument("--vlm-all", action="store_true", help="Send ALL segments to VLM (including likely_intentional)")
+    vlm.add_argument(
+        "--vlm-all",
+        action="store_true",
+        help="Send ALL candidate buckets to VLM, including low-risk static-layout candidates",
+    )
 
     # --- CV tuning ---
     cv = p.add_argument_group("CV tuning")
@@ -304,9 +308,14 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
 
         # Classification summary
         n_fail = sum(1 for s in segment_features_list if s.label == "cv_fail")
-        n_intent = sum(1 for s in segment_features_list if s.label == "likely_intentional")
+        n_static = sum(1 for s in segment_features_list if s.label == "likely_intentional")
         n_vlm = sum(1 for s in segment_features_list if s.label == "needs_vlm")
-        print(f"  Classification: cv_fail={n_fail}, likely_intentional={n_intent}, needs_vlm={n_vlm}")
+        print(
+            "  Candidate buckets: "
+            f"high_risk={n_fail}, "
+            f"low_risk_static={n_static}, "
+            f"needs_review={n_vlm}"
+        )
 
         # Extract keyframes for VLM segments
         if cfg.vlm_all:
@@ -320,7 +329,13 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
         extract_keyframes(video_path, vlm_segments, frames_dir)
 
         # Global CV metrics
-        global_cv = compute_global_cv_metrics(features, segment_features_list, fps, cfg.cv)
+        global_cv = compute_global_cv_metrics(
+            features,
+            segment_features_list,
+            fps,
+            cfg.cv,
+            total_video_frames=total_frames,
+        )
 
         # ------------------------------------------------------------------
         # Layer 1b: Audio feature extraction

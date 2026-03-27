@@ -131,13 +131,13 @@ APP_PORT=8000
 最常用入口：
 
 ```bash
-python -m agent_pipeline "Explain the intuition behind derivatives with animation."
+python -m agent_pipeline "
 ```
 
 中文示例：
 
 ```bash
-python -m agent_pipeline "用动画讲清楚勾股定理为什么成立" --language zh
+python -m agent_pipeline "用动画解释机器学习的线性回归和逻辑回归" --language zh
 ```
 
 带图片输入：
@@ -149,7 +149,7 @@ python -m agent_pipeline "Explain this problem step by step." --image path/to/pr
 只提供图片也可以：
 
 ```bash
-python -m agent_pipeline --image path/to/problem.png --language zh
+python -m agent_pipeline --image "E:\Ai4learning\3.18.16.25\屏幕截图 2026-03-26 212747.png" --language zh
 ```
 
 指定输出目录：

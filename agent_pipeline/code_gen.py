@@ -191,11 +191,25 @@ PAGE / BODY AUTHORING CONTRACT:
 - `bodyN` should make strong use of the available body band.
 - If a page is dense, do NOT leave a large unused lower-body area while the
   upper half is crowded. Expand downward or split into the next page.
-- Any dependent object whose position or shape is computed from another object
-  must share the same positioning lifecycle as its anchor. This includes
-  secants, tangents, helper lines, shaded regions, rectangles, bars, dots on a
-  curve, icons attached to nodes, highlights, braces, arrows, connectors, and
-  symbolic labels.
+- Any non-text visual object whose position or shape is meant to relate to
+  another visual structure must have an explicit anchor or coordinate system,
+  and it must share the same positioning lifecycle as that anchor. This applies
+  both before and after `fit_body(...)`. This includes secants,
+  tangents, helper lines, shaded regions, rectangles, bars, dots on a curve,
+  point rows, icons attached to nodes, highlights, braces, arrows,
+  connectors, threshold guides, and symbolic labels.
+- Good anchor patterns include `axes.c2p(...)`, `graph.point_from_proportion(...)`,
+  `obj.get_center()`, `obj.get_right()`, `obj.get_corner(...)`,
+  `next_to(anchor, ...)`, `move_to(anchor)`, or helper functions that consume
+  the actual on-screen anchor instance and return geometry for that exact
+  anchor.
+- Bad pattern: a floating dot / point row / arrow / icon positioned by ad-hoc
+  raw coordinates or by only one-axis alignment when it is supposed to live on
+  an axes, graph, node, bar, or panel.
+- Also bad: create a line, plot, dot, or point row from `axes.c2p(...)`,
+  `axes.plot(...)`, or another anchor expression before `fit_body(...)`, but do
+  not include that geometry inside the same fitted `graph_block` / `bodyN`.
+  Then the anchor moves during fitting while the geometry stays behind.
 - When you choose option (2) and create a dependent object after
   `fit_body(...)`, compute it from the SAME anchor instance that is already on
   screen inside the fitted `bodyN`. Do NOT rebuild a fresh copy of the anchor
@@ -849,6 +863,66 @@ Output ONLY the corrected Python code inside a ```python``` block.
 """
 )
 
+_SYSTEM_CODE_EVAL_FIX = (
+_CLAUDE_REVIEW_NOTICE
+    + """\
+You are an expert Manim structural repair agent.
+The code below passed initial parsing, but a pre-render code-eval found
+page-structure problems that should be fixed BEFORE rendering.
+
+Your job is to fix the flagged issues while preserving:
+- the teaching flow and page order,
+- narration timing and subtitles,
+- theme selection and theme helper usage,
+- existing visuals that are already correct.
+
+You MUST follow these layout contracts while fixing:
+"""
+    + _COMMON_RUNTIME_SAFETY_RULES
+    + "\n\n"
+    + _PAGE_BLOCK_LAYOUT_CONTRACT
+    + """
+
+Focus only on these three code-eval categories:
+- `body_membership_post_fit`:
+  move late persistent sentence-like objects or panels into the correct `bodyN`
+  BEFORE the page's `self.fit_body(bodyN, ...)`.
+- `symbolic_label_overlap_risk`:
+  keep only true symbolic labels as local overlays; choose a cleaner side,
+  spacing, or alignment when the current `next_to(...)` placement looks likely
+  to collide with nearby objects.
+- `non_text_anchor_lifecycle`:
+  any non-text geometric object that is supposed to relate to another visual
+  structure must have a FULL anchor or coordinate-system source, and it must
+  share the same positioning lifecycle as that anchor, whether it is created
+  before or after `fit_body(...)`.
+  Use anchors such as `axes.c2p(...)`, `graph.point_from_proportion(...)`,
+  `obj.get_center()`, `obj.get_right()`, `obj.get_corner(...)`,
+  `next_to(anchor, ...)`, or `move_to(anchor)`.
+  Do not leave dots, point rows, arrows, icons, threshold guides, bars, or
+  transform targets on floating raw coordinates.
+  If geometry is created from an anchor before `fit_body(...)`, either include
+  that geometry inside the same fitted visual block, rebuild it after fitting,
+  or make it dynamically follow the anchor.
+  If the object is created after `fit_body(...)`, compute it from the SAME
+  fitted anchor instance already inside `bodyN`; do not rebuild fresh helper
+  copies of the anchor.
+  For replacement / transform targets, give the target a FULL anchor position.
+  Do not rely on only one-axis placement such as a bare `align_to(..., LEFT)`
+  or `match_x(...)` when the other axis is not clearly fixed.
+
+Repair discipline:
+- Make the smallest defensible change that removes the flagged issue.
+- Do NOT rewrite unrelated pages.
+- Do NOT turn a symbolic label into a sentence block unless the report says it
+  was misclassified.
+- If a persistent note/takeaway/prompt appears after `fit_body(...)`, fold it
+  back into the planned body layout instead of leaving it as a floating overlay.
+
+Output ONLY the corrected Python code inside a ```python``` block.
+"""
+)
+
 _SYSTEM_IMPROVE = (
 _CLAUDE_REVIEW_NOTICE
     + """\
@@ -874,6 +948,11 @@ Specifically, you MUST preserve:
 - The section-start cue followed by clear long page titles, without dual-title overlap.
 - The bottom subtitle module when present, and add it if the scene lacks a
     clear subtitle band during explanations.
+- Only confirmed `hard_bug` findings justify rebuilding an affected layout block
+  or splitting a page.
+- `soft_layout_note` findings are local polish only: spacing, alignment,
+  shortening a line slightly, or repositioning arrows/labels.
+- Do NOT perform structural rewrites in response to soft notes alone.
 
 Do NOT simplify the teaching just to avoid overlap.  Instead, fix the overlap
 by adjusting positions and sizes.
@@ -933,6 +1012,15 @@ RULE #2: Fix visual bugs surgically
   other dependent objects drifting away from the graph/node/panel they belong
   to, rebuild them so they share the same positioning lifecycle as the parent
   visual block. Do NOT patch this with raw absolute shifts.
+- If keyframe screenshots show floating dots, point rows, threshold guides, or
+  other non-text markers detached from the axes / graph / number line they are
+  supposed to live on, rebuild them from explicit anchors such as
+  `axes.c2p(...)`, `graph.point_from_proportion(...)`, or fitted object-edge
+  anchors. Do NOT leave them on ad-hoc coordinates.
+- If a line, plot, dot, point row, or marker was created from an axes / graph
+  anchor before `fit_body(...)`, but was not included in the same fitted block,
+  rebuild the page so that object either joins the fitted visual block or is
+  recreated only after fitting from the final on-screen anchor.
 - If a section currently appears as a full finished page before the narration
   explains it, rebuild it as a staged reveal: keep the layout stable, but let
   labels, formulas, bullets, and takeaways appear only when that beat is
@@ -1057,7 +1145,28 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
             if name:
                 dimension_map[name] = dim
 
+    hard_bug_issues = []
+    soft_layout_issues = []
+    for issue in eval_report.get("issues", []):
+        if not isinstance(issue, dict):
+            continue
+        taxonomy = str(issue.get("taxonomy", "")).strip()
+        if taxonomy == "hard_bug":
+            hard_bug_issues.append(issue)
+        elif taxonomy == "soft_layout_note":
+            soft_layout_issues.append(issue)
+
     lines.append("### Problem summary from evaluation dimensions:\n")
+    if hard_bug_issues:
+        lines.append(
+            "Repair policy: only confirmed `hard_bug` issues may justify rebuilding an affected local page block.\n"
+            "Do NOT rewrite the whole lesson structure unless a hard bug truly requires it.\n"
+        )
+    else:
+        lines.append(
+            "Repair policy: no confirmed `hard_bug` issues were found.\n"
+            "Keep the existing page structure and teaching flow intact. Only apply local polish for soft notes.\n"
+        )
 
     visual_dim = dimension_map.get("Visual Quality")
     if visual_dim:
@@ -1068,9 +1177,9 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
         if overlap and overlap_score is not None and overlap_score < 0.70:
             lines.append(
                 f"**VISUAL QUALITY / OVERLAP (score {overlap_score:.2f})**: {_metric_note(overlap)}\n"
-                "  -> Visual elements are colliding, occluding text, or pushing off canvas.\n"
-                "  -> FIX: reduce simultaneous objects, increase spacing, and split crowded beats into more pages.\n"
-                "  -> Use staged FadeOut/FadeIn so old content leaves before new content enters.\n"
+                "  -> Use this only as a diagnostic hint.\n"
+                "  -> Trust the confirmed issue inventory below over this aggregate score.\n"
+                "  -> Do not restructure the whole scene from this metric alone.\n"
             )
 
         layout = visual_metrics.get("layout")
@@ -1078,9 +1187,8 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
         if layout and layout_score is not None and layout_score < 0.60:
             lines.append(
                 f"**VISUAL QUALITY / LAYOUT (score {layout_score:.2f})**: {_metric_note(layout)}\n"
-                "  -> The frame is too dense or poorly organized.\n"
-                "  -> FIX: show fewer objects at once, keep one clear focal region, and avoid squeezing two heavy panels into one shot.\n"
-                "  -> Simplify the figure itself when possible: remove unnecessary branches, labels, copies, arrows, or decorative blocks that do not teach the current beat.\n"
+                "  -> Treat this as a soft diagnostic only.\n"
+                "  -> Do not split pages or rebuild the whole layout from this score alone.\n"
             )
 
         animation = visual_metrics.get("animation_continuity")
@@ -1145,16 +1253,32 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
                 "  -> FIX: align spoken beats with visual reveals, avoid long stretches of speech with static visuals, and avoid large visual jumps before narration catches up.\n"
             )
 
-    for issue in eval_report.get("issues", []):
-        vlm_reason = issue.get("vlm_reason", "")
-        cv_reason = issue.get("cv_reason", "")
-        if vlm_reason:
-            lines.append(f"\n### VLM reviewer said:\n\"{vlm_reason}\"\n")
-        if cv_reason:
-            lines.append(f"CV analysis: {cv_reason}\n")
-        tr = issue.get("time_range", "")
-        if tr:
-            lines.append(f"Time range affected: {tr}\n")
+    if hard_bug_issues:
+        lines.append("\n### Confirmed hard bugs to fix:\n")
+        for issue in hard_bug_issues:
+            desc = str(issue.get("description") or issue.get("vlm_reason") or issue.get("cv_reason") or "").strip()
+            severity = str(issue.get("severity", "high")).strip()
+            tr = str(issue.get("time_range", "")).strip()
+            conf = issue.get("confidence", issue.get("vlm_confidence"))
+            lines.append(
+                f"- HARD BUG ({severity}, confidence={conf}): {desc}\n"
+                f"  -> Time range: {tr}\n"
+                "  -> FIX: repair this concrete bug locally. Rebuild only the affected block/page if necessary, while preserving the overall teaching flow.\n"
+            )
+
+    if soft_layout_issues:
+        lines.append("\n### Soft layout notes:\n")
+        for issue in soft_layout_issues:
+            desc = str(issue.get("description") or issue.get("vlm_reason") or issue.get("cv_reason") or "").strip()
+            severity = str(issue.get("severity", "medium")).strip()
+            tr = str(issue.get("time_range", "")).strip()
+            conf = issue.get("confidence", issue.get("vlm_confidence"))
+            lines.append(
+                f"- SOFT NOTE ({severity}, confidence={conf}): {desc}\n"
+                f"  -> Time range: {tr}\n"
+                "  -> FIX: apply only local polish such as spacing, alignment, shortening text slightly, or repositioning arrows/labels.\n"
+                "  -> Do NOT split pages, repack the whole layout, or rewrite the lesson structure because of this note.\n"
+            )
 
     return "\n".join(lines)
 
@@ -1299,7 +1423,7 @@ class CodeGenAgent:
     def __init__(
         self,
         api_key: str | LLMConfig,
-        base_url: str = "https://api.tabcode.cc/openai",
+        base_url: str = "https://api2.tabcode.cc/openai",
         model: str = "gpt-5.4",
     ):
         if isinstance(api_key, LLMConfig):
@@ -1375,6 +1499,10 @@ class CodeGenAgent:
             "Use blocks as the page layout units, place those blocks explicitly inside that page's bodyN, and arrange leaf objects inside each block. "
             "Use `self.show_section_badge_once(...)` only at the start of a section, then use `self.make_page_title(...)` or `self.fit_to_top_band(...)` for the long top title of each page. "
             "Call `self.fit_body(bodyN, ...)` exactly once for that page's bodyN. Keep each page visually stable after it appears. "
+            "Any non-text geometric object that is supposed to relate to another visual structure must have a clean anchor or coordinate-system source, and it must share the same positioning lifecycle as that anchor, whether it is created before or after `fit_body(...)`. "
+            "Use anchors such as `axes.c2p(...)`, `graph.point_from_proportion(...)`, `obj.get_center()`, `obj.get_right()`, `obj.get_corner(...)`, `next_to(anchor, ...)`, or `move_to(anchor)`. "
+            "Do not leave arrows, dots, point rows, threshold guides, icons, or replacement targets on floating raw coordinates or one-axis-only placement. "
+            "If geometry is created from an anchor before `fit_body(...)`, either include it in the same fitted visual block, rebuild it after fitting, or make it dynamically follow the anchor. "
             "If you create dependent geometry after `fit_body(...)`, build it from the same fitted anchor instance already inside bodyN; do not call a helper that rebuilds a fresh axes/graph/layout copy just to obtain replacement lines, dots, labels, or rectangles. "
             "Use `next_to(...)` only for symbolic labels or non-text geometric overlays; all sentence-like teaching text must be real body blocks. "
             "Respect font floors: titles >= 28, body sentence text >= 20, secondary explanatory text >= 18, formulas >= 24, symbolic labels >= 16. "
@@ -1405,6 +1533,27 @@ class CodeGenAgent:
             ),
         }]
         raw = self._call(_SYSTEM_FIX, content)
+        return _extract_code(raw)
+
+    def fix_from_code_eval(
+        self,
+        code: str,
+        code_eval_report: Dict,
+        output_language: str = "en",
+    ) -> str:
+        """Fix code based on the pre-render code-eval report."""
+        content: list = [{
+            "type": "input_text",
+            "text": (
+                _build_output_language_prompt(output_language)
+                + "\n\n"
+                + f"## Original code\n```python\n{code}\n```\n\n"
+                + "## Pre-render code_eval report\n```json\n"
+                + json.dumps(code_eval_report, ensure_ascii=False, indent=2)
+                + "\n```"
+            ),
+        }]
+        raw = self._call(_SYSTEM_CODE_EVAL_FIX, content)
         return _extract_code(raw)
 
     def narrate(self, code: str, request_text: str, output_language: str = "en") -> List[str]:

@@ -20,6 +20,10 @@ from typing import Dict, List, Optional, Tuple
 class CVConfig:
     """Parameters for per-frame CV feature extraction."""
 
+    # --- Canvas partitioning ---
+    exclude_subtitle_band: bool = True
+    subtitle_safe_ratio: float = 0.10      # bottom 10% is reserved for subtitles
+
     # --- HSV masks (text / solid / dark) ---
     text_max_sat: int = 48
     text_min_val: int = 145
@@ -32,6 +36,7 @@ class CVConfig:
 
     # --- Frame-level candidate thresholds ---
     candidate_min_pixels: int = 90
+    enable_hsv_text_overlap_candidate: bool = False
     change_diff_thresh: float = 16.0
     motion_diff_thresh: float = 12.0
     motion_active_pixels: int = 30
@@ -66,6 +71,7 @@ class CVConfig:
     ocr_workers: int = 4                   # OCR thread workers for post-pass extraction
 
     # --- Layout density grid ---
+    enable_layout_density_eval: bool = False
     layout_grid_rows: int = 6
     layout_grid_cols: int = 8
     layout_density_warn: float = 0.60       # cell occupancy warning threshold
@@ -146,7 +152,7 @@ class VLMConfig:
     provider: str = "openai"                # openai | zhipu | local
     model: str = "gpt-5.4"
     api_key: Optional[str] = None           # will be filled at runtime / CLI
-    base_url: Optional[str] = "https://api.tabcode.cc/openai"  # custom endpoint
+    base_url: Optional[str] = "https://api2.tabcode.cc/openai"  # custom endpoint
     temperature: float = 0.0
     max_tokens: int = 1024
     max_segments: int = 0                   # 0 = no limit

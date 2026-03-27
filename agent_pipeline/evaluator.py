@@ -47,7 +47,7 @@ def evaluate(
     output_dir: Path,
     *,
     api_key: str,
-    base_url: str = "https://api.tabcode.cc/openai",
+    base_url: str = "https://api2.tabcode.cc/openai",
     model: str = "gpt-5.4",
     frame_step: Optional[int] = None,
     skip_vlm: bool = False,
@@ -115,6 +115,4 @@ def evaluate(
         "overall_passed": False,
         "dimensions": [],
         "issues": [],
-        "cv_fail_segments": [],
-        "vlm_fail_segments": [],
     }
