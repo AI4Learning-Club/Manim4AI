@@ -17,11 +17,10 @@ from __future__ import annotations
 
 import csv
 import math
-import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -871,9 +870,7 @@ def classify_segment(sf: SegmentFeatures, cfg: CVConfig) -> Tuple[str, float, st
     bbox_fr = sf.bbox_overlap_frame_ratio
     bbox_iou = sf.bbox_max_iou_max
     fg_max = sf.fg_overlap_max
-    fg_avg = sf.fg_overlap_avg
     toe_max = sf.text_on_edge_max
-    toe_avg = sf.text_on_edge_avg
 
     # --- Rendering artifact detected by OCR ---
     if ocr_af >= 2:

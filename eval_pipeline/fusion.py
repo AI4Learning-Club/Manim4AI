@@ -28,6 +28,7 @@ from .audio_features import AlignmentMetrics, AudioMetrics
 from .config import ExternalMeta, FusionConfig
 from .cv_features import GlobalCVMetrics, SegmentFeatures
 from .vlm_judge import (
+    AnchorBindingVerdict,
     AVAlignmentVerdict,
     OverlapReviewVerdict,
     SemanticCoherenceVerdict,
@@ -286,6 +287,59 @@ def _collect_issues(
     return issues
 
 
+def _collect_anchor_binding_issues(
+    anchor_binding_review: Optional[AnchorBindingVerdict],
+) -> List[Dict]:
+    if not anchor_binding_review:
+        return []
+
+    issues: List[Dict] = []
+    severity_map = {
+        "minor": ("soft_layout_note", "low", 0.65),
+        "moderate": ("hard_bug", "medium", 0.8),
+        "severe": ("hard_bug", "high", 0.92),
+    }
+
+    for idx, raw_issue in enumerate(anchor_binding_review.issues, start=1):
+        description = str(raw_issue.get("description", "")).strip()
+        if not description:
+            continue
+
+        anchor_taxonomy = str(raw_issue.get("taxonomy", "detached_label")).strip()
+        raw_severity = str(raw_issue.get("severity", "moderate")).strip().lower()
+        taxonomy, severity, confidence = severity_map.get(
+            raw_severity, ("hard_bug", "medium", 0.8)
+        )
+        try:
+            frame_index = int(raw_issue.get("frame_index", -1))
+        except (TypeError, ValueError):
+            frame_index = -1
+
+        frame_label = f"keyframe_{frame_index:02d}" if frame_index >= 0 else f"keyframe_{idx:02d}"
+        issues.append(
+            {
+                "issue_id": f"anchor_binding_issue_{idx:02d}",
+                "segment_id": "__whole_video__",
+                "time_range": frame_label,
+                "cv_label": "anchor_binding_review",
+                "cv_score": round(anchor_binding_review.binding_issue_ratio, 3),
+                "cv_reason": anchor_binding_review.reason,
+                "taxonomy": taxonomy,
+                "severity": severity,
+                "description": f"[{anchor_taxonomy}] {description}",
+                "confidence": confidence,
+                "source": "vlm",
+                "anchor_taxonomy": anchor_taxonomy,
+                "frame_index": frame_index,
+                "vlm_verdict": "FAIL" if taxonomy == "hard_bug" else "PASS",
+                "vlm_confidence": confidence,
+                "vlm_reason": anchor_binding_review.reason,
+            }
+        )
+
+    return issues
+
+
 # =====================================================================
 # Main fusion – builds paper Table 1 report
 # =====================================================================
@@ -300,6 +354,7 @@ def compute_report(
     alignment_metrics: Optional[AlignmentMetrics] = None,
     task_correctness: Optional[TaskCorrectnessVerdict] = None,
     av_alignment_verdict: Optional[AVAlignmentVerdict] = None,
+    anchor_binding_review: Optional[AnchorBindingVerdict] = None,
     overlap_review: Optional[OverlapReviewVerdict] = None,
     visual_coverage: Optional[VisualCoverageVerdict] = None,
     semantic_coherence: Optional[SemanticCoherenceVerdict] = None,
@@ -407,6 +462,20 @@ def compute_report(
         )
         overlap_source = "cv+vlm"
 
+    # --- Anchor Binding: whole-video VLM keyframe review ---
+    if anchor_binding_review:
+        s_anchor = max(0.0, 1.0 - anchor_binding_review.binding_issue_ratio)
+        anchor_details = (
+            f"binding_issue_ratio={anchor_binding_review.binding_issue_ratio:.3f}, "
+            f"issue_frames={anchor_binding_review.binding_issue_frames}, "
+            f"issues={len(anchor_binding_review.issues)}"
+        )
+        anchor_source = "vlm"
+    else:
+        s_anchor = 1.0
+        anchor_details = "anchor binding review skipped"
+        anchor_source = "n/a"
+
     # --- Animation Continuity: CV + VLM segment review ---
     anim_details = (
         f"motion_discontinuities={global_cv.motion_discontinuity_count}, "
@@ -448,17 +517,21 @@ def compute_report(
         consistency_details = "no teaching plan or coherence check — skipped"
         consistency_source = "n/a"
 
+    semantic_visual_weight = 0.5 * fusion_cfg.w_vlm_semantic
+    anchor_binding_weight = 0.5 * fusion_cfg.w_vlm_semantic
     layout_weight = 0.0
     visual_agg = (
         fusion_cfg.w_overlap * s_overlap +
         layout_weight * s_layout +
         fusion_cfg.w_animation * s_anim +
         fusion_cfg.w_color_consistency * s_color +
-        fusion_cfg.w_vlm_semantic * s_consistency +
+        semantic_visual_weight * s_consistency +
+        anchor_binding_weight * s_anchor +
         fusion_cfg.w_rendering * s_render
     )
     visual_w = (fusion_cfg.w_overlap + layout_weight + fusion_cfg.w_animation +
-                fusion_cfg.w_color_consistency + fusion_cfg.w_vlm_semantic + fusion_cfg.w_rendering)
+                fusion_cfg.w_color_consistency + semantic_visual_weight +
+                anchor_binding_weight + fusion_cfg.w_rendering)
     visual_score = visual_agg / max(visual_w, 1e-6)
 
     dim_visual = DimensionResult(
@@ -490,6 +563,13 @@ def compute_report(
                 description="Whether the video covers all sections of the teaching plan",
                 details=consistency_details,
                 source=consistency_source,
+            ),
+            MetricResult(
+                name="anchor_binding", scale="continuous",
+                value=round(s_anchor, 4),
+                description="Whether labels, callouts, arrows, and highlighted ranges stay attached to the intended targets",
+                details=anchor_details,
+                source=anchor_source,
             ),
         ],
     )
@@ -641,7 +721,8 @@ def compute_report(
         "layout": 0.0,
         "animation": fusion_cfg.w_animation,
         "color_consistency": fusion_cfg.w_color_consistency,
-        "vlm_semantic": fusion_cfg.w_vlm_semantic,
+        "vlm_semantic": semantic_visual_weight,
+        "anchor_binding": anchor_binding_weight,
         "audio_quality": fusion_cfg.w_audio_quality,
         "av_alignment": fusion_cfg.w_av_alignment,
     }
@@ -652,6 +733,7 @@ def compute_report(
         "animation": s_anim,
         "color_consistency": s_color,
         "vlm_semantic": s_consistency,
+        "anchor_binding": s_anchor,
         "audio_quality": s_audio,
         "av_alignment": s_align,
     }
@@ -667,7 +749,7 @@ def compute_report(
     ]
 
     # Issues
-    report.issues = _collect_issues(segments, verdicts)
+    report.issues = _collect_issues(segments, verdicts) + _collect_anchor_binding_issues(anchor_binding_review)
 
     return report
 

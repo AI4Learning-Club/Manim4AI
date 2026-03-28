@@ -25,8 +25,10 @@ COMMON RUNTIME SAFETY RULES (shared across generate / fix / improve):
 
 THEME & COLOR SAFETY:
 - You MUST import our custom base class from `colortest.ai4learning_theme`.
-- Your main Scene class MUST inherit from `AI4LearningBaseScene`, NOT `Scene`.
-- When a selected theme is provided, the Scene class MUST declare
+- New code MUST use a Scene Pack, not a single master scene.
+- The file MUST define `class LessonBase(AI4LearningBaseScene):`.
+- Every renderable wrapper scene MUST inherit from `LessonBase`, NOT `Scene`.
+- When a selected theme is provided, `LessonBase` MUST declare
   `theme_id = "selected_theme_id"` at class scope.
 - NEVER use pure `WHITE` or pure black body text.
 - Do NOT hardcode hex colors for text, formulas, panels, or shapes.
@@ -44,7 +46,7 @@ THEME & COLOR SAFETY:
   `formula_highlight_secondary`, `warning_color`, `success_color`,
   `panel_stroke`, `panel_fill_color`, `panel_fill_opacity`,
   `border_color`, and `grid_or_axis_color`.
-- If the scene already sets `theme_id = "..."`, preserve that theme selection.
+- If `LessonBase` already sets `theme_id = "..."`, preserve that theme selection.
 - Do NOT replace `self.theme_token(...)`, `self.get_text(...)`,
   `self.get_secondary_text(...)`, `self.get_muted_text(...)`,
   `self.get_math(...)`, `self.get_highlighted_math(...)`,
@@ -102,6 +104,53 @@ LANGUAGE / API SAFETY:
   `self.get_math(...)`, or `self.theme_token("text_main")` /
   `self.theme_token("formula_base")` directly.
 
+CALLBACK / DEEPCOPY SAFETY:
+- Never pass a bound Scene method such as `self._position_func` or
+  `self.some_helper` into Manim objects that may store callbacks and later get
+  copied, including `axes.plot(...)`, `FunctionGraph(...)`,
+  `ParametricFunction(...)`, `always_redraw(...)`, and updater callbacks.
+- Avoid callbacks or lambdas that capture `self` when those callbacks are stored
+  on mobjects, graphs, or animations.
+- Bad pattern: `axes.plot(self._position_func, ...)`.
+- Bad pattern: `always_redraw(lambda: Dot(self.axes.c2p(...)))`.
+- Bad pattern: `mob.add_updater(lambda m: m.move_to(self.some_anchor(...)))`.
+- Prefer a module-level function, a `@staticmethod`, or a local pure function
+  that depends only on plain numeric values, not on `self`.
+- If you only need a static curve, compute it from a pure function and build
+  the mobject once. Do not keep a Scene-bound callback attached to the mobject.
+- If you truly need dynamic redraw behavior, the callback must avoid capturing
+  `self`; capture only stable numeric parameters or already-built anchor
+  mobjects, and rebuild from those.
+- Any callback stored on a mobject must remain deep-copy-safe. Never let it
+  close over the live `Scene`, renderer, audio client, locks, threads, or
+  other non-picklable runtime state.
+
+BLOCK BINDING SAFETY:
+- If a non-text dependent object is created before `fit_body(...)` and should
+  inherit the later scale/shift of a graph block, panel block, or other visual
+  container, immediately bind it with `self.bind_to_block(dependent, parent_block)`.
+- If several dependent objects share the same parent block, prefer
+  `self.bind_many_to_block(parent_block, obj1, obj2, obj3)`.
+- This helper is the DEFAULT way to keep dependent geometry attached to a block
+  without manually placing that geometry inside the block's layout tree.
+- Use block binding for dependent dots, secants, tangents, helper lines,
+  rectangles, bars, braces, highlights, icons, and similar geometry that
+  should simply follow the parent block's transform lifecycle.
+- Treat outputs of anchor-derived methods such as `axes.get_area(...)`,
+  `axes.get_riemann_rectangles(...)`, `axes.plot(...)`, and
+  `graph.get_secant_slope_group(...)` as dependent geometry too. If they are
+  not structural children of the fitted visual block, they must be explicitly
+  synchronized with `self.bind_to_block(...)`, `self.build_on_anchor(...)`, or
+  `self.bind_to_anchor(...)`.
+- If the object must be recomputed from live anchors rather than merely follow
+  the parent block's transform, use `self.build_on_anchor(...)` or
+  `self.bind_to_anchor(...)`.
+- `self.build_on_anchor(builder, ...)` is the DEFAULT helper for dependent
+  geometry whose shape or endpoints must be rebuilt from live anchors.
+- `self.bind_to_anchor(existing_mobject, builder, ...)` is the repair helper
+  when the dependent mobject already exists and now needs to stay synchronized
+  to its anchors.
+
 STATE / CLEARING SAFETY:
 - If the scene inherits from `AI4LearningBaseScene`, prefer
   `self.clear_scene_keep_bg()` over `FadeOut(Group(*self.mobjects))` so the
@@ -134,7 +183,126 @@ STAGED REVEAL SAFETY:
   finished slide that gets explained afterward.
 """
 
-_PAGE_BLOCK_LAYOUT_CONTRACT = """\
+_SCENE_PACK_OUTPUT_SUMMARY = """\
+- Output a Scene Pack in ONE Python file, not a single master scene.
+- The file MUST define a top-level `SCENE_MANIFEST` list in final playback order.
+- Every manifest `id` MUST be a stable snake_case identifier such as
+  `opening`, `task_difference`, `linear_regression`, or `closing`.
+- The file MUST define exactly one shared base class named
+  `LessonBase(AI4LearningBaseScene)`.
+- Put shared helpers and section methods on `LessonBase`.
+- The file MUST define renderable wrapper scenes named
+  `Segment00...Scene`, `Segment01...Scene`, and so on through the final segment.
+- Wrapper scene names MUST follow this stable pattern:
+  `Segment00OpeningScene`, `Segment01TaskDifferenceScene`,
+  `Segment02LinearRegressionScene`, and so on.
+- Every wrapper scene MUST inherit from `LessonBase`.
+- Every wrapper scene's `construct()` MUST contain exactly ONE direct call to
+  ONE section method on `self`, with no extra animation logic there.
+- Use stable section method names such as `opening_page()`,
+  `section_one_xxx()`, `section_two_xxx()`, and `closing_page()`.
+- Do NOT output a single master scene whose `construct()` calls multiple
+  section methods in sequence.
+"""
+
+_ANCHOR_LIFECYCLE_HARD_RULES = """\
+- Any non-text visual object whose position or shape is meant to relate to
+  another visual structure must have an explicit anchor or coordinate system,
+  and it must share the same positioning lifecycle as that anchor. This
+  applies both before and after `fit_body(...)`.
+- Treat outputs of anchor-derived methods such as `axes.get_area(...)`,
+  `axes.get_riemann_rectangles(...)`, `axes.plot(...)`, and
+  `graph.get_secant_slope_group(...)` as dependent geometry too.
+- Good anchor patterns include `axes.c2p(...)`,
+  `graph.point_from_proportion(...)`, `obj.get_center()`, `obj.get_right()`,
+  `obj.get_corner(...)`, `next_to(anchor, ...)`, `move_to(anchor)`, or helper
+  functions that consume the actual on-screen anchor instance and return
+  geometry for that exact anchor.
+- Bad pattern: a floating dot / point row / arrow / icon positioned by ad-hoc
+  raw coordinates or by only one-axis alignment when it is supposed to live on
+  an axes, graph, node, bar, or panel.
+- Also bad: create a line, plot, dot, point row, area, or shaded region from
+  `axes.c2p(...)`, `axes.plot(...)`, `axes.get_area(...)`, or another anchor
+  expression before `fit_body(...)`, but do not include that geometry inside
+  the same fitted `graph_block` / `bodyN`. Then the anchor moves during
+  fitting while the geometry stays behind.
+- Preferred fix: call `self.bind_to_block(dependent, parent_block)` immediately
+  after creating that dependent geometry, or use `self.bind_many_to_block(...)`
+  for several related objects.
+- If the dependent geometry must be recomputed from the fitted anchor rather
+  than merely inherit the parent block transform, prefer
+  `self.build_on_anchor(...)` or `self.bind_to_anchor(...)`.
+- If you create dependent geometry after `fit_body(...)`, compute it from the
+  SAME fitted anchor instance that is already on screen inside `bodyN`, and
+  then immediately make the lifecycle explicit with
+  `self.bind_to_block(...)`, `self.build_on_anchor(...)`, or
+  `self.bind_to_anchor(...)` unless that geometry is inserted directly as a
+  structural child of the fitted visual block.
+- Hard rule: any anchor-dependent non-text object must satisfy one of these
+  two accepted lifecycle patterns:
+  1. it is a structural child of the fitted visual block that owns the anchor,
+  2. it is explicitly synchronized with `self.bind_to_block(...)`,
+     `self.build_on_anchor(...)`, or `self.bind_to_anchor(...)`.
+- Never precompute dependent geometry from one layout state and then fit
+  `bodyN` afterward.
+- If a helper is used after `fit_body(...)`, it must accept the fitted anchor
+  as an argument and return only the dependent geometry tied to that anchor
+  (for example `build_secant_on_axes(axes, x2)`), rather than recreating the
+  full visual block.
+"""
+
+_SCENE_PACK_CONTRACT = (
+    """\
+SCENE PACK CONTRACT:
+"""
+    + _SCENE_PACK_OUTPUT_SUMMARY
+    + """\
+- Every `SCENE_MANIFEST` entry MUST be a dictionary with keys:
+  `id`, `scene`, and `method`.
+- Section methods MUST live on `LessonBase`.
+- Use `opening_page()` for the opening segment and `closing_page()` for the
+  closing segment.
+- Use numbered section names such as `section_one_task_difference()`,
+  `section_two_linear_regression()`, `section_three_...()` for interior segments.
+- Required wrapper pattern:
+  ```python
+  class Segment00OpeningScene(LessonBase):
+      def construct(self):
+          self.opening_page()
+  ```
+- The `scene` value in each manifest entry MUST match a real wrapper class name.
+- The `method` value in each manifest entry MUST match a real section method on
+  `LessonBase`.
+- Manifest order MUST match final playback order and the wrapper numbering.
+- Do NOT hide the full lesson flow inside one mega `construct()`.
+"""
+)
+
+_SCENE_PACK_REPAIR_CONTRACT = """\
+SCENE PACK REPAIR / PRESERVATION CONTRACT:
+- You MUST preserve the top-level `SCENE_MANIFEST`.
+- You MUST preserve the shared `LessonBase` class.
+- You MUST preserve the wrapper scenes referenced by `SCENE_MANIFEST`.
+- NEVER collapse a multi-scene Scene Pack back into a single master scene.
+- NEVER delete `SCENE_MANIFEST`, `LessonBase`, or the wrapper scene layer.
+- If you add or split pages, do that INSIDE the existing segment method on
+  `LessonBase`; do not create ad-hoc extra renderable scenes for page splits.
+- Do NOT change the semantic order of `SCENE_MANIFEST` unless the user
+  explicitly asks to reorder sections.
+- Do NOT rename manifest ids, wrapper scenes, or section methods unless a
+  broken reference absolutely requires it. If you must repair such a reference,
+  update `SCENE_MANIFEST`, `LessonBase`, and the wrapper scene call consistently.
+- Keep the stable naming scheme:
+  - base class: `LessonBase`
+  - wrapper scenes: `Segment00...Scene`, `Segment01...Scene`, ...
+  - opening method: `opening_page()`
+  - internal section methods: `section_one_xxx()`, `section_two_xxx()`, ...
+  - closing method: `closing_page()`
+  - manifest ids: stable snake_case
+"""
+
+_PAGE_BLOCK_LAYOUT_CONTRACT = (
+    """\
 PAGE / BODY AUTHORING CONTRACT:
 - A section may contain multiple pages.
 - End one page with `self.clear_scene_keep_bg()`, then define the next page
@@ -191,40 +359,9 @@ PAGE / BODY AUTHORING CONTRACT:
 - `bodyN` should make strong use of the available body band.
 - If a page is dense, do NOT leave a large unused lower-body area while the
   upper half is crowded. Expand downward or split into the next page.
-- Any non-text visual object whose position or shape is meant to relate to
-  another visual structure must have an explicit anchor or coordinate system,
-  and it must share the same positioning lifecycle as that anchor. This applies
-  both before and after `fit_body(...)`. This includes secants,
-  tangents, helper lines, shaded regions, rectangles, bars, dots on a curve,
-  point rows, icons attached to nodes, highlights, braces, arrows,
-  connectors, threshold guides, and symbolic labels.
-- Good anchor patterns include `axes.c2p(...)`, `graph.point_from_proportion(...)`,
-  `obj.get_center()`, `obj.get_right()`, `obj.get_corner(...)`,
-  `next_to(anchor, ...)`, `move_to(anchor)`, or helper functions that consume
-  the actual on-screen anchor instance and return geometry for that exact
-  anchor.
-- Bad pattern: a floating dot / point row / arrow / icon positioned by ad-hoc
-  raw coordinates or by only one-axis alignment when it is supposed to live on
-  an axes, graph, node, bar, or panel.
-- Also bad: create a line, plot, dot, or point row from `axes.c2p(...)`,
-  `axes.plot(...)`, or another anchor expression before `fit_body(...)`, but do
-  not include that geometry inside the same fitted `graph_block` / `bodyN`.
-  Then the anchor moves during fitting while the geometry stays behind.
-- When you choose option (2) and create a dependent object after
-  `fit_body(...)`, compute it from the SAME anchor instance that is already on
-  screen inside the fitted `bodyN`. Do NOT rebuild a fresh copy of the anchor
-  (for example a new `Axes`, graph block, or helper return value) and then
-  borrow children from that stale copy.
-- A dependent object must be handled in one of three ways:
-  1. include it in the same visual block inside `bodyN` before `fit_body(...)`,
-  2. create it only after `bodyN` has reached final position, or
-  3. make it dynamically follow the anchor if that anchor may still move.
-- Never precompute dependent geometry from one layout state and then fit
-  `bodyN` afterward.
-- If a helper is used after `fit_body(...)`, it must accept the fitted anchor
-  as an argument and return only the dependent geometry tied to that anchor
-  (for example `build_secant_on_axes(axes, x2)`), rather than recreating the
-  full visual block.
+"""
+    + _ANCHOR_LIFECYCLE_HARD_RULES
+    + """\
 - After a page starts, do NOT refit or reposition the whole page. If a new
   persistent element would change the page structure, start a new page instead.
 
@@ -299,6 +436,7 @@ body4 = Group(new_visual_block, new_note_block).arrange(DOWN, buff=0.24)
 self.fit_body(body4, max_width=11.6, center=UP * 0.15)
 ```
 """
+)
 
 _VISUAL_CLARITY_CONTRACT = """\
 VISUAL CLARITY / SIMPLICITY CONTRACT:
@@ -448,6 +586,10 @@ PART 2: MANIM CODE RULES (avoid crashes and visual bugs)
 
 """
     + _COMMON_RUNTIME_SAFETY_RULES
+    + "\n\n"
+    + _SCENE_PACK_CONTRACT
+    + "\n\n"
+    + _SCENE_PACK_REPAIR_CONTRACT
     + "\n\n"
     + _PAGE_BLOCK_LAYOUT_CONTRACT
     + "\n\n"
@@ -748,8 +890,10 @@ REVEAL RHYTHM RULES:
   dumping all content on screen at once.
 
 VOICE NARRATION (audio-synced pacing):
-- Your Scene class MUST inherit from `AI4LearningBaseScene`.
-  Write: `class MyScene(AI4LearningBaseScene):` instead of `class MyScene(Scene):`.
+- New code MUST follow the Scene Pack contract.
+- Define `class LessonBase(AI4LearningBaseScene):`.
+- Renderable wrapper scenes must inherit from `LessonBase`, and each wrapper
+  `construct()` should simply call its one section method.
 - Use `dur = self.speak("旁白文本")` to play TTS audio.
   It returns the audio duration in seconds.  Use this to pace animations:
 
@@ -843,6 +987,8 @@ shared runtime safety rules below and fix every violation first:
 """
     + _COMMON_RUNTIME_SAFETY_RULES
     + "\n\n"
+    + _SCENE_PACK_CONTRACT
+    + "\n\n"
     + _PAGE_BLOCK_LAYOUT_CONTRACT
     + "\n\n"
     + _VISUAL_CLARITY_CONTRACT
@@ -851,6 +997,11 @@ shared runtime safety rules below and fix every violation first:
 STEP 2 - Read the error log and fix any remaining issues:
 - Attribute errors -> check Manim CE v0.18+ API.
 - Type errors -> check argument types.
+- `TypeError: cannot pickle '_thread.lock' object` during `Create(...)`,
+  `FadeIn(...)`, `Transform(...)`, or graph animation usually means a mobject
+  captured a bound Scene method or another callback that closes over `self`.
+  Replace it with a pure function / staticmethod / local function that does
+  NOT capture `self`, then rebuild the affected mobject.
 - `get_tangent_line` does NOT accept `color` keyword. Create tangent manually:
     tangent = Line(start, end, color=GREEN)
 - `VMobject` does NOT provide `get_tangent_vector(...)` here. Use
@@ -859,6 +1010,7 @@ STEP 2 - Read the error log and fix any remaining issues:
 - `unexpected keyword argument` -> remove the bad kwarg or replace the method.
 
 Preserve the original animation intent.
+Preserve the Scene Pack architecture while fixing.
 Output ONLY the corrected Python code inside a ```python``` block.
 """
 )
@@ -880,6 +1032,10 @@ You MUST follow these layout contracts while fixing:
 """
     + _COMMON_RUNTIME_SAFETY_RULES
     + "\n\n"
+    + _SCENE_PACK_CONTRACT
+    + "\n\n"
+    + _SCENE_PACK_REPAIR_CONTRACT
+    + "\n\n"
     + _PAGE_BLOCK_LAYOUT_CONTRACT
     + """
 
@@ -892,21 +1048,10 @@ Focus only on these three code-eval categories:
   spacing, or alignment when the current `next_to(...)` placement looks likely
   to collide with nearby objects.
 - `non_text_anchor_lifecycle`:
-  any non-text geometric object that is supposed to relate to another visual
-  structure must have a FULL anchor or coordinate-system source, and it must
-  share the same positioning lifecycle as that anchor, whether it is created
-  before or after `fit_body(...)`.
-  Use anchors such as `axes.c2p(...)`, `graph.point_from_proportion(...)`,
-  `obj.get_center()`, `obj.get_right()`, `obj.get_corner(...)`,
-  `next_to(anchor, ...)`, or `move_to(anchor)`.
-  Do not leave dots, point rows, arrows, icons, threshold guides, bars, or
-  transform targets on floating raw coordinates.
-  If geometry is created from an anchor before `fit_body(...)`, either include
-  that geometry inside the same fitted visual block, rebuild it after fitting,
-  or make it dynamically follow the anchor.
-  If the object is created after `fit_body(...)`, compute it from the SAME
-  fitted anchor instance already inside `bodyN`; do not rebuild fresh helper
-  copies of the anchor.
+"""
+    + "  "
+    + _ANCHOR_LIFECYCLE_HARD_RULES.replace("\n- ", "\n  - ")
+    + """\
   For replacement / transform targets, give the target a FULL anchor position.
   Do not rely on only one-axis placement such as a bare `align_to(..., LEFT)`
   or `match_x(...)` when the other axis is not clearly fixed.
@@ -918,6 +1063,8 @@ Repair discipline:
   was misclassified.
 - If a persistent note/takeaway/prompt appears after `fit_body(...)`, fold it
   back into the planned body layout instead of leaving it as a floating overlay.
+- Keep all changes inside the existing segment methods unless a broken Scene Pack
+  reference forces a minimal consistency repair.
 
 Output ONLY the corrected Python code inside a ```python``` block.
 """
@@ -1011,7 +1158,9 @@ RULE #2: Fix visual bugs surgically
 - If keyframe screenshots show lines, rectangles, icons, labels, highlights, or
   other dependent objects drifting away from the graph/node/panel they belong
   to, rebuild them so they share the same positioning lifecycle as the parent
-  visual block. Do NOT patch this with raw absolute shifts.
+  visual block. Prefer `self.bind_to_block(...)` / `self.bind_many_to_block(...)`
+  when the object should inherit the parent block's transform. Do NOT patch
+  this with raw absolute shifts.
 - If keyframe screenshots show floating dots, point rows, threshold guides, or
   other non-text markers detached from the axes / graph / number line they are
   supposed to live on, rebuild them from explicit anchors such as
@@ -1020,7 +1169,8 @@ RULE #2: Fix visual bugs surgically
 - If a line, plot, dot, point row, or marker was created from an axes / graph
   anchor before `fit_body(...)`, but was not included in the same fitted block,
   rebuild the page so that object either joins the fitted visual block or is
-  recreated only after fitting from the final on-screen anchor.
+  explicitly synchronized with `self.bind_to_block(...)`,
+  `self.build_on_anchor(...)`, or `self.bind_to_anchor(...)`.
 - If a section currently appears as a full finished page before the narration
   explains it, rebuild it as a staged reveal: keep the layout stable, but let
   labels, formulas, bullets, and takeaways appear only when that beat is
@@ -1040,6 +1190,10 @@ RULE #3: Never introduce new crashes
 
 """
     + _COMMON_RUNTIME_SAFETY_RULES
+    + "\n\n"
+    + _SCENE_PACK_CONTRACT
+    + "\n\n"
+    + _SCENE_PACK_REPAIR_CONTRACT
     + "\n\n"
     + _PAGE_BLOCK_LAYOUT_CONTRACT
     + "\n\n"
@@ -1067,6 +1221,10 @@ RULE #3: Never introduce new crashes
     meaning; prefer clean outlines or no panel at all.
 - If an arrow remains ambiguous after repositioning, remove it and explain the
     target using a nearby label or a separate follow-up beat instead.
+- Preserve `SCENE_MANIFEST`, `LessonBase`, and the wrapper scene layer while
+  improving the visuals.
+- If a section needs more pages, add those pages inside the existing segment
+  method instead of changing manifest order or collapsing scenes together.
 
 Output ONLY the improved Python code in a ```python``` block.
 """
@@ -1207,6 +1365,15 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
                 f"**VISUAL QUALITY / CONTENT CONSISTENCY (score {consistency_score:.2f})**: {_metric_note(consistency)}\n"
                 "  -> The video does not clearly cover the intended teaching sections or drifts away from the lesson plan.\n"
                 "  -> FIX: make each scene map to a teaching-plan section and ensure every key takeaway appears on screen explicitly.\n"
+            )
+
+        anchor_binding = visual_metrics.get("anchor_binding")
+        anchor_binding_score = _as_float(anchor_binding.get("value")) if anchor_binding else None
+        if anchor_binding and anchor_binding_score is not None and anchor_binding_score < 0.70:
+            lines.append(
+                f"**VISUAL QUALITY / ANCHOR BINDING (score {anchor_binding_score:.2f})**: {_metric_note(anchor_binding)}\n"
+                "  -> Some labels, callouts, arrows, or highlighted ranges do not clearly match the thing they claim to annotate.\n"
+                "  -> FIX: bind annotations to the actual target geometry, recompute positions after layout shifts, and avoid free-floating explanation boxes that can drift away from their targets.\n"
             )
 
     task_dim = dimension_map.get("Task Correctness")
@@ -1369,7 +1536,8 @@ def _build_selected_theme_prompt(teaching_plan: Optional[Dict]) -> str:
         "## Selected theme for this run\n"
         + json.dumps(theme_summary, ensure_ascii=False, indent=2)
         + "\n\nThis theme choice is already fixed for the lesson.\n"
-        + f'- Your Scene class MUST set `theme_id = "{theme_id}"`.\n'
+        + f'- `LessonBase` MUST set `theme_id = "{theme_id}"`.\n'
+        + "- Set `theme_id` on `LessonBase`, not separately on each wrapper scene.\n"
         + "OVERRIDE any older legacy-palette examples in the generic prompt.\n"
         + "Respect the registered theme background treatment and contrast strategy already encoded in the theme pack.\n"
         + "Do not simulate a different mood by adding a new full-screen recolor overlay, replacing the background image, or hardcoding a separate palette on top of the selected theme.\n"
@@ -1493,17 +1661,18 @@ class CodeGenAgent:
             if theme_prompt:
                 prompt_parts.append(theme_prompt)
         prompt_parts.append(
+            "## Required output structure\n"
+            + _SCENE_PACK_OUTPUT_SUMMARY
+        )
+        prompt_parts.append(
             "## Implementation priority\n"
             "Plan each section as one or more stable pages. Compose each page before its first reveal. "
             "Each page must have exactly one fitted body root named body1, body2, body3, and so on. "
             "Use blocks as the page layout units, place those blocks explicitly inside that page's bodyN, and arrange leaf objects inside each block. "
             "Use `self.show_section_badge_once(...)` only at the start of a section, then use `self.make_page_title(...)` or `self.fit_to_top_band(...)` for the long top title of each page. "
             "Call `self.fit_body(bodyN, ...)` exactly once for that page's bodyN. Keep each page visually stable after it appears. "
-            "Any non-text geometric object that is supposed to relate to another visual structure must have a clean anchor or coordinate-system source, and it must share the same positioning lifecycle as that anchor, whether it is created before or after `fit_body(...)`. "
-            "Use anchors such as `axes.c2p(...)`, `graph.point_from_proportion(...)`, `obj.get_center()`, `obj.get_right()`, `obj.get_corner(...)`, `next_to(anchor, ...)`, or `move_to(anchor)`. "
-            "Do not leave arrows, dots, point rows, threshold guides, icons, or replacement targets on floating raw coordinates or one-axis-only placement. "
-            "If geometry is created from an anchor before `fit_body(...)`, either include it in the same fitted visual block, rebuild it after fitting, or make it dynamically follow the anchor. "
-            "If you create dependent geometry after `fit_body(...)`, build it from the same fitted anchor instance already inside bodyN; do not call a helper that rebuilds a fresh axes/graph/layout copy just to obtain replacement lines, dots, labels, or rectangles. "
+            + _ANCHOR_LIFECYCLE_HARD_RULES.replace("\n", " ")
+            + " "
             "Use `next_to(...)` only for symbolic labels or non-text geometric overlays; all sentence-like teaching text must be real body blocks. "
             "Respect font floors: titles >= 28, body sentence text >= 20, secondary explanatory text >= 18, formulas >= 24, symbolic labels >= 16. "
             "If a layout would force text below those floors, reallocate space or split the page instead of shrinking further. "

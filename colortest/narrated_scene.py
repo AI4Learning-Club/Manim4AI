@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import subprocess
+import weakref
+import numpy as np
 
 from manim import *
 
@@ -31,6 +33,8 @@ class NarratedScene(Scene):
     def setup(self):
         self._section_badge = None
         self._subtitle_mob = None
+        self._block_bindings = []
+        self._anchor_bindings = []
 
     def _audio_duration(self, fp: str, text: str) -> float:
         if _HAS_MUTAGEN:
@@ -150,7 +154,251 @@ class NarratedScene(Scene):
             group.scale_to_fit_height(max_height)
         if center is not None:
             group.move_to(center)
-        return self._clamp_vertical_band(group, top_limit=band_top, bottom_limit=band_bottom)
+        fitted = self._clamp_vertical_band(group, top_limit=band_top, bottom_limit=band_bottom)
+        self.sync_bound_blocks()
+        self.sync_bound_anchors()
+        return fitted
+
+    @staticmethod
+    def _binding_scale_factor(binding):
+        block = binding["block"]
+        old_width = max(float(binding["width"]), 1e-6)
+        old_height = max(float(binding["height"]), 1e-6)
+        ratios = []
+        if block.width > 1e-6:
+            ratios.append(float(block.width) / old_width)
+        if block.height > 1e-6:
+            ratios.append(float(block.height) / old_height)
+        if not ratios:
+            return 1.0
+        return sum(ratios) / len(ratios)
+
+    @staticmethod
+    def _sync_block_binding(binding):
+        mob = binding.get("mob")
+        block = binding.get("block")
+        if mob is None or block is None:
+            return
+
+        old_center = np.array(binding["center"], dtype=float)
+        new_center = np.array(block.get_center(), dtype=float)
+        scale = NarratedScene._binding_scale_factor(binding)
+        if abs(scale - 1.0) > 1e-6:
+            mob.scale(scale, about_point=old_center)
+        delta = new_center - old_center
+        if np.linalg.norm(delta) > 1e-8:
+            mob.shift(delta)
+
+        binding["center"] = new_center
+        binding["width"] = max(float(block.width), 1e-6)
+        binding["height"] = max(float(block.height), 1e-6)
+
+    @staticmethod
+    def _install_binding_updater(mob, binding, sync_fn):
+        def _follow_binding(bound_mob, dt=0, _binding=binding, _sync=sync_fn):
+            _sync(_binding)
+            return bound_mob
+
+        mob.add_updater(_follow_binding)
+        binding["updater"] = _follow_binding
+
+    @staticmethod
+    def _remove_binding_updater(binding):
+        mob = binding.get("mob")
+        updater = binding.get("updater")
+        if mob is not None and updater is not None:
+            mob.remove_updater(updater)
+
+    def _unbind_bindings(self, binding_attr: str, *mobs):
+        if not mobs:
+            return
+
+        targets = {id(mob) for mob in mobs if mob is not None}
+        if not targets:
+            return
+
+        kept = []
+        for binding in getattr(self, binding_attr):
+            mob = binding.get("mob")
+            if mob is None or id(mob) not in targets:
+                kept.append(binding)
+                continue
+            NarratedScene._remove_binding_updater(binding)
+        setattr(self, binding_attr, kept)
+
+    def _clear_bindings(self, binding_attr: str):
+        for binding in getattr(self, binding_attr):
+            NarratedScene._remove_binding_updater(binding)
+        setattr(self, binding_attr, [])
+
+    def _sync_bindings(self, binding_attr: str, sync_fn):
+        for binding in list(getattr(self, binding_attr)):
+            sync_fn(binding)
+
+    def bind_to_block(self, mob, block, *, live=True):
+        """Bind a dependent mobject to a parent block's future scale/shift lifecycle."""
+        if mob is None or block is None:
+            return mob
+
+        self.unbind_from_block(mob)
+        binding = {
+            "mob": mob,
+            "block": block,
+            "center": np.array(block.get_center(), dtype=float),
+            "width": max(float(block.width), 1e-6),
+            "height": max(float(block.height), 1e-6),
+            "updater": None,
+        }
+
+        if live:
+            NarratedScene._install_binding_updater(
+                mob,
+                binding,
+                NarratedScene._sync_block_binding,
+            )
+
+        self._block_bindings.append(binding)
+        return mob
+
+    def bind_many_to_block(self, block, *mobs, live=True):
+        """Convenience helper for binding many dependent mobjects to one block."""
+        for mob in mobs:
+            if mob is not None:
+                self.bind_to_block(mob, block, live=live)
+        return mobs
+
+    def unbind_from_block(self, *mobs):
+        self._unbind_bindings("_block_bindings", *mobs)
+
+    def clear_block_bindings(self):
+        self._clear_bindings("_block_bindings")
+
+    def sync_bound_blocks(self):
+        self._sync_bindings("_block_bindings", NarratedScene._sync_block_binding)
+
+    @staticmethod
+    def _resolve_anchor_builder(binding):
+        builder = binding.get("builder")
+        if callable(builder):
+            return builder
+        if isinstance(builder, str):
+            scene_ref = binding.get("scene_ref")
+            scene = scene_ref() if scene_ref is not None else None
+            if scene is None:
+                return None
+            candidate = getattr(scene, builder, None)
+            if callable(candidate):
+                return candidate
+        return None
+
+    @staticmethod
+    def _sync_anchor_binding(binding):
+        mob = binding.get("mob")
+        if mob is None:
+            return
+        builder = NarratedScene._resolve_anchor_builder(binding)
+        if builder is None:
+            return
+        rebuilt = builder(*binding.get("args", ()), **binding.get("kwargs", {}))
+        if rebuilt is None:
+            return
+        mob.become(rebuilt)
+
+    def bind_to_anchor(
+        self,
+        mob,
+        builder,
+        *builder_args,
+        live=True,
+        sync_now=True,
+        **builder_kwargs,
+    ):
+        """
+        Keep an existing dependent mobject synchronized to live anchors by
+        rebuilding it from a builder callback.
+
+        `builder` may be a callable or the name of a scene helper method.
+        """
+        if mob is None:
+            return mob
+
+        self.unbind_from_anchor(mob)
+        binding = {
+            "mob": mob,
+            "builder": builder,
+            "args": tuple(builder_args),
+            "kwargs": dict(builder_kwargs),
+            "scene_ref": weakref.ref(self),
+            "updater": None,
+        }
+
+        if sync_now:
+            NarratedScene._sync_anchor_binding(binding)
+
+        if live:
+            NarratedScene._install_binding_updater(
+                mob,
+                binding,
+                NarratedScene._sync_anchor_binding,
+            )
+
+        self._anchor_bindings.append(binding)
+        return mob
+
+    def build_on_anchor(self, builder, *builder_args, live=True, **builder_kwargs):
+        """
+        Build dependent geometry from live anchors and keep it synchronized.
+
+        Example:
+            secant = self.build_on_anchor("secant_segment_on_axes", axes, 2.9, 3.1)
+        """
+        if callable(builder):
+            initial = builder(*builder_args, **builder_kwargs)
+        elif isinstance(builder, str):
+            candidate = getattr(self, builder, None)
+            if not callable(candidate):
+                raise ValueError(f"Unknown anchor builder: {builder}")
+            initial = candidate(*builder_args, **builder_kwargs)
+        else:
+            raise TypeError("builder must be a callable or a scene helper method name")
+
+        return self.bind_to_anchor(
+            initial,
+            builder,
+            *builder_args,
+            live=live,
+            sync_now=False,
+            **builder_kwargs,
+        )
+
+    def bind_many_to_anchor(self, builder_specs, *, live=True):
+        """
+        Convenience helper for building/binding several dependent objects.
+
+        Each item in `builder_specs` should be:
+            (builder, arg1, arg2, ...)
+        or
+            (builder, (arg1, arg2, ...), {"kw": value})
+        """
+        built = []
+        for spec in builder_specs:
+            if not isinstance(spec, tuple) or not spec:
+                continue
+            builder = spec[0]
+            if len(spec) == 3 and isinstance(spec[1], tuple) and isinstance(spec[2], dict):
+                built.append(self.build_on_anchor(builder, *spec[1], live=live, **spec[2]))
+            else:
+                built.append(self.build_on_anchor(builder, *spec[1:], live=live))
+        return built
+
+    def unbind_from_anchor(self, *mobs):
+        self._unbind_bindings("_anchor_bindings", *mobs)
+
+    def clear_anchor_bindings(self):
+        self._clear_bindings("_anchor_bindings")
+
+    def sync_bound_anchors(self):
+        self._sync_bindings("_anchor_bindings", NarratedScene._sync_anchor_binding)
 
     def fit_to_top_band(self, group, max_width: float = 11.8, max_height: float | None = None, center=None):
         """Scale/place a title-like block into the shared top band."""

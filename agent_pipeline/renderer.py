@@ -1,12 +1,14 @@
 """
-Manim rendering wrapper.
+Manim rendering wrapper for Scene Pack code.
 
-Writes generated code to a .py file, invokes Manim as a subprocess,
-and returns the output video path or error log.
+Writes generated code to a single ``scene.py`` file, renders each segment scene
+declared in ``SCENE_MANIFEST`` as its own Manim subprocess, and concatenates
+the segment videos into one final ``video.mp4``.
 """
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shlex
@@ -14,12 +16,13 @@ import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 from typing import List, Optional
 
+from .scene_pack import SegmentSpec, parse_scene_pack
 from .tts import generate_audio, has_audio_stream, voice_for_language
 
 
@@ -31,6 +34,18 @@ def _int_env(name: str, default: int) -> int:
 
 
 TTS_MAX_WORKERS = max(1, _int_env("A4L_TTS_WORKERS", 4))
+RENDER_SCENE_MAX_WORKERS = max(1, _int_env("A4L_RENDER_SCENE_WORKERS", 3))
+
+
+@dataclass
+class SegmentRenderResult:
+    segment_id: str
+    scene_name: str
+    order: int
+    output_dir: Path
+    success: bool
+    video_path: Optional[Path] = None
+    error_log: str = ""
 
 
 @dataclass
@@ -39,70 +54,58 @@ class RenderResult:
     video_path: Optional[Path] = None
     error_log: str = ""
     scene_name: str = ""
-
-
-def find_scene_classes(code: str) -> List[str]:
-    """Extract Scene subclass names from Manim code."""
-    _SKIP = {"NarratedScene"}
-
-    pattern = r"class\s+(\w+)\s*\(\s*\w*Scene\s*\)"
-    matches = [m for m in re.findall(pattern, code) if m not in _SKIP]
-    if matches:
-        return matches
-
-    pattern_broad = r"class\s+(\w+)\s*\([^)]*Scene[^)]*\)"
-    matches_broad = [m for m in re.findall(pattern_broad, code) if m not in _SKIP]
-    if matches_broad:
-        return matches_broad
-
-    pattern_any = r"class\s+(\w+)\s*\("
-    return [m for m in re.findall(pattern_any, code) if m not in _SKIP]
+    segments: List[SegmentRenderResult] = field(default_factory=list)
 
 
 def _sanitize_chinese_in_latex(code: str) -> str:
-    """Auto-fix Chinese characters inside MathTex/Tex raw strings.
+    """Auto-fix Chinese characters inside MathTex/Tex raw strings."""
 
-    Removes unsafe Chinese fragments from MathTex/Tex strings without leaking
-    placeholder tokens into the rendered video.
-    """
-    import re
+    def _has_chinese(text: str) -> bool:
+        return bool(re.search(r"[\u4e00-\u9fff]", text))
 
-    def _has_chinese(s: str) -> bool:
-        return bool(re.search(r'[\u4e00-\u9fff]', s))
-
-    # Find all MathTex(...) and Tex(...) calls, check for Chinese in raw strings
-    fixed = code
+    replacements: list[tuple[int, int, str]] = []
     for match in re.finditer(r'(MathTex|Tex)\s*\(r?"', code):
-        # Find the closing quote of the raw string
         quote_start = match.end() - 1
-        # Simple heuristic: find the matching closing quote
         i = quote_start + 1
         while i < len(code) and code[i] != '"':
-            if code[i] == '\\':
+            if code[i] == "\\":
                 i += 1
             i += 1
-        if i < len(code):
-            raw_content = code[quote_start + 1:i]
-            if _has_chinese(raw_content):
-                # Strip Chinese text commands and raw Chinese characters.
-                cleaned = re.sub(
-                    r'\\text\{([^}]*[\u4e00-\u9fff][^}]*)\}',
-                    r'\\quad',
-                    raw_content,
-                )
-                cleaned = re.sub(
-                    r'\\mathrm\{([^}]*[\u4e00-\u9fff][^}]*)\}',
-                    r'\\quad',
-                    cleaned,
-                )
-                cleaned = re.sub(r'[\u4e00-\u9fff]+', ' ', cleaned)
-                cleaned = re.sub(r'[，。；：、“”‘’（）【】《》]', ' ', cleaned)
-                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-                if not cleaned:
-                    cleaned = r"\\quad"
-                if cleaned != raw_content:
-                    fixed = fixed.replace(raw_content, cleaned)
-    return fixed
+        if i >= len(code):
+            continue
+        raw_content = code[quote_start + 1 : i]
+        if not _has_chinese(raw_content):
+            continue
+        cleaned = re.sub(
+            r"\\text\{([^}]*[\u4e00-\u9fff][^}]*)\}",
+            r"\\quad",
+            raw_content,
+        )
+        cleaned = re.sub(
+            r"\\mathrm\{([^}]*[\u4e00-\u9fff][^}]*)\}",
+            r"\\quad",
+            cleaned,
+        )
+        cleaned = re.sub(r"[\u4e00-\u9fff]+", " ", cleaned)
+        cleaned = re.sub(r"[\u200b-\u200f\u202a-\u202e\ufeff\ufffd]", " ", cleaned)
+        cleaned = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            cleaned = r"\\quad"
+        if cleaned != raw_content:
+            replacements.append((quote_start + 1, i, cleaned))
+
+    if not replacements:
+        return code
+
+    parts: list[str] = []
+    cursor = 0
+    for start, end, cleaned in replacements:
+        parts.append(code[cursor:start])
+        parts.append(cleaned)
+        cursor = end
+    parts.append(code[cursor:])
+    return "".join(parts)
 
 
 def _pregenererate_tts(
@@ -111,11 +114,10 @@ def _pregenererate_tts(
     *,
     tts_voice: str | None = None,
 ) -> None:
-    """Extract narration texts and pre-generate TTS audio."""
-    import ast
+    """Extract narration texts and pre-generate TTS audio once per round."""
     import hashlib
 
-    texts = []
+    texts: list[str] = []
     try:
         tree = ast.parse(code)
         for node in ast.walk(tree):
@@ -135,14 +137,15 @@ def _pregenererate_tts(
 
     if not texts:
         return
+
     try:
         cache_dir = output_dir / "tts_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         unique_texts = list(dict.fromkeys(texts))
 
         def _ensure_tts(text: str) -> bool:
-            h = hashlib.md5(text.encode('utf-8')).hexdigest()
-            fp = cache_dir / f"{h}.mp3"
+            digest = hashlib.md5(text.encode("utf-8")).hexdigest()
+            fp = cache_dir / f"{digest}.mp3"
             if fp.exists():
                 return False
             voice = tts_voice or voice_for_language("en")
@@ -198,6 +201,7 @@ def _run_subprocess_streaming(
     reader.start()
 
     reader_done = False
+    log_file.parent.mkdir(parents=True, exist_ok=True)
 
     with log_file.open("w", encoding="utf-8") as handle:
         while True:
@@ -231,7 +235,7 @@ def _run_subprocess_streaming(
     return process.wait(), "".join(output_chunks)
 
 
-def render_scene(
+def render_scene_pack(
     code: str,
     output_dir: Path,
     quality_flags: str = "-qm --fps 60",
@@ -239,16 +243,107 @@ def render_scene(
     tts_voice: str | None = None,
 ) -> RenderResult:
     """
-    Render a Manim scene from source code.
+    Render a Scene Pack from source code.
 
-    Writes *code* to ``output_dir/scene.py``, runs Manim, and locates
-    the output video.
-
-    Returns a RenderResult with success status, video path, and any
-    error output.
+    Writes *code* to ``output_dir/scene.py``, renders every segment scene
+    declared in ``SCENE_MANIFEST`` in parallel, and concatenates the segment
+    videos into ``output_dir/video.mp4``.
     """
     code = _sanitize_chinese_in_latex(code)
 
+    try:
+        scene_pack = parse_scene_pack(code)
+    except ValueError as exc:
+        return RenderResult(
+            success=False,
+            error_log=str(exc),
+            scene_name="ScenePack",
+            segments=[],
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    segments_root = output_dir / "segments"
+    if segments_root.exists():
+        shutil.rmtree(segments_root)
+    segments_root.mkdir(parents=True, exist_ok=True)
+
+    full_code = _build_scene_file_code(code)
+    scene_file = output_dir / "scene.py"
+    scene_file.write_text(full_code, encoding="utf-8")
+
+    if enable_tts:
+        _pregenererate_tts(code, output_dir, tts_voice=tts_voice)
+
+    segment_results = _render_segments(
+        manifest=scene_pack.manifest,
+        scene_file=scene_file,
+        output_dir=output_dir,
+        quality_flags=quality_flags,
+    )
+    ordered_results = sorted(segment_results, key=lambda item: item.order)
+
+    failed = [segment for segment in ordered_results if not segment.success]
+    if failed:
+        error_log = _format_segment_failures(failed)
+        _write_round_render_log(output_dir, ordered_results, final_error=error_log)
+        return RenderResult(
+            success=False,
+            error_log=error_log,
+            scene_name="ScenePack",
+            segments=ordered_results,
+        )
+
+    final_video = output_dir / "video.mp4"
+    concat_error = _concat_segment_videos(ordered_results, final_video)
+    if concat_error:
+        _write_round_render_log(output_dir, ordered_results, final_error=concat_error)
+        return RenderResult(
+            success=False,
+            error_log=concat_error,
+            scene_name="ScenePack",
+            segments=ordered_results,
+        )
+
+    has_tts_calls = "self.speak(" in code or "self.speak_with_subtitle(" in code
+    if enable_tts and has_tts_calls and not has_audio_stream(final_video):
+        error_log = (
+            "Rendered Scene Pack video is missing an audio track even though the code uses TTS calls."
+        )
+        _write_round_render_log(output_dir, ordered_results, final_error=error_log)
+        return RenderResult(
+            success=False,
+            error_log=error_log,
+            scene_name="ScenePack",
+            segments=ordered_results,
+        )
+
+    _write_round_render_log(output_dir, ordered_results, final_video=final_video)
+    return RenderResult(
+        success=True,
+        video_path=final_video,
+        scene_name="ScenePack",
+        segments=ordered_results,
+    )
+
+
+def render_scene(
+    code: str,
+    output_dir: Path,
+    quality_flags: str = "-qm --fps 60",
+    enable_tts: bool = True,
+    tts_voice: str | None = None,
+) -> RenderResult:
+    """Thin compatibility wrapper for the Scene Pack renderer."""
+    return render_scene_pack(
+        code,
+        output_dir,
+        quality_flags=quality_flags,
+        enable_tts=enable_tts,
+        tts_voice=tts_voice,
+    )
+
+
+def _build_scene_file_code(code: str) -> str:
     project_root = Path(__file__).resolve().parent.parent
     path_bootstrap = (
         "import sys\n"
@@ -257,42 +352,68 @@ def render_scene(
         "if str(_PROJECT_ROOT) not in sys.path:\n"
         "    sys.path.insert(0, str(_PROJECT_ROOT))\n"
     )
-
     compatibility_imports = "from colortest.narrated_scene import NarratedScene\n"
+    return path_bootstrap + "\n" + compatibility_imports + "\n" + code
 
-    # Inject project import bootstrap and NarratedScene compatibility import.
-    full_code = path_bootstrap + "\n" + compatibility_imports + "\n" + code
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    scene_file = output_dir / "scene.py"
-    scene_file.write_text(full_code, encoding="utf-8")
 
-    # Pre-generate TTS audio for renders that explicitly enable narration.
-    if enable_tts:
-        _pregenererate_tts(code, output_dir, tts_voice=tts_voice)
+def _render_segments(
+    *,
+    manifest: List[SegmentSpec],
+    scene_file: Path,
+    output_dir: Path,
+    quality_flags: str,
+) -> List[SegmentRenderResult]:
+    max_workers = min(RENDER_SCENE_MAX_WORKERS, len(manifest))
+    if max_workers <= 1:
+        return [
+            _render_single_segment(
+                segment=segment,
+                scene_file=scene_file,
+                output_dir=output_dir,
+                quality_flags=quality_flags,
+            )
+            for segment in manifest
+        ]
 
-    scene_names = find_scene_classes(code)
-    if not scene_names:
-        return RenderResult(
-            success=False,
-            error_log="No Scene subclass found in generated code.",
-            scene_name="",
-        )
+    results: List[SegmentRenderResult] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                _render_single_segment,
+                segment=segment,
+                scene_file=scene_file,
+                output_dir=output_dir,
+                quality_flags=quality_flags,
+            )
+            for segment in manifest
+        ]
+        for future in as_completed(futures):
+            results.append(future.result())
+    return results
 
-    scene_name = scene_names[0]
-    media_dir = output_dir / "media"
+
+def _render_single_segment(
+    *,
+    segment: SegmentSpec,
+    scene_file: Path,
+    output_dir: Path,
+    quality_flags: str,
+) -> SegmentRenderResult:
+    segment_dir = output_dir / "segments" / f"{segment.order:02d}_{_sanitize_segment_id(segment.segment_id)}"
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    media_dir = segment_dir / "media"
+    log_file = segment_dir / "render_log.txt"
 
     cmd = [
         sys.executable,
         "-m",
         "manim",
-        str(scene_file),
-        scene_name,
+        str(scene_file.resolve()),
+        segment.scene_name,
         *shlex.split(quality_flags),
         "--media_dir",
-        str(media_dir),
+        str(media_dir.resolve()),
     ]
-    log_file = output_dir / "render_log.txt"
 
     returncode, combined_output = _run_subprocess_streaming(
         cmd=cmd,
@@ -300,39 +421,176 @@ def render_scene(
         log_file=log_file,
     )
     if returncode != 0:
-        return RenderResult(
+        return SegmentRenderResult(
+            segment_id=segment.segment_id,
+            scene_name=segment.scene_name,
+            order=segment.order,
+            output_dir=segment_dir,
             success=False,
             error_log=combined_output[-5000:],
-            scene_name=scene_name,
         )
 
-    video_path = _find_video(media_dir, scene_name)
+    video_path = _find_video(media_dir, segment.scene_name)
     if video_path is None:
-        return RenderResult(
+        return SegmentRenderResult(
+            segment_id=segment.segment_id,
+            scene_name=segment.scene_name,
+            order=segment.order,
+            output_dir=segment_dir,
             success=False,
-            error_log=f"Render completed but video not found under {media_dir}",
-            scene_name=scene_name,
+            error_log=f"Render completed but segment video not found under {media_dir}",
         )
 
-    final_video = output_dir / "video.mp4"
-    shutil.copy2(str(video_path), str(final_video))
-
-    has_tts_calls = (
-        "self.speak(" in code or
-        "self.speak_with_subtitle(" in code
-    )
-    if enable_tts and has_tts_calls and not has_audio_stream(final_video):
-        return RenderResult(
-            success=False,
-            error_log="Rendered video is missing an audio track even though the scene uses TTS calls.",
-            scene_name=scene_name,
-        )
-
-    return RenderResult(
+    final_segment_video = segment_dir / "video.mp4"
+    shutil.copy2(str(video_path), str(final_segment_video))
+    return SegmentRenderResult(
+        segment_id=segment.segment_id,
+        scene_name=segment.scene_name,
+        order=segment.order,
+        output_dir=segment_dir,
         success=True,
-        video_path=final_video,
-        scene_name=scene_name,
+        video_path=final_segment_video,
     )
+
+
+def _concat_segment_videos(
+    segment_results: List[SegmentRenderResult],
+    output_path: Path,
+) -> str:
+    if not segment_results:
+        return "No segment videos were produced for concatenation."
+
+    ordered_videos = [segment.video_path for segment in segment_results if segment.video_path]
+    if len(ordered_videos) != len(segment_results):
+        return "Cannot concatenate segment videos because at least one segment is missing its final video."
+
+    if len(ordered_videos) == 1:
+        shutil.copy2(str(ordered_videos[0]), str(output_path))
+        return ""
+
+    if not shutil.which("ffmpeg"):
+        return "ffmpeg not found, cannot concatenate Scene Pack segments."
+
+    concat_list = output_path.parent / "segments_concat.txt"
+    concat_list.write_text(
+        "".join(_concat_list_line(video) for video in ordered_videos),
+        encoding="utf-8",
+    )
+
+    copy_cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_list),
+        "-c",
+        "copy",
+        str(output_path),
+    ]
+    copy_result = subprocess.run(
+        copy_cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if copy_result.returncode == 0 and output_path.exists():
+        return ""
+
+    reencode_cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_list),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "18",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        str(output_path),
+    ]
+    reencode_result = subprocess.run(
+        reencode_cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if reencode_result.returncode == 0 and output_path.exists():
+        return ""
+
+    return (
+        "ffmpeg concat failed.\n\n"
+        "Copy-mode stderr:\n"
+        f"{copy_result.stderr[-3000:]}\n\n"
+        "Re-encode stderr:\n"
+        f"{reencode_result.stderr[-3000:]}"
+    )
+
+
+def _concat_list_line(path: Path) -> str:
+    normalized = path.resolve().as_posix().replace("'", r"'\''")
+    return f"file '{normalized}'\n"
+
+
+def _format_segment_failures(failed_segments: List[SegmentRenderResult]) -> str:
+    chunks = []
+    for segment in failed_segments:
+        header = f"[{segment.order:02d}:{segment.segment_id} -> {segment.scene_name}]"
+        body = segment.error_log.strip() or "Unknown segment render failure."
+        chunks.append(f"{header}\n{body}")
+    return "\n\n".join(chunks)
+
+
+def _write_round_render_log(
+    output_dir: Path,
+    segment_results: List[SegmentRenderResult],
+    *,
+    final_video: Optional[Path] = None,
+    final_error: str = "",
+) -> None:
+    lines = ["Scene Pack render summary", ""]
+    for segment in sorted(segment_results, key=lambda item: item.order):
+        status = "OK" if segment.success else "FAIL"
+        lines.append(
+            f"[{segment.order:02d}] {segment.segment_id} | {segment.scene_name} | {status}"
+        )
+        lines.append(f"  dir: {segment.output_dir}")
+        if segment.video_path:
+            lines.append(f"  video: {segment.video_path}")
+        if segment.error_log:
+            snippet = segment.error_log.strip()
+            if len(snippet) > 1000:
+                snippet = snippet[-1000:]
+            lines.append("  error:")
+            lines.append(snippet)
+        lines.append("")
+
+    if final_video:
+        lines.append(f"Final video: {final_video}")
+    if final_error:
+        lines.append("Final error:")
+        lines.append(final_error)
+
+    (output_dir / "render_log.txt").write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+
+
+def _sanitize_segment_id(segment_id: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z_-]+", "_", segment_id.strip())
+    cleaned = cleaned.strip("_").lower()
+    return cleaned or "segment"
 
 
 def _find_video(media_dir: Path, scene_name: str) -> Optional[Path]:
@@ -350,8 +608,15 @@ def _find_video(media_dir: Path, scene_name: str) -> Optional[Path]:
         if scene_name in mp4.stem:
             return mp4
 
-    all_mp4 = sorted(candidates, key=lambda p: p.stat().st_mtime)
+    all_mp4 = sorted(candidates, key=lambda item: item.stat().st_mtime)
     if all_mp4:
         return all_mp4[-1]
-
     return None
+
+
+__all__ = [
+    "SegmentRenderResult",
+    "RenderResult",
+    "render_scene_pack",
+    "render_scene",
+]

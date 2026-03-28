@@ -81,6 +81,45 @@ Return a JSON object:
 }
 """
 
+ANCHOR_BINDING_REVIEW_PROMPT = """\
+You are a STRICT visual semantics reviewer for Manim-rendered educational videos.
+You will receive keyframes sampled evenly across the entire video.
+
+Check EVERY keyframe for anchor-binding mistakes: visual annotations that do not
+actually point to, cover, or stay attached to the thing they claim to reference.
+
+Flag only clear visible mismatches such as:
+- A label or numeric value sitting nearer to the wrong object/tick/point
+- An arrow, brace, connector, or callout endpoint missing its intended target
+- A highlighted interval, range box, underline, or bracket not matching the
+  range/object set named in nearby text
+- A stale overlay that stayed behind after a transform/layout shift and now
+  explains the wrong object
+- An explanatory note block whose referenced region is visually ambiguous or wrong
+
+Do NOT flag:
+- Legal staged reveals where the final binding becomes clear
+- Pure style preferences if the target is still unambiguous
+- Generic crowding unless it causes the binding itself to become wrong
+
+Return a JSON object:
+{
+  "has_binding_issue": true | false,
+  "binding_issue_frames": <int, how many frames show anchor-binding issues>,
+  "total_frames": <int, total frames reviewed>,
+  "binding_issue_ratio": <float 0-1>,
+  "issues": [
+    {
+      "frame_index": <int>,
+      "taxonomy": "anchor_target_mismatch" | "range_span_mismatch" | "connector_endpoint_miss" | "detached_label" | "stale_overlay_after_layout",
+      "description": "<what is visibly bound to the wrong thing>",
+      "severity": "minor" | "moderate" | "severe"
+    }
+  ],
+  "reason": "<one-sentence summary>"
+}
+"""
+
 SEGMENT_REVIEW_PROMPT = """\
 You are a strict visual QA reviewer for Manim-rendered educational videos.
 Your task is to review one flagged segment and return only actionable visual issues.
@@ -134,6 +173,17 @@ class OverlapReviewVerdict:
     raw_response: str = ""
 
 
+@dataclass
+class AnchorBindingVerdict:
+    has_binding_issue: bool
+    binding_issue_frames: int
+    total_frames: int
+    binding_issue_ratio: float
+    issues: List[Dict]
+    reason: str
+    raw_response: str = ""
+
+
 def review_overlap_keyframes(
     keyframe_paths: List[Path],
     vlm_cfg: VLMConfig,
@@ -175,6 +225,119 @@ def review_overlap_keyframes(
         total_frames=int(parsed.get("total_frames", len(keyframe_paths))),
         overlap_ratio=float(parsed.get("overlap_ratio", 0.0)),
         issues=parsed.get("issues", []),
+        reason=str(parsed.get("reason", "")),
+        raw_response=raw_text,
+    )
+
+
+def _normalize_anchor_binding_issues(raw_issues: Any) -> List[Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    if not isinstance(raw_issues, list):
+        return issues
+
+    allowed_taxonomies = {
+        "anchor_target_mismatch",
+        "range_span_mismatch",
+        "connector_endpoint_miss",
+        "detached_label",
+        "stale_overlay_after_layout",
+    }
+    allowed_severity = {"minor", "moderate", "severe"}
+
+    for item in raw_issues:
+        if not isinstance(item, dict):
+            continue
+        taxonomy = str(item.get("taxonomy", "")).strip()
+        if taxonomy not in allowed_taxonomies:
+            continue
+        description = str(item.get("description", "")).strip()
+        if not description:
+            continue
+        severity = str(item.get("severity", "moderate")).strip().lower()
+        if severity not in allowed_severity:
+            severity = "moderate"
+        try:
+            frame_index = int(item.get("frame_index", -1))
+        except (TypeError, ValueError):
+            frame_index = -1
+        issues.append(
+            {
+                "frame_index": frame_index,
+                "taxonomy": taxonomy,
+                "description": description,
+                "severity": severity,
+            }
+        )
+    return issues
+
+
+def review_anchor_binding_keyframes(
+    keyframe_paths: List[Path],
+    vlm_cfg: VLMConfig,
+    video_name: str = "",
+) -> AnchorBindingVerdict:
+    """Send evenly sampled keyframes to VLM for full-video anchor-binding review."""
+    if not keyframe_paths:
+        return AnchorBindingVerdict(False, 0, 0, 0.0, [], "no keyframes", "")
+
+    api_key = vlm_cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("No API key.")
+
+    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=120.0)
+
+    content: list = [{"type": "input_text", "text": ANCHOR_BINDING_REVIEW_PROMPT}]
+    content.append({
+        "type": "input_text",
+        "text": (
+            f"Video: {video_name}\n"
+            f"Below are {len(keyframe_paths)} keyframes sampled evenly across the full video.\n"
+            "Check whether labels, arrows, brackets, range highlights, and explanation blocks\n"
+            "actually match the objects or ranges they claim to annotate."
+        ),
+    })
+
+    for img_path in keyframe_paths:
+        if not img_path.exists():
+            continue
+        raw = img_path.read_bytes()
+        b64 = base64.b64encode(raw).decode("ascii")
+        content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
+
+    raw_text = _call_vlm(client, vlm_cfg, content)
+    parsed = _parse_vlm_json(raw_text)
+    issues = _normalize_anchor_binding_issues(parsed.get("issues", []))
+
+    try:
+        binding_issue_frames = int(parsed.get("binding_issue_frames", 0))
+    except (TypeError, ValueError):
+        binding_issue_frames = 0
+    if binding_issue_frames <= 0 and issues:
+        frame_indices = {
+            int(issue.get("frame_index", -1))
+            for issue in issues
+            if int(issue.get("frame_index", -1)) >= 0
+        }
+        binding_issue_frames = len(frame_indices) if frame_indices else len(issues)
+
+    try:
+        total_frames = int(parsed.get("total_frames", len(keyframe_paths)))
+    except (TypeError, ValueError):
+        total_frames = len(keyframe_paths)
+
+    try:
+        binding_issue_ratio = float(parsed.get("binding_issue_ratio", 0.0))
+    except (TypeError, ValueError):
+        binding_issue_ratio = 0.0
+    if binding_issue_ratio <= 0.0 and total_frames > 0 and binding_issue_frames > 0:
+        binding_issue_ratio = binding_issue_frames / total_frames
+
+    return AnchorBindingVerdict(
+        has_binding_issue=bool(parsed.get("has_binding_issue", bool(issues))),
+        binding_issue_frames=max(0, binding_issue_frames),
+        total_frames=max(0, total_frames),
+        binding_issue_ratio=max(0.0, min(1.0, binding_issue_ratio)),
+        issues=issues,
         reason=str(parsed.get("reason", "")),
         raw_response=raw_text,
     )

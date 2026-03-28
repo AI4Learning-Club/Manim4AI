@@ -244,6 +244,10 @@ class AI4LearningBaseScene(NarratedScene):
         ]
         if to_fade:
             self.play(FadeOut(Group(*to_fade)), run_time=run_time)
+        if hasattr(self, "clear_block_bindings"):
+            self.clear_block_bindings()
+        if hasattr(self, "clear_anchor_bindings"):
+            self.clear_anchor_bindings()
         self._subtitle_mob = None
         self._section_badge = None
         self.wait(wait_time)

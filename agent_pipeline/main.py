@@ -30,7 +30,7 @@ from .code_gen import CodeGenAgent
 from .evaluator import collect_keyframes, evaluate
 from .llm import resolve_pipeline_llm_configs, validate_pipeline_llm_configs
 from .output_language import normalize_output_language, output_language_name
-from .renderer import RenderResult, render_scene
+from .renderer import RenderResult, render_scene_pack
 from .teaching_planner import TeachingPlannerAgent
 from .theme_resolver import resolve_theme
 from .tts import has_audio_stream, voice_for_language
@@ -499,7 +499,7 @@ def _try_render(
             if attempt:
                 render_msg += f" after fix {attempt}"
             _log(render_msg + " ...")
-            result = render_scene(
+            result = render_scene_pack(
                 code,
                 round_dir,
                 quality_flags=quality_flags,
@@ -521,6 +521,9 @@ def _try_render(
 
         if attempt >= RENDER_FIX_MAX_ATTEMPTS:
             _log(f"{label}: render still failed after {attempt} fix attempt(s)")
+            failed_segments = _failed_segment_labels(result)
+            if failed_segments:
+                _log(f"{label}: failed segments: {', '.join(failed_segments)}")
             if result.error_log.strip():
                 _log(f"{label}: latest render error:\n{result.error_log.strip()}")
             break
@@ -529,6 +532,9 @@ def _try_render(
             f"{label}: render FAILED - asking LLM to fix "
             f"(attempt {attempt + 1}/{RENDER_FIX_MAX_ATTEMPTS}) ..."
         )
+        failed_segments = _failed_segment_labels(result)
+        if failed_segments:
+            _log(f"{label}: failed segments: {', '.join(failed_segments)}")
         if result.error_log.strip():
             _log(f"{label}: render error details:\n{result.error_log.strip()}")
         error_info = result.error_log + _detect_chinese_in_mathtex(code)
@@ -578,6 +584,31 @@ def _try_eval(
         return None
 
 
+def _segment_infos(render: RenderResult) -> List[Dict[str, Any]]:
+    infos: List[Dict[str, Any]] = []
+    for segment in sorted(render.segments, key=lambda item: item.order):
+        info: Dict[str, Any] = {
+            "order": segment.order,
+            "segment_id": segment.segment_id,
+            "scene_name": segment.scene_name,
+            "success": segment.success,
+            "video": str(segment.video_path) if segment.video_path else None,
+            "output_dir": str(segment.output_dir),
+        }
+        if segment.error_log:
+            info["error"] = segment.error_log[-1500:]
+        infos.append(info)
+    return infos
+
+
+def _failed_segment_labels(render: RenderResult) -> List[str]:
+    return [
+        f"{segment.order:02d}:{segment.segment_id}({segment.scene_name})"
+        for segment in sorted(render.segments, key=lambda item: item.order)
+        if not segment.success
+    ]
+
+
 def _round_info(n: int, render: RenderResult, report: Optional[Dict]) -> Dict:
     info = {
         "round": n,
@@ -585,6 +616,7 @@ def _round_info(n: int, render: RenderResult, report: Optional[Dict]) -> Dict:
         "video": str(render.video_path) if render.video_path else None,
         "eval_score": report.get("overall_score") if report else None,
         "eval_passed": report.get("overall_passed") if report else None,
+        "segments": _segment_infos(render),
     }
     if render.error_log:
         info["render_warning" if render.success else "render_error"] = render.error_log[-1500:]
@@ -633,7 +665,6 @@ def run_pipeline(
     language: Optional[str] = None,
 ) -> Dict:
     """Execute the full generate-render-evaluate-improve loop."""
-    pipeline_started_at = time.time()
     stage_times: Dict[str, float] = {}
     output_language = normalize_output_language(language, DEFAULT_OUTPUT_LANGUAGE)
 

@@ -54,12 +54,14 @@ from .cv_features import (
     save_segment_csv,
 )
 from .vlm_judge import (
+    AnchorBindingVerdict,
     AVAlignmentVerdict,
     OverlapReviewVerdict,
     SemanticCoherenceVerdict,
     TaskCorrectnessVerdict,
     VisualCoverageVerdict,
     VLMVerdict,
+    review_anchor_binding_keyframes,
     review_av_alignment,
     review_overlap_keyframes,
     review_segments,
@@ -453,11 +455,11 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
         # Whole-video VLM stages are launched together below.
 
     overlap_review: Optional[OverlapReviewVerdict] = None
+    anchor_binding_review: Optional[AnchorBindingVerdict] = None
     visual_coverage: Optional[VisualCoverageVerdict] = None
     semantic_coherence: Optional[SemanticCoherenceVerdict] = None
     av_alignment_verdict: Optional[AVAlignmentVerdict] = None
     has_audio_stream = audio_metrics is not None and audio_metrics.has_audio
-    parallel_vlm_done = False
 
     stage_tasks = {}
 
@@ -472,7 +474,15 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
         )
 
     if not cfg.skip_vlm and tc_kf_paths:
-        print(f"\n[Layer 2b-2] Overlap VLM review ({len(tc_kf_paths)} keyframes) ...")
+        print(f"\n[Layer 2b-2] Anchor binding VLM review ({len(tc_kf_paths)} keyframes) ...")
+        stage_tasks["anchor_binding_review"] = lambda: review_anchor_binding_keyframes(
+            keyframe_paths=tc_kf_paths,
+            vlm_cfg=cfg.vlm,
+            video_name=video_name,
+        )
+
+    if not cfg.skip_vlm and tc_kf_paths:
+        print(f"\n[Layer 2b-3] Overlap VLM review ({len(tc_kf_paths)} keyframes) ...")
         stage_tasks["overlap_review"] = lambda: review_overlap_keyframes(
             keyframe_paths=tc_kf_paths,
             vlm_cfg=cfg.vlm,
@@ -481,7 +491,7 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
 
     if not cfg.skip_vlm:
         if teaching_plan and teaching_plan.get("sections"):
-            print(f"\n[Layer 2b-3] Visual coverage check ({len(teaching_plan['sections'])} sections) ...")
+            print(f"\n[Layer 2b-4] Visual coverage check ({len(teaching_plan['sections'])} sections) ...")
             stage_tasks["visual_coverage"] = lambda: review_visual_coverage(
                 vlm_cfg=cfg.vlm,
                 teaching_plan=teaching_plan,
@@ -490,7 +500,7 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
                 keyframe_paths=tc_kf_paths if tc_kf_paths else None,
             )
         else:
-            print("\n[Layer 2b-3] No teaching plan -> running semantic coherence check ...")
+            print("\n[Layer 2b-4] No teaching plan -> running semantic coherence check ...")
             stage_tasks["semantic_coherence"] = lambda: review_semantic_coherence(
                 vlm_cfg=cfg.vlm,
                 video_name=video_name,
@@ -511,12 +521,19 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
         print(f"\n[Layer 2c] AV Alignment MLLM skipped ({reason})")
 
     def _handle_stage_result(stage_name: str, result) -> None:
-        nonlocal task_correctness, overlap_review, visual_coverage, semantic_coherence, av_alignment_verdict
+        nonlocal task_correctness, anchor_binding_review, overlap_review, visual_coverage, semantic_coherence, av_alignment_verdict
         if stage_name == "task_correctness":
             task_correctness = result
             print(f"  Content Accuracy: {'YES' if result.content_accuracy else 'NO'}")
             print(f"  Pedagogical Clarity: {result.pedagogical_clarity:.0%}")
             print(f"  Engagement: {result.engagement:.0%}")
+        elif stage_name == "anchor_binding_review":
+            anchor_binding_review = result
+            status = "HAS ISSUES" if result.has_binding_issue else "CLEAN"
+            print(
+                f"  Result: {status} "
+                f"(ratio={result.binding_issue_ratio:.3f}, issues={len(result.issues)})"
+            )
         elif stage_name == "overlap_review":
             overlap_review = result
             status = "HAS OVERLAP" if result.has_overlap else "CLEAN"
@@ -544,6 +561,8 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
     def _handle_stage_error(stage_name: str, exc: Exception) -> None:
         if stage_name == "task_correctness":
             print(f"  Task Correctness VLM error: {exc}")
+        elif stage_name == "anchor_binding_review":
+            print(f"  Anchor binding VLM review error: {exc}")
         elif stage_name == "overlap_review":
             print(f"  Overlap VLM review error: {exc}")
         elif stage_name == "visual_coverage":
@@ -554,7 +573,6 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
             print(f"  AV Alignment MLLM error: {exc}")
 
     if stage_tasks:
-        parallel_vlm_done = True
         max_workers = min(VLM_STAGE_MAX_WORKERS, len(stage_tasks))
         if max_workers <= 1:
             for stage_name, stage_fn in stage_tasks.items():
@@ -573,103 +591,9 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
                         _handle_stage_error(stage_name, exc)
 
     # ------------------------------------------------------------------
-    # Layer 2b-2: Overlap keyframe VLM review (full video sampling)
-    # ------------------------------------------------------------------
-    if not parallel_vlm_done:
-        overlap_review = None
-
-    if parallel_vlm_done:
-        pass
-    elif cfg.skip_vlm:
-        print("\n[Layer 2b-2] Overlap VLM review skipped (--skip-vlm)")
-    elif tc_kf_paths:
-        print(f"\n[Layer 2b-2] Overlap VLM review ({len(tc_kf_paths)} keyframes) ...")
-        try:
-            overlap_review = review_overlap_keyframes(
-                keyframe_paths=tc_kf_paths,
-                vlm_cfg=cfg.vlm,
-                video_name=video_name,
-            )
-            status = "HAS OVERLAP" if overlap_review.has_overlap else "CLEAN"
-            print(f"  Result: {status} (ratio={overlap_review.overlap_ratio:.3f}, issues={len(overlap_review.issues)})")
-        except Exception as exc:
-            print(f"  Overlap VLM review error: {exc}")
-
-    # ------------------------------------------------------------------
-    # Layer 2b-3: Visual Content Consistency (teaching plan coverage)
-    # ------------------------------------------------------------------
-    if not parallel_vlm_done:
-        visual_coverage = None
-        semantic_coherence = None
-
-    if parallel_vlm_done:
-        pass
-    elif cfg.skip_vlm:
-        print("\n[Layer 2b-3] Visual coverage check skipped (--skip-vlm)")
-    else:
-        if teaching_plan and teaching_plan.get("sections"):
-            print(f"\n[Layer 2b-3] Visual coverage check ({len(teaching_plan['sections'])} sections) ...")
-            try:
-                visual_coverage = review_visual_coverage(
-                    vlm_cfg=cfg.vlm,
-                    teaching_plan=teaching_plan,
-                    video_name=video_name,
-                    video_path=video_path,
-                    keyframe_paths=tc_kf_paths if tc_kf_paths else None,
-                )
-                print(f"  Coverage: {visual_coverage.coverage_ratio:.0%}")
-                if visual_coverage.missing_sections:
-                    print(f"  Missing: {visual_coverage.missing_sections}")
-            except Exception as exc:
-                print(f"  Visual coverage error: {exc}")
-        else:
-            print("\n[Layer 2b-3] No teaching plan → running semantic coherence check ...")
-            try:
-                semantic_coherence = review_semantic_coherence(
-                    vlm_cfg=cfg.vlm,
-                    video_name=video_name,
-                    video_path=video_path,
-                    keyframe_paths=tc_kf_paths if tc_kf_paths else None,
-                )
-                print(f"  Coherence: {semantic_coherence.score:.2f} "
-                      f"(topic={semantic_coherence.topic_consistency:.2f}, "
-                      f"progression={semantic_coherence.logical_progression:.2f}, "
-                      f"relevance={semantic_coherence.visual_relevance:.2f})")
-                print(f"  Reason: {semantic_coherence.reason}")
-            except Exception as exc:
-                print(f"  Semantic coherence error: {exc}")
-
-    # ------------------------------------------------------------------
-    # Layer 2c: AV Alignment MLLM review (video with audio → VLM)
-    # ------------------------------------------------------------------
-    if not parallel_vlm_done:
-        av_alignment_verdict = None
-
-    has_audio_stream = audio_metrics is not None and audio_metrics.has_audio
-    if parallel_vlm_done:
-        pass
-    elif skip_tc or cfg.skip_vlm or not has_audio_stream:
-        reason = "no audio" if not has_audio_stream else "VLM skipped"
-        print(f"\n[Layer 2c] AV Alignment MLLM skipped ({reason})")
-    else:
-        print(f"\n[Layer 2c] AV Alignment MLLM review (direct video) ...")
-        try:
-            av_alignment_verdict = review_av_alignment(
-                vlm_cfg=cfg.vlm,
-                video_name=video_name,
-                video_path=video_path,
-                keyframe_paths=tc_kf_paths if tc_kf_paths else None,
-            )
-            print(f"  Semantic Alignment: {av_alignment_verdict.semantic_alignment}/5")
-            print(f"  Temporal Pacing:    {av_alignment_verdict.temporal_pacing}/5")
-            print(f"  Narration Natural.: {av_alignment_verdict.narration_naturalness}/5")
-        except Exception as exc:
-            print(f"  AV Alignment MLLM error: {exc}")
-
-    # ------------------------------------------------------------------
     # Layer 3: Fusion scoring
     # ------------------------------------------------------------------
-    print(f"\n[Layer 3] Computing fusion scores ...")
+    print("\n[Layer 3] Computing fusion scores ...")
 
     report = compute_report(
         video_name=video_name,
@@ -681,6 +605,7 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
         alignment_metrics=alignment_metrics,
         task_correctness=task_correctness,
         av_alignment_verdict=av_alignment_verdict,
+        anchor_binding_review=anchor_binding_review,
         overlap_review=overlap_review,
         visual_coverage=visual_coverage,
         semantic_coherence=semantic_coherence,
