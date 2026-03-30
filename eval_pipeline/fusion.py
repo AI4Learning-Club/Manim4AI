@@ -85,6 +85,9 @@ class EvalReport:
     # Issue inventory
     issues: List[Dict] = field(default_factory=list)
 
+    # Raw model diagnostics for debugging / repair prompts
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+
 
 # =====================================================================
 # CV scoring helpers (unchanged logic, new wrappers)
@@ -354,6 +357,7 @@ def compute_report(
     alignment_metrics: Optional[AlignmentMetrics] = None,
     task_correctness: Optional[TaskCorrectnessVerdict] = None,
     av_alignment_verdict: Optional[AVAlignmentVerdict] = None,
+    whole_video_visual_review_raw_response: str = "",
     anchor_binding_review: Optional[AnchorBindingVerdict] = None,
     overlap_review: Optional[OverlapReviewVerdict] = None,
     visual_coverage: Optional[VisualCoverageVerdict] = None,
@@ -751,6 +755,37 @@ def compute_report(
     # Issues
     report.issues = _collect_issues(segments, verdicts) + _collect_anchor_binding_issues(anchor_binding_review)
 
+    diagnostics: Dict[str, Any] = {}
+    if task_correctness and task_correctness.raw_response:
+        diagnostics["task_correctness"] = {
+            "raw_response": task_correctness.raw_response,
+        }
+    if whole_video_visual_review_raw_response:
+        diagnostics["whole_video_visual_review"] = {
+            "raw_response": whole_video_visual_review_raw_response,
+        }
+    if overlap_review and overlap_review.raw_response:
+        diagnostics["overlap_review"] = {
+            "raw_response": overlap_review.raw_response,
+        }
+    if anchor_binding_review and anchor_binding_review.raw_response:
+        diagnostics["anchor_binding_review"] = {
+            "raw_response": anchor_binding_review.raw_response,
+        }
+    if av_alignment_verdict and av_alignment_verdict.raw_response:
+        diagnostics["av_alignment"] = {
+            "raw_response": av_alignment_verdict.raw_response,
+        }
+    if visual_coverage and visual_coverage.raw_response:
+        diagnostics["visual_coverage"] = {
+            "raw_response": visual_coverage.raw_response,
+        }
+    if semantic_coherence and semantic_coherence.raw_response:
+        diagnostics["semantic_coherence"] = {
+            "raw_response": semantic_coherence.raw_response,
+        }
+    report.diagnostics = diagnostics
+
     return report
 
 
@@ -790,6 +825,7 @@ def save_report_json(report: EvalReport, path: Path) -> None:
         ],
         "dimension_scores_flat": report.dimension_scores,
         "issues": report.issues,
+        "diagnostics": report.diagnostics,
     }
 
     with path.open("w", encoding="utf-8") as f:

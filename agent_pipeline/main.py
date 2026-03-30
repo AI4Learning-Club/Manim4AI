@@ -69,7 +69,6 @@ def _int_env(name: str, default: int) -> int:
 
 SYNTAX_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_SYNTAX_FIX_MAX_ATTEMPTS", 4))
 RENDER_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_RENDER_FIX_MAX_ATTEMPTS", 4))
-LANGUAGE_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_LANGUAGE_FIX_MAX_ATTEMPTS", 2))
 CODE_EVAL_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_CODE_EVAL_FIX_MAX_ATTEMPTS", 2))
 LATEX_TEXT_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_LATEX_TEXT_FIX_MAX_ATTEMPTS", 2))
 
@@ -196,77 +195,6 @@ def _iter_string_literals(node: ast.AST):
                 yield value.value
 
 
-def _contains_chinese_text(text: str) -> bool:
-    return bool(re.search(r"[\u4e00-\u9fff]", text))
-
-
-def _contains_translatable_english(text: str) -> bool:
-    cleaned = re.sub(r"\s+", " ", text).strip()
-    if not cleaned or not re.search(r"[A-Za-z]", cleaned):
-        return False
-
-    if re.fullmatch(r"[A-Za-z]", cleaned):
-        return False
-    if re.fullmatch(r"[A-Za-z]{1,2}(?:[_^][A-Za-z0-9]+)?", cleaned):
-        return False
-
-    letters_only = re.sub(r"[^A-Za-z]", "", cleaned)
-    if (
-        re.fullmatch(r"[A-Za-z0-9_+\-*/=^()./%]+", cleaned)
-        and len(letters_only) <= 2
-    ):
-        return False
-
-    return True
-
-
-def _detect_output_language_mismatch(code: str, output_language: str) -> str:
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return ""
-
-    target_language = normalize_output_language(output_language, DEFAULT_OUTPUT_LANGUAGE)
-    issues: list[str] = []
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-
-        call_name = _call_name(node.func)
-        if call_name not in _USER_FACING_TEXT_CALLS:
-            continue
-
-        for arg in node.args:
-            for literal in _iter_string_literals(arg):
-                snippet = re.sub(r"\s+", " ", literal).strip()
-                if not snippet:
-                    continue
-                if target_language == "en" and _contains_chinese_text(snippet):
-                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:80]}")
-                elif target_language == "zh" and _contains_translatable_english(snippet):
-                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:80]}")
-
-        for keyword in node.keywords:
-            for literal in _iter_string_literals(keyword.value):
-                snippet = re.sub(r"\s+", " ", literal).strip()
-                if not snippet:
-                    continue
-                if target_language == "en" and _contains_chinese_text(snippet):
-                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:80]}")
-                elif target_language == "zh" and _contains_translatable_english(snippet):
-                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:80]}")
-
-    if not issues:
-        return ""
-
-    target_name = output_language_name(target_language)
-    return (
-        f"\n\nAUTO-DETECTED LANGUAGE MISMATCHES (video should be {target_name}):\n"
-        + "\n".join(dict.fromkeys(issues))
-    )
-
-
 _LATEX_TEXT_MARKER_RE = re.compile(
     r"(\\[A-Za-z]+|[_^]\{[^}]+\}|[A-Za-z0-9]+\s*_\s*\{[^}]+\})"
 )
@@ -281,13 +209,14 @@ def _looks_like_inline_latex(text: str) -> bool:
     return any(ch in cleaned for ch in "\\{}_^")
 
 
-def _detect_latex_in_user_facing_text(code: str) -> str:
+def _collect_latex_in_user_facing_text(code: str) -> List[Dict[str, Any]]:
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return ""
+        return []
 
-    issues: list[str] = []
+    lines = code.splitlines()
+    issues: list[Dict[str, Any]] = []
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -300,20 +229,91 @@ def _detect_latex_in_user_facing_text(code: str) -> str:
             for literal in _iter_string_literals(arg):
                 snippet = re.sub(r"\s+", " ", literal).strip()
                 if snippet and _looks_like_inline_latex(snippet):
-                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:120]}")
+                    lineno = int(getattr(node, "lineno", 0) or 0)
+                    start = max(lineno - 2, 1)
+                    end = min(lineno + 2, len(lines))
+                    context = "\n".join(
+                        f"{idx}: {lines[idx - 1]}"
+                        for idx in range(start, end + 1)
+                    )
+                    issues.append({
+                        "line": lineno,
+                        "call_name": call_name,
+                        "snippet": snippet[:120],
+                        "source_line": lines[lineno - 1] if 1 <= lineno <= len(lines) else "",
+                        "context": context,
+                    })
 
         for keyword in node.keywords:
             for literal in _iter_string_literals(keyword.value):
                 snippet = re.sub(r"\s+", " ", literal).strip()
                 if snippet and _looks_like_inline_latex(snippet):
-                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:120]}")
+                    lineno = int(getattr(node, "lineno", 0) or 0)
+                    start = max(lineno - 2, 1)
+                    end = min(lineno + 2, len(lines))
+                    context = "\n".join(
+                        f"{idx}: {lines[idx - 1]}"
+                        for idx in range(start, end + 1)
+                    )
+                    issues.append({
+                        "line": lineno,
+                        "call_name": call_name,
+                        "snippet": snippet[:120],
+                        "source_line": lines[lineno - 1] if 1 <= lineno <= len(lines) else "",
+                        "context": context,
+                    })
 
+    deduped: list[Dict[str, Any]] = []
+    seen: set[tuple[int, str, str]] = set()
+    for issue in issues:
+        key = (
+            int(issue.get("line", 0) or 0),
+            str(issue.get("call_name", "")),
+            str(issue.get("snippet", "")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(issue)
+    return deduped
+
+
+def _format_latex_in_user_facing_text_report(issues: List[Dict[str, Any]]) -> str:
     if not issues:
         return ""
 
-    return (
-        "\n\nAUTO-DETECTED LATEX IN PLAIN TEXT:\n"
-        + "\n".join(dict.fromkeys(issues))
+    summary = [
+        "\n\nAUTO-DETECTED LATEX IN PLAIN TEXT:",
+        *[
+            f"  line {int(issue.get('line', 0) or 0)}: {issue.get('call_name', '')} -> {issue.get('snippet', '')}"
+            for issue in issues
+        ],
+    ]
+    return "\n".join(summary)
+
+
+def _write_latex_text_issue_details(
+    round_dir: Path,
+    attempt: int,
+    issues: List[Dict[str, Any]],
+) -> None:
+    if not issues:
+        return
+
+    parts = ["AUTO-DETECTED LATEX IN PLAIN TEXT", ""]
+    for idx, issue in enumerate(issues, start=1):
+        parts.append(
+            f"[{idx}] line {int(issue.get('line', 0) or 0)} | {issue.get('call_name', '')}"
+        )
+        parts.append(f"snippet: {issue.get('snippet', '')}")
+        parts.append(f"source: {issue.get('source_line', '')}")
+        parts.append("context:")
+        parts.append(str(issue.get("context", "")))
+        parts.append("")
+
+    (round_dir / f"scene_latex_text_report_{attempt}.txt").write_text(
+        "\n".join(parts).rstrip() + "\n",
+        encoding="utf-8",
     )
 
 
@@ -325,11 +325,13 @@ def _repair_latex_in_user_facing_text_before_render(
     output_language: str,
     max_attempts: int = LATEX_TEXT_FIX_MAX_ATTEMPTS,
 ) -> tuple[str, str, int]:
-    latex_report = _detect_latex_in_user_facing_text(code)
+    latex_issues = _collect_latex_in_user_facing_text(code)
+    latex_report = _format_latex_in_user_facing_text_report(latex_issues)
     attempt = 0
 
     while latex_report and attempt < max_attempts:
         attempt += 1
+        _write_latex_text_issue_details(round_dir, attempt, latex_issues)
         _log(
             f"{label}: found LaTeX fragments inside plain text - "
             f"asking LLM to repair (attempt {attempt}) ..."
@@ -349,45 +351,10 @@ def _repair_latex_in_user_facing_text_before_render(
         )
         code = agent.fix(code, latex_report + extra_hint, output_language=output_language)
         (round_dir / f"scene_latex_text_fixed_{attempt}.py").write_text(code, encoding="utf-8")
-        latex_report = _detect_latex_in_user_facing_text(code)
+        latex_issues = _collect_latex_in_user_facing_text(code)
+        latex_report = _format_latex_in_user_facing_text_report(latex_issues)
 
     return code, latex_report, attempt
-
-
-def _repair_output_language_before_render(
-    agent: CodeGenAgent,
-    code: str,
-    round_dir: Path,
-    label: str,
-    output_language: str,
-    max_attempts: int = LANGUAGE_FIX_MAX_ATTEMPTS,
-) -> tuple[str, str, int]:
-    mismatch_report = _detect_output_language_mismatch(code, output_language)
-    attempt = 0
-    target_name = output_language_name(output_language)
-
-    while mismatch_report and attempt < max_attempts:
-        attempt += 1
-        _log(
-            f"{label}: user-facing text does not match target language "
-            f"({target_name}) - asking LLM to translate (attempt {attempt}) ..."
-        )
-        extra_hint = (
-            "\n\nThis is a language compliance fix, not a layout rewrite.\n"
-            f"Translate every user-facing title, label, caption, section header, subtitle, "
-            f"and narration into {target_name}.\n"
-            "Keep formulas, variable names, units, local icon filenames, theme_id values, "
-            "class names, function names, and other code identifiers unchanged.\n"
-            "If a short standard abbreviation is necessary, keep it only after the translated "
-            "term, such as 'gross domestic product (GDP)'.\n"
-        )
-        code = agent.fix(code, mismatch_report + extra_hint, output_language=output_language)
-        (round_dir / f"scene_language_fixed_{attempt}.py").write_text(code, encoding="utf-8")
-        mismatch_report = _detect_output_language_mismatch(code, output_language)
-
-    return code, mismatch_report, attempt
-
-
 def _code_eval_issues(report: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not report:
         return []
@@ -549,7 +516,6 @@ def _try_render(
     round_dir.mkdir(parents=True, exist_ok=True)
     result = RenderResult(success=False, error_log="", scene_name="")
     syntax_fix_rounds = 0
-    language_fix_rounds = 0
     latex_text_fix_rounds = 0
     code_eval_fix_rounds = 0
     segment_fix_rounds = 0
@@ -568,32 +534,6 @@ def _try_render(
             _log(f"{label}: syntax fix failed before render")
             result = RenderResult(success=False, error_log=syntax_error, scene_name="")
         else:
-            code, language_error, language_attempts = _repair_output_language_before_render(
-                agent,
-                code,
-                round_dir,
-                label,
-                output_language=output_language,
-            )
-            language_fix_rounds += language_attempts
-            if language_attempts:
-                render_segment_ids = None
-            if language_attempts:
-                code, syntax_error, syntax_attempts = _repair_syntax_before_render(
-                    agent, code, round_dir, label, output_language=output_language
-                )
-                syntax_fix_rounds += syntax_attempts
-                if syntax_attempts:
-                    render_segment_ids = None
-            if syntax_error:
-                _log(f"{label}: syntax fix failed after language translation")
-                result = RenderResult(success=False, error_log=syntax_error, scene_name="")
-                continue
-            if language_error:
-                _log(f"{label}: target-language fix did not converge before render")
-                result = RenderResult(success=False, error_log=language_error, scene_name="")
-                continue
-
             code, latex_text_error, latex_text_attempts = _repair_latex_in_user_facing_text_before_render(
                 agent,
                 code,
@@ -640,32 +580,6 @@ def _try_render(
                 if syntax_error:
                     _log(f"{label}: syntax fix failed after code_eval repair")
                     result = RenderResult(success=False, error_log=syntax_error, scene_name="")
-                    continue
-
-                code, language_error, language_attempts = _repair_output_language_before_render(
-                    agent,
-                    code,
-                    round_dir,
-                    label,
-                    output_language=output_language,
-                )
-                language_fix_rounds += language_attempts
-                if language_attempts:
-                    render_segment_ids = None
-                if language_attempts:
-                    code, syntax_error, syntax_attempts = _repair_syntax_before_render(
-                        agent, code, round_dir, label, output_language=output_language
-                    )
-                    syntax_fix_rounds += syntax_attempts
-                    if syntax_attempts:
-                        render_segment_ids = None
-                if syntax_error:
-                    _log(f"{label}: syntax fix failed after code_eval language repair")
-                    result = RenderResult(success=False, error_log=syntax_error, scene_name="")
-                    continue
-                if language_error:
-                    _log(f"{label}: target-language fix did not converge after code_eval repair")
-                    result = RenderResult(success=False, error_log=language_error, scene_name="")
                     continue
 
                 code, latex_text_error, latex_text_attempts = _repair_latex_in_user_facing_text_before_render(
@@ -728,14 +642,12 @@ def _try_render(
                     _log(f"{label}: render OK")
                 return code, result, {
                     "syntax_fix_rounds": syntax_fix_rounds,
-                    "language_fix_rounds": language_fix_rounds,
                     "latex_text_fix_rounds": latex_text_fix_rounds,
                     "code_eval_fix_rounds": code_eval_fix_rounds,
                     "segment_fix_rounds": segment_fix_rounds,
                     "render_fix_rounds": attempt,
                     "total_fix_rounds": (
                         syntax_fix_rounds
-                        + language_fix_rounds
                         + latex_text_fix_rounds
                         + code_eval_fix_rounds
                         + segment_fix_rounds
@@ -786,14 +698,12 @@ def _try_render(
 
     return code, result, {
         "syntax_fix_rounds": syntax_fix_rounds,
-        "language_fix_rounds": language_fix_rounds,
         "latex_text_fix_rounds": latex_text_fix_rounds,
         "code_eval_fix_rounds": code_eval_fix_rounds,
         "segment_fix_rounds": segment_fix_rounds,
         "render_fix_rounds": RENDER_FIX_MAX_ATTEMPTS,
         "total_fix_rounds": (
             syntax_fix_rounds
-            + language_fix_rounds
             + latex_text_fix_rounds
             + code_eval_fix_rounds
             + segment_fix_rounds

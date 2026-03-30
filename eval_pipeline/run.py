@@ -497,6 +497,7 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
 
     overlap_review: Optional[OverlapReviewVerdict] = None
     anchor_binding_review: Optional[AnchorBindingVerdict] = None
+    whole_video_visual_review_raw_response: str = ""
     visual_coverage: Optional[VisualCoverageVerdict] = None
     semantic_coherence: Optional[SemanticCoherenceVerdict] = None
     av_alignment_verdict: Optional[AVAlignmentVerdict] = None
@@ -575,7 +576,7 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
         print(f"\n[Layer 2c] AV Alignment MLLM skipped ({reason})")
 
     def _handle_stage_result(stage_name: str, result) -> None:
-        nonlocal task_correctness, anchor_binding_review, overlap_review, visual_coverage, semantic_coherence, av_alignment_verdict
+        nonlocal task_correctness, anchor_binding_review, overlap_review, whole_video_visual_review_raw_response, visual_coverage, semantic_coherence, av_alignment_verdict
         if stage_name == "task_correctness":
             task_correctness = result
             print(f"  Content Accuracy: {'YES' if result.content_accuracy else 'NO'}")
@@ -586,6 +587,7 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
                 raise TypeError("whole_video_visual_review returned an unexpected result type")
             overlap_review = result.overlap_review
             anchor_binding_review = result.anchor_binding_review
+            whole_video_visual_review_raw_response = result.raw_response
             overlap_status = "HAS OVERLAP" if overlap_review.has_overlap else "CLEAN"
             anchor_status = "HAS ISSUES" if anchor_binding_review.has_binding_issue else "CLEAN"
             print(
@@ -661,6 +663,7 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
         alignment_metrics=alignment_metrics,
         task_correctness=task_correctness,
         av_alignment_verdict=av_alignment_verdict,
+        whole_video_visual_review_raw_response=whole_video_visual_review_raw_response,
         anchor_binding_review=anchor_binding_review,
         overlap_review=overlap_review,
         visual_coverage=visual_coverage,

@@ -1699,8 +1699,8 @@ class CodeGenAgent:
         output_language: str = "en",
     ) -> str:
         """Generate Manim code from a student request (text, optionally image)."""
-        prompt_parts = [f"## Student request\n{request_text}"]
-        prompt_parts.append(_build_output_language_prompt(output_language))
+        prompt_parts = [_build_output_language_prompt(output_language)]
+        prompt_parts.append(f"## Student request\n{request_text}")
         if teaching_plan:
             prompt_parts.append(
                 "## Teaching plan\n" + json.dumps(teaching_plan, ensure_ascii=False, indent=2)
@@ -1890,10 +1890,10 @@ class CodeGenAgent:
     ) -> str:
         """Improve code based on evaluation feedback + optional keyframe images."""
         feedback = _build_actionable_feedback(eval_report)
-        prompt_parts = [
+        prompt_parts = [_build_output_language_prompt(output_language)]
+        prompt_parts.append(
             f"## Original code\n```python\n{code}\n```\n\n## Evaluation feedback\n{feedback}"
-        ]
-        prompt_parts.append(_build_output_language_prompt(output_language))
+        )
         if teaching_plan:
             prompt_parts.append(
                 "## Teaching plan to preserve\n"

@@ -44,7 +44,7 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-TTS_MAX_WORKERS = max(1, _int_env("A4L_TTS_WORKERS", 4))
+TTS_MAX_WORKERS = max(1, _int_env("A4L_TTS_WORKERS", 8))
 
 
 @dataclass

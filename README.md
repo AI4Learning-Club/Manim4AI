@@ -146,7 +146,7 @@ python -m agent_pipeline '用动画讲解这道题：已知椭圆$C:\dfrac{x^2}{
         \item 设$P(m,n)$，求$R$的坐标（用$m,n$表示）；
         \item 设$O$为坐标原点，$Q$是$C$上的动点，直线$OR$的斜率是直线$OP$的斜率的$3$倍，求$|PQ|$的最大值.
     \end{enumerate}
-\end{enumerate}' --language eg
+\end{enumerate}' --language zh
 
 ```
 
@@ -159,7 +159,7 @@ python -m agent_pipeline "Explain this problem step by step." --image path/to/pr
 只提供图片也可以：
 
 ```bash
-python -m agent_pipeline --image "E:\Ai4learning\3.18.16.25\屏幕截图 2026-03-26 212747.png" --language zh
+python -m agent_pipeline --image ""E:\Ai4learning\3.18.16.25\屏幕截图 2026-03-29 152245.png"" --language zh
 ```
 
 指定输出目录：
