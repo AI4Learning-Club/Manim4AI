@@ -209,7 +209,7 @@ class AI4LearningBaseScene(NarratedScene):
         if self._bg_image is not None:
             self.add(self._bg_image)
 
-    # --- 右上角 section badge：跟随主题取文字、描边、底色 ---
+    # --- title chip：跟随主题取文字、描边、底色 ---
     def _make_title_chip_label(self, text: str, font_size: float):
         return self.get_text(
             text,
@@ -253,7 +253,7 @@ class AI4LearningBaseScene(NarratedScene):
         if hasattr(self, "clear_anchor_bindings"):
             self.clear_anchor_bindings()
         self._subtitle_mob = None
-        self._section_badge = None
+        self._page_title_mob = None
         self.wait(wait_time)
 
     # --- 本地图标加载：只从项目 icon 目录取资源 ---

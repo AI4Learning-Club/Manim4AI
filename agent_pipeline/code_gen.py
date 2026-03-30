@@ -165,8 +165,8 @@ STATE / CLEARING SAFETY:
   persistent background is not removed.
 - Use the available `AI4LearningBaseScene` layout helpers before stacking many
   manual `.shift()` / `.to_edge()` calls.
-- Use `self.show_section_badge_once(...)`,
-  `self.make_page_title(...)`, and `self.fit_body(...)`.
+- Use `self.make_page_title(...)`, `self.show_page_title_chip(...)`, and
+  `self.fit_body(...)`.
 
 STAGED REVEAL SAFETY:
 - Do NOT put all future text, formulas, arrows, labels, captions, examples,
@@ -177,6 +177,15 @@ STAGED REVEAL SAFETY:
   discussed right now may be visible.
 - Reveal each teaching beat in sync with narration: usually main visual or
   title first, then local labels, then formulas, then the takeaway.
+- Each page MUST choose exactly ONE page-title style:
+  1. long top title via `self.make_page_title(...)` or
+     `self.fit_to_top_band(...)`,
+  2. title chip via `self.show_page_title_chip(...)`, which appears large near
+     the center, then shrinks/moves to the top-right and stays there.
+- Never use both page-title styles on the same page.
+- If a page uses the long top title style, that title MUST be explicitly shown
+  in the page's first reveal beat, then remain visible for the rest of that
+  page until the page ends.
 - Do NOT reveal an entire page container such as `Group(title, bodyN)` at
   once. Reveal the page title and the body's internal teaching beats in order.
 - Avoid patterns like `self.play(FadeIn(page))`, `self.play(Write(page))`,
@@ -349,11 +358,19 @@ PAGE / BODY AUTHORING CONTRACT:
 - If a sentence-like object should persist on that page, it must be planned
   inside `bodyN` before the first reveal of that page.
 - Every page may have only one title system.
-- At the start of a section, you may flash one short section badge with
-  `self.show_section_badge_once(...)`.
-- After that, use only the long top title for each page via
-  `self.make_page_title(...)`.
-- Never show the short badge and the long page title at the same time.
+- Each page must choose exactly one title style:
+  long top title via `self.make_page_title(...)` or title chip via
+  `self.show_page_title_chip(...)`.
+- Never use both the long top title and the title chip on the same page.
+- The long page title is page-persistent: show it once at the start of that
+  page, keep it visible while that page's body teaches, and clear it only when
+  the page ends.
+- The title chip is also page-persistent: it enters as a large center title,
+  then parks at the top-right and stays there until the page ends.
+- The long page title does NOT belong inside `bodyN`. Keep it in the top band,
+  and fit only `bodyN` with `self.fit_body(...)`.
+- The title chip does NOT belong inside `bodyN` either. It is a separate
+  persistent page-title system outside the fitted body.
 - Respect minimum readable font sizes:
   - page titles: at least 28
   - body sentence text, prompts, takeaways, roadmap/promise/summary text: at least 20
@@ -437,7 +454,6 @@ self.play(ReplacementTransform(secant, new_secant), ReplacementTransform(dot, ne
 Good when the structure must change:
 ```python
 self.clear_scene_keep_bg()
-self.show_section_badge_once("Next Step")
 title = self.make_page_title("Now we rebuild the idea", font_size=28)
 body4 = Group(new_visual_block, new_note_block).arrange(DOWN, buff=0.24)
 self.fit_body(body4, max_width=11.6, center=UP * 0.15)
@@ -665,12 +681,10 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
     `.shift()`, or `.to_edge()` on that same whole `bodyN` again.
   - Never use `.to_edge(UP)` on its own for page titles. Put title-like objects
     in the top band.
-  - If a section starts with `self.show_section_badge_once(...)`, let that
-    badge finish and disappear before showing the page's long top title.
   - ALWAYS reserve the bottom band for subtitles. Do NOT place formulas,
     diagrams, captions, or explanatory text in the subtitle band.
   - If you are unsure where something belongs, default to the body band unless
-    it is literally the page title/badge or the subtitle module.
+    it is literally the page title or the subtitle module.
   - If a page needs roadmap text, promise text, a takeaway, or a summary line
     that should persist on that page, include it in a preplanned body-band block
     instead of attaching it ad hoc after reveal.
@@ -698,8 +712,6 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
     `self.fit_body(bodyN, ...)` with an explicit center if needed.
   - For top-down pages, a good default is title at top, visual in middle,
     formula or short text below.
-  - Use the short section badge only as a brief section-start marker.
-  - After the badge flash, keep only the long top title for that page.
   - Keep a dedicated title row above the content so the title does not visually
     collide with the graph or diagram below it.
   - Do NOT default every section to left graphic + right text.
@@ -745,7 +757,7 @@ VECTOR DIAGRAM RULES:
 AVAILABLE LAYOUT HELPERS (already defined on AI4LearningBaseScene):
 - `self.fit_body(body, max_width=12, max_height=None, center=None)`
 - `self.make_page_title("Title", font_size=34, max_width=11.4)`
-- `self.show_section_badge_once("片段标题")`
+- `self.show_page_title_chip("Title")`
 - `self.fit_to_top_band(group, max_width=11.8, max_height=None, center=None)`
 - `self.clear_scene_keep_bg(run_time=0.7, wait_time=0.3)`
 - `self.make_subtitle_panel("字幕内容")`
@@ -766,16 +778,16 @@ AVAILABLE LAYOUT HELPERS (already defined on AI4LearningBaseScene):
 - `self.make_panel_style()`
 - `self.get_warning_color()`, `self.get_success_color()`
 - `self.get_border_color()`, `self.get_axis_color()`
-Preferred new-code pattern: use `self.show_section_badge_once(...)` at the
-start of a section, `self.make_page_title(...)` for each page's long title, and
+Preferred new-code pattern: for each page choose exactly one of
+`self.make_page_title(...)` or `self.show_page_title_chip(...)`, and call
 `self.fit_body(bodyN, ...)` exactly once for that page's unique body root.
 
 SECTION TITLE RULES:
-- Use the short section badge only once at the start of each section.
-- Prefer `self.show_section_badge_once(...)` for that brief section-start cue.
-- After that, use only the long top title for each page in that section.
-- Never show the short badge and the long title at the same time.
-- Do NOT treat the top-right corner as a persistent badge region anymore.
+- After that, each page must choose one title style: long top title or title
+  chip.
+- Never use both title styles on the same page.
+- If the page uses the title chip style, the top-right corner becomes that
+  page's persistent title region.
 - Keep section titles short, usually 2-6 words in English or 4-10 Chinese characters.
 - Title names should be informative and teacher-like, not vague slogans.
 - Prefer titles that tell the student what this step is for, such as
@@ -1256,10 +1268,9 @@ RULE #3: Never introduce new crashes
     instead of stacking manual `.shift()` calls.
 - Preserve or introduce varied layouts instead of collapsing everything into
     the same left-visual/right-text template.
-- Prefer `self.show_section_badge_once(...)`, `self.make_page_title(...)`, and
+- Prefer `self.make_page_title(...)`, `self.show_page_title_chip(...)`, and
     `self.speak_with_subtitle(...)` when revising scenes so the title rhythm
     and subtitle rhythm remain consistent.
-- Keep short section badges brief, and keep later pages on long top titles only.
 - Treat takeaways and notes as blocks when they occupy their own stable page
   region, not as floating late-added loose text.
 - Use simple subtitle fade-in/fade-out only; avoid flashy subtitle transitions.
@@ -1730,7 +1741,10 @@ class CodeGenAgent:
             "Plan each section as one or more stable pages. Compose each page before its first reveal. "
             "Each page must have exactly one fitted body root named body1, body2, body3, and so on. "
             "Use blocks as the page layout units, place those blocks explicitly inside that page's bodyN, and arrange leaf objects inside each block. "
-            "Use `self.show_section_badge_once(...)` only at the start of a section, then use `self.make_page_title(...)` or `self.fit_to_top_band(...)` for the long top title of each page. "
+            "Each page must choose exactly one page-title style: either a long top title via `self.make_page_title(...)` / `self.fit_to_top_band(...)`, or a title chip via `self.show_page_title_chip(...)`. "
+            "Never use both title styles on the same page. "
+            "If a page uses the long top title style, show it explicitly in that page's first reveal beat and keep it visible until that page ends. "
+            "Do not place the page title inside bodyN. "
             "Call `self.fit_body(bodyN, ...)` exactly once for that page's bodyN. Keep each page visually stable after it appears. "
             + _ANCHOR_LIFECYCLE_HARD_RULES.replace("\n", " ")
             + " "

@@ -38,7 +38,7 @@ class NarratedScene(Scene):
     SUBTITLE_TEXT_COLOR = "#EDF5FF"
 
     def setup(self):
-        self._section_badge = None
+        self._page_title_mob = None
         self._subtitle_mob = None
         self._block_bindings = []
         self._anchor_bindings = []
@@ -124,23 +124,6 @@ class NarratedScene(Scene):
 
     def body_band_height(self) -> float:
         return self.CONTENT_TOP_LIMIT - self._content_bottom_limit()
-
-    def _keep_clear_of_section_badge(self, group):
-        if self._section_badge is None:
-            return group
-
-        badge_left = self._section_badge.get_left()[0] - 0.18
-        badge_bottom = self._section_badge.get_bottom()[1] - 0.14
-        group_right = group.get_right()[0]
-        group_top = group.get_top()[1]
-        if group_right > badge_left and group_top > badge_bottom:
-            dx = group_right - badge_left
-            dy = group_top - badge_bottom
-            if dx >= dy:
-                group.shift(LEFT * (dx + 0.18))
-            else:
-                group.shift(DOWN * (dy + 0.12))
-        return group
 
     def _clamp_vertical_band(self, group, *, top_limit: float, bottom_limit: float, side_limit: float | None = None):
         """Clamp a block into a fixed vertical band and side limits."""
@@ -460,31 +443,51 @@ class NarratedScene(Scene):
         )
         return VGroup(box, label.move_to(box.get_center()))
 
-    def show_section_badge_once(
+    def _position_title_chip_top_right(self, badge, buff: float = 0.26):
+        badge.to_corner(UR, buff=buff)
+        if badge.get_top()[1] > self.TOP_BAND_TOP - 0.04:
+            badge.shift(DOWN * (badge.get_top()[1] - (self.TOP_BAND_TOP - 0.04)))
+        if badge.get_right()[0] > config.frame_width / 2 - 0.12:
+            badge.shift(LEFT * (badge.get_right()[0] - (config.frame_width / 2 - 0.12)))
+        if badge.get_bottom()[1] < self.TOP_BAND_BOTTOM + 0.04:
+            badge.shift(UP * ((self.TOP_BAND_BOTTOM + 0.04) - badge.get_bottom()[1]))
+        return badge
+
+    def show_page_title_chip(
         self,
         text: str,
-        run_time: float = 0.38,
-        hold_time: float = 0.08,
-        fade_time: float = 0.22,
+        *,
+        font_size: float = 22,
+        max_width: float = 4.8,
+        intro_scale: float = 1.32,
+        intro_run_time: float = 0.42,
+        settle_run_time: float = 0.34,
+        center=None,
     ):
-        """Show a short section badge once, then clear it before page content begins."""
-        badge = self._build_title_chip(text, font_size=32, max_width=8.4)
-        self.fit_to_top_band(badge, max_width=8.4, max_height=self.top_band_height() * 0.96)
+        """Show a page title chip large in the center, then park it at the top-right for the page."""
+        if center is None:
+            center = ORIGIN
 
-        if self._section_badge is not None:
-            self.play(FadeOut(self._section_badge, shift=UP * 0.12), run_time=min(fade_time, 0.18))
+        if self._page_title_mob is not None:
+            self.play(FadeOut(self._page_title_mob, shift=UP * 0.12), run_time=min(settle_run_time, 0.18))
+            self._page_title_mob = None
 
-        self._section_badge = badge
+        parked = self._build_title_chip(text, font_size=font_size, max_width=max_width)
+        self._position_title_chip_top_right(parked)
+
+        intro = parked.copy()
+        intro.scale(intro_scale)
+        intro.move_to(center)
+
+        self.add(intro)
         self.play(
-            DrawBorderThenFill(badge[0]),
-            FadeIn(badge[1], shift=UP * 0.08),
-            run_time=run_time,
+            DrawBorderThenFill(intro[0]),
+            FadeIn(intro[1], shift=UP * 0.08),
+            run_time=intro_run_time,
         )
-        if hold_time > 0:
-            self.wait(hold_time)
-        self.play(FadeOut(badge, shift=UP * 0.08), run_time=fade_time)
-        self._section_badge = None
-        return badge
+        self.play(Transform(intro, parked), run_time=settle_run_time)
+        self._page_title_mob = intro
+        return self._page_title_mob
 
     def _normalize_subtitle_text(self, text: str):
         cleaned = re.sub(r"\s+", " ", text).strip()

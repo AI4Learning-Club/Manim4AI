@@ -152,7 +152,7 @@ _SCENE_METHOD_HINTS = {
     "fit_body",
     "make_page_title",
     "play",
-    "show_section_badge_once",
+    "show_page_title_chip",
     "speak",
     "speak_with_subtitle",
 }

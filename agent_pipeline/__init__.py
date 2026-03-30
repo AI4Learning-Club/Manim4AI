@@ -1,1 +1,1 @@
-"""Multi-agent Manim generation-evaluation loop pipeline."""
+"""Single-round Manim generation pipeline."""

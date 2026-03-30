@@ -1,12 +1,9 @@
 """
-Multi-agent Manim generation-evaluation loop.
+Single-round Manim generation pipeline.
 
 Flow:
   1. CodeGen agent produces Round 1 Manim code from a student request.
-  2. Round 1 renders with TTS enabled and goes through full evaluation.
-  3. The CodeGen agent revises the code from Round 1 feedback and keyframes.
-  4. Round 2 renders the improved scene with TTS enabled and becomes the
-     final delivery video.
+  2. Round 1 renders with TTS enabled at final delivery quality.
 """
 
 from __future__ import annotations
@@ -27,7 +24,6 @@ from dotenv import load_dotenv
 from .asset_resolver import resolve_local_assets
 from .code_eval import CodeEvalAgent
 from .code_gen import CodeGenAgent
-from .evaluator import collect_keyframes, evaluate
 from .llm import resolve_pipeline_llm_configs, validate_pipeline_llm_configs
 from .output_language import normalize_output_language, output_language_name
 from .renderer import RenderResult, render_scene_pack
@@ -43,12 +39,11 @@ from .tts import has_audio_stream, voice_for_language
 ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
 
-EVAL_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-EVAL_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api2.tabcode.cc/openai")
-EVAL_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 MANIM_QUALITY = os.environ.get("MANIM_QUALITY", "-qm --fps 60")
-ROUND1_MANIM_QUALITY = os.environ.get("ROUND1_MANIM_QUALITY", "-r 854,480 --fps 30")
-ROUND2_MANIM_QUALITY = os.environ.get("ROUND2_MANIM_QUALITY", MANIM_QUALITY)
+ROUND1_MANIM_QUALITY = os.environ.get(
+    "ROUND1_MANIM_QUALITY",
+    os.environ.get("ROUND2_MANIM_QUALITY", MANIM_QUALITY),
+)
 RUNS_DIR = ROOT_DIR / "runs"
 USE_LOCAL_ICONS = os.environ.get("A4L_USE_LOCAL_ICONS", "1").lower() not in {
     "0",
@@ -171,7 +166,7 @@ _USER_FACING_TEXT_CALLS = {
     "make_page_title",
     "make_subtitle_panel",
     "set_subtitle",
-    "show_section_badge_once",
+    "show_page_title_chip",
     "speak",
     "speak_with_subtitle",
 }
@@ -712,40 +707,6 @@ def _try_render(
     }
 
 
-def _try_eval(
-    video_path: Path,
-    eval_dir: Path,
-    label: str,
-    *,
-    skip_audio: bool,
-    ocr_enabled: bool,
-    meta: Optional[Dict[str, Any]] = None,
-    topic: Optional[str] = None,
-) -> Optional[Dict]:
-    """Run the eval pipeline. Returns the report dict or None on error."""
-    _log(f"{label}: evaluating video ...")
-    try:
-        report = evaluate(
-            video_path,
-            eval_dir,
-            api_key=EVAL_API_KEY,
-            base_url=EVAL_BASE_URL,
-            model=EVAL_MODEL,
-            skip_audio=skip_audio,
-            ocr_enabled=ocr_enabled,
-            meta=meta,
-            topic=topic,
-        )
-        score = report.get("overall_score", 0)
-        passed = report.get("overall_passed", False)
-        status = "PASS" if passed else "FAIL"
-        _log(f"{label}: score={score:.2f} [{status}]")
-        return report
-    except Exception as exc:
-        _log(f"{label}: evaluation error - {exc}")
-        return None
-
-
 def _segment_infos(render: RenderResult) -> List[Dict[str, Any]]:
     infos: List[Dict[str, Any]] = []
     for segment in sorted(render.segments, key=lambda item: item.order):
@@ -785,16 +746,6 @@ def _round_info(n: int, render: RenderResult, report: Optional[Dict]) -> Dict:
     return info
 
 
-def _find_keyframes(eval_dir: Path) -> List[Path]:
-    """Collect keyframe images from an eval output dir."""
-    keyframes = collect_keyframes(eval_dir)
-    if keyframes:
-        return keyframes
-    for sub in eval_dir.rglob("*.jpg"):
-        keyframes.append(sub)
-    return sorted(keyframes)
-
-
 def _build_eval_meta(
     *,
     render_at_1: Optional[bool],
@@ -826,7 +777,7 @@ def run_pipeline(
     run_dir: Optional[Path] = None,
     language: Optional[str] = None,
 ) -> Dict:
-    """Execute the full generate-render-evaluate-improve loop."""
+    """Execute the single-round generate-render pipeline."""
     stage_times: Dict[str, float] = {}
     output_language = normalize_output_language(language, DEFAULT_OUTPUT_LANGUAGE)
 
@@ -856,12 +807,6 @@ def run_pipeline(
             {
                 "analysis": analysis_llm.summary(),
                 "code": code_llm.summary(),
-                "eval": {
-                    "provider": "openai",
-                    "model": EVAL_MODEL,
-                    "base_url": EVAL_BASE_URL,
-                    "api_key": "***" if EVAL_API_KEY else "",
-                },
             },
             ensure_ascii=False,
             indent=2,
@@ -948,12 +893,9 @@ def run_pipeline(
         "rounds": [],
         "final_video": None,
         "final_video_with_audio": None,
-        "final_eval_file": None,
         "final_score": None,
         "final_passed": None,
     }
-
-    total_repair_rounds = 0
 
     # ==================================================================
     # Round 1
@@ -981,78 +923,14 @@ def run_pipeline(
         output_language=output_language,
     )
     stage_times["round1_render"] = time.time() - stage_started_at
-    total_repair_rounds += int(r1_fix_stats.get("total_fix_rounds", 0))
 
-    r1_report: Optional[Dict] = None
-    r1_eval_dir = r1_dir / "eval"
+    summary["rounds"].append(_round_info(1, r1_render, None))
     if r1_render.success and r1_render.video_path:
-        stage_started_at = time.time()
-        r1_report = _try_eval(
-            r1_render.video_path,
-            r1_eval_dir,
-            "Round 1",
-            skip_audio=False,
-            ocr_enabled=True,
-            topic=request_text,
-        )
-        stage_times["round1_eval"] = time.time() - stage_started_at
-
-    summary["rounds"].append(_round_info(1, r1_render, r1_report))
-
-    # ==================================================================
-    # Round 2
-    # ==================================================================
-    if not r1_render.success:
-        _log("Round 2: Round 1 did not produce a video - running a render-rescue pass ...")
-        rescue_hint = r1_render.error_log or "Round 1 did not produce a completed video."
-        stage_started_at = time.time()
-        code = agent.fix(code, rescue_hint, output_language=output_language)
-        stage_times["round2_rescue_fix"] = time.time() - stage_started_at
-        total_repair_rounds += 1
-    else:
-        _log("Round 2: improving code with evaluation feedback + keyframe screenshots ...")
-        keyframes = _find_keyframes(r1_eval_dir)
-        if keyframes:
-            _log(f"  Sending {len(keyframes)} keyframe(s) to LLM for visual feedback")
-        feedback = r1_report or {"issues": [], "dimensions": [], "overall_score": 0}
-        stage_started_at = time.time()
-        code = agent.improve(
-            code,
-            feedback,
-            keyframe_paths=keyframes or None,
-            teaching_plan=teaching_plan,
-            output_language=output_language,
-        )
-        stage_times["round2_improve"] = time.time() - stage_started_at
-
-    r2_dir = run_dir / "round2"
-    stage_started_at = time.time()
-    code, r2_render, r2_fix_stats = _try_render(
-        code_eval_agent,
-        agent,
-        code,
-        r2_dir,
-        "Round 2",
-        quality_flags=ROUND2_MANIM_QUALITY,
-        enable_tts=True,
-        output_language=output_language,
-    )
-    stage_times["round2_render"] = time.time() - stage_started_at
-    total_repair_rounds += int(r2_fix_stats.get("total_fix_rounds", 0))
-
-    summary["rounds"].append(_round_info(2, r2_render, None))
-    if r2_render.success and r2_render.video_path:
-        summary["final_video"] = str(r2_render.video_path)
-        if has_audio_stream(r2_render.video_path):
-            summary["final_video_with_audio"] = str(r2_render.video_path)
-        _log("Final delivery: Round 2 video ready")
-    elif r1_render.success and r1_render.video_path:
         summary["final_video"] = str(r1_render.video_path)
         if has_audio_stream(r1_render.video_path):
             summary["final_video_with_audio"] = str(r1_render.video_path)
-        summary["final_score"] = r1_report.get("overall_score") if r1_report else None
-        summary["final_passed"] = r1_report.get("overall_passed") if r1_report else None
-        _log("Round 2 failed - falling back to Round 1 video")
+        summary["final_passed"] = True
+        _log("Final delivery: Round 1 video ready")
     else:
         summary["final_passed"] = False
 
@@ -1075,7 +953,7 @@ def _save_summary(run_dir: Path, summary: Dict[str, Any]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="agent_pipeline",
-        description="Multi-agent Manim generation-evaluation loop",
+        description="Single-round Manim generation pipeline",
     )
     parser.add_argument("request", nargs="?", default=None, help="Student request text")
     parser.add_argument("--image", type=Path, default=None, help="Optional input image")
