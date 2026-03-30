@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import textwrap
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -36,6 +37,27 @@ class ScenePackSpec:
     wrapper_scenes: Dict[str, WrapperSceneSpec]
     lesson_base_name: Optional[str]
     section_method_owners: Dict[str, str]
+
+
+@dataclass(frozen=True)
+class MethodSnippet:
+    owner_class: str
+    method_name: str
+    source: str
+    lineno: int
+    end_lineno: int
+
+
+@dataclass(frozen=True)
+class SegmentRepairContext:
+    segment: SegmentSpec
+    lesson_base_name: Optional[str]
+    wrapper_scene_name: str
+    section_owner_class: str
+    manifest_source: str
+    wrapper_scene_source: str
+    section_method: MethodSnippet
+    helper_methods: List[MethodSnippet]
 
 
 def extract_manifest_order(code: str) -> List[SegmentSpec]:
@@ -73,6 +95,89 @@ def parse_scene_pack(code: str) -> ScenePackSpec:
     if errors or spec is None:
         raise ValueError(_format_errors(errors))
     return spec
+
+
+def build_segment_repair_context(code: str, segment_id: str) -> SegmentRepairContext:
+    module = _parse_module(code)
+    spec, errors = _build_scene_pack_spec(module)
+    if errors or spec is None:
+        raise ValueError(_format_errors(errors))
+
+    segment = next((item for item in spec.manifest if item.segment_id == segment_id), None)
+    if segment is None:
+        raise ValueError(f"Unknown segment id `{segment_id}`.")
+
+    class_map, _ = _collect_class_defs(module)
+    method_map, _ = _collect_class_methods(class_map)
+    owner_class = spec.section_method_owners.get(segment.method_name)
+    if not owner_class:
+        raise ValueError(
+            f"Could not resolve owner for segment method `{segment.method_name}`."
+        )
+
+    section_def = method_map.get(owner_class, {}).get(segment.method_name)
+    if section_def is None:
+        raise ValueError(
+            f"Missing section method `{owner_class}.{segment.method_name}`."
+        )
+
+    wrapper_class = class_map.get(segment.scene_name)
+    if wrapper_class is None:
+        raise ValueError(f"Missing wrapper scene `{segment.scene_name}`.")
+
+    helper_methods = _collect_segment_helper_methods(
+        code=code,
+        spec=spec,
+        method_map=method_map,
+        owner_class=owner_class,
+        section_name=segment.method_name,
+    )
+
+    return SegmentRepairContext(
+        segment=segment,
+        lesson_base_name=spec.lesson_base_name,
+        wrapper_scene_name=segment.scene_name,
+        section_owner_class=owner_class,
+        manifest_source=_manifest_source(code, module),
+        wrapper_scene_source=_node_source(code, wrapper_class),
+        section_method=MethodSnippet(
+            owner_class=owner_class,
+            method_name=segment.method_name,
+            source=_node_source(code, section_def),
+            lineno=section_def.lineno,
+            end_lineno=section_def.end_lineno or section_def.lineno,
+        ),
+        helper_methods=helper_methods,
+    )
+
+
+def replace_method_source(
+    code: str,
+    *,
+    owner_class: str,
+    method_name: str,
+    new_method_source: str,
+) -> str:
+    module = _parse_module(code)
+    class_map, _ = _collect_class_defs(module)
+    method_map, _ = _collect_class_methods(class_map)
+    method_def = method_map.get(owner_class, {}).get(method_name)
+    if method_def is None:
+        raise ValueError(f"Missing method `{owner_class}.{method_name}`.")
+
+    lines = code.splitlines(keepends=True)
+    start_lineno = min(
+        [decorator.lineno for decorator in method_def.decorator_list] or [method_def.lineno]
+    )
+    end_lineno = method_def.end_lineno or method_def.lineno
+    start_index = start_lineno - 1
+    end_index = end_lineno
+    indent = _line_indent(lines[start_index]) if lines else "    "
+    replacement = textwrap.indent(
+        _normalize_method_block(new_method_source) + "\n",
+        indent,
+    )
+    return "".join(lines[:start_index] + [replacement] + lines[end_index:])
 
 
 def _parse_module(code: str) -> ast.Module:
@@ -227,6 +332,20 @@ def _collect_class_methods(
     return method_map, errors
 
 
+def _manifest_source(code: str, module: ast.Module) -> str:
+    for node in module.body:
+        if isinstance(node, ast.Assign):
+            if any(
+                isinstance(target, ast.Name) and target.id == SCENE_MANIFEST_NAME
+                for target in node.targets
+            ):
+                return _node_source(code, node)
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == SCENE_MANIFEST_NAME:
+                return _node_source(code, node)
+    return ""
+
+
 def _extract_manifest_segments(module: ast.Module) -> tuple[List[SegmentSpec], List[str]]:
     manifest_nodes: List[ast.AST] = []
     for node in module.body:
@@ -369,6 +488,68 @@ def _validate_wrapper_construct(
     return called_method, errors
 
 
+def _collect_segment_helper_methods(
+    *,
+    code: str,
+    spec: ScenePackSpec,
+    method_map: Dict[str, Dict[str, ast.FunctionDef]],
+    owner_class: str,
+    section_name: str,
+) -> List[MethodSnippet]:
+    manifest_method_names = {segment.method_name for segment in spec.manifest}
+    search_classes = [owner_class]
+    if spec.lesson_base_name and spec.lesson_base_name not in search_classes:
+        search_classes.append(spec.lesson_base_name)
+
+    resolved: List[MethodSnippet] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _resolve_owner(method_name: str) -> Optional[str]:
+        for class_name in search_classes:
+            if method_name in method_map.get(class_name, {}):
+                return class_name
+        return None
+
+    def _walk(owner: str, method_name: str) -> None:
+        key = (owner, method_name)
+        if key in seen:
+            return
+        seen.add(key)
+
+        method_def = method_map.get(owner, {}).get(method_name)
+        if method_def is None:
+            return
+
+        for call_name in _self_calls_anywhere(method_def):
+            if call_name == section_name:
+                continue
+            if call_name in manifest_method_names:
+                continue
+            helper_owner = _resolve_owner(call_name)
+            if helper_owner is None:
+                continue
+            helper_key = (helper_owner, call_name)
+            if helper_key in seen:
+                continue
+            helper_def = method_map.get(helper_owner, {}).get(call_name)
+            if helper_def is None:
+                continue
+            resolved.append(
+                MethodSnippet(
+                    owner_class=helper_owner,
+                    method_name=call_name,
+                    source=_node_source(code, helper_def),
+                    lineno=helper_def.lineno,
+                    end_lineno=helper_def.end_lineno or helper_def.lineno,
+                )
+            )
+            _walk(helper_owner, call_name)
+
+    _walk(owner_class, section_name)
+    resolved.sort(key=lambda item: (item.lineno, item.method_name))
+    return resolved
+
+
 def _segment_method_exists(
     *,
     segment: SegmentSpec,
@@ -422,12 +603,60 @@ def _top_level_self_calls(function_def: ast.FunctionDef) -> List[str]:
     return call_names
 
 
+def _self_calls_anywhere(function_def: ast.FunctionDef) -> List[str]:
+    call_names: List[str] = []
+    for node in ast.walk(function_def):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _self_call_name(node.func)
+        if call_name:
+            call_names.append(call_name)
+    return call_names
+
+
 def _is_docstring_stmt(node: ast.stmt) -> bool:
     return (
         isinstance(node, ast.Expr)
         and isinstance(node.value, ast.Constant)
         and isinstance(node.value.value, str)
     )
+
+
+def _node_source(code: str, node: ast.AST) -> str:
+    snippet = ast.get_source_segment(code, node)
+    if snippet is not None:
+        return snippet
+    lines = code.splitlines()
+    start = getattr(node, "lineno", 1) - 1
+    end = getattr(node, "end_lineno", getattr(node, "lineno", 1))
+    return "\n".join(lines[start:end])
+
+
+def _line_indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip(" \t"))]
+
+
+def _normalize_method_block(source: str) -> str:
+    lines = textwrap.dedent(source).strip("\n").splitlines()
+    if not lines:
+        return ""
+
+    normalized = [lines[0].lstrip()]
+    body_indents = [
+        len(line) - len(line.lstrip(" \t"))
+        for line in lines[1:]
+        if line.strip()
+    ]
+    body_base = min(body_indents) if body_indents else 4
+
+    for line in lines[1:]:
+        if not line.strip():
+            normalized.append("")
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        relative = max(indent - body_base, 0)
+        normalized.append(" " * (4 + relative) + line.lstrip(" \t"))
+    return "\n".join(normalized)
 
 
 def _format_errors(errors: List[str]) -> str:
@@ -440,7 +669,11 @@ __all__ = [
     "SegmentSpec",
     "WrapperSceneSpec",
     "ScenePackSpec",
+    "MethodSnippet",
+    "SegmentRepairContext",
     "extract_manifest_order",
     "validate_scene_pack",
     "parse_scene_pack",
+    "build_segment_repair_context",
+    "replace_method_source",
 ]

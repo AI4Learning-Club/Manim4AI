@@ -23,7 +23,18 @@ from threading import Thread
 from typing import List, Optional
 
 from .scene_pack import SegmentSpec, parse_scene_pack
-from .tts import generate_audio, has_audio_stream, voice_for_language
+from .tts import (
+    SCENE_TTS_RATE,
+    TTS_GLOBAL_CACHE_ENV,
+    TTS_RATE_ENV,
+    TTS_VOICE_ENV,
+    generate_audio,
+    get_global_tts_cache_dir,
+    has_audio_stream,
+    scene_tts_global_cache_path,
+    scene_tts_round_cache_path,
+    voice_for_language,
+)
 
 
 def _int_env(name: str, default: int) -> int:
@@ -34,7 +45,6 @@ def _int_env(name: str, default: int) -> int:
 
 
 TTS_MAX_WORKERS = max(1, _int_env("A4L_TTS_WORKERS", 4))
-RENDER_SCENE_MAX_WORKERS = max(1, _int_env("A4L_RENDER_SCENE_WORKERS", 3))
 
 
 @dataclass
@@ -115,8 +125,6 @@ def _pregenererate_tts(
     tts_voice: str | None = None,
 ) -> None:
     """Extract narration texts and pre-generate TTS audio once per round."""
-    import hashlib
-
     texts: list[str] = []
     try:
         tree = ast.parse(code)
@@ -140,16 +148,29 @@ def _pregenererate_tts(
 
     try:
         cache_dir = output_dir / "tts_cache"
+        global_cache_dir = get_global_tts_cache_dir()
         cache_dir.mkdir(parents=True, exist_ok=True)
+        global_cache_dir.mkdir(parents=True, exist_ok=True)
         unique_texts = list(dict.fromkeys(texts))
 
         def _ensure_tts(text: str) -> bool:
-            digest = hashlib.md5(text.encode("utf-8")).hexdigest()
-            fp = cache_dir / f"{digest}.mp3"
-            if fp.exists():
-                return False
             voice = tts_voice or voice_for_language("en")
-            return bool(generate_audio(text, fp, voice=voice, rate="+5%"))
+            round_fp = scene_tts_round_cache_path(text, cache_dir)
+            global_fp = scene_tts_global_cache_path(
+                text,
+                voice,
+                SCENE_TTS_RATE,
+                global_cache_dir,
+            )
+            if round_fp.exists():
+                return False
+            if global_fp.exists():
+                shutil.copy2(str(global_fp), str(round_fp))
+                return False
+            if not generate_audio(text, global_fp, voice=voice, rate=SCENE_TTS_RATE):
+                return False
+            shutil.copy2(str(global_fp), str(round_fp))
+            return True
 
         generated = 0
         max_workers = min(TTS_MAX_WORKERS, len(unique_texts))
@@ -241,13 +262,14 @@ def render_scene_pack(
     quality_flags: str = "-qm --fps 60",
     enable_tts: bool = True,
     tts_voice: str | None = None,
+    selected_segment_ids: Optional[set[str]] = None,
 ) -> RenderResult:
     """
     Render a Scene Pack from source code.
 
-    Writes *code* to ``output_dir/scene.py``, renders every segment scene
-    declared in ``SCENE_MANIFEST`` in parallel, and concatenates the segment
-    videos into ``output_dir/video.mp4``.
+    Writes *code* to ``output_dir/scene.py``, renders the selected segment
+    scenes declared in ``SCENE_MANIFEST`` in parallel, and concatenates the
+    available segment videos into ``output_dir/video.mp4``.
     """
     code = _sanitize_chinese_in_latex(code)
 
@@ -263,7 +285,8 @@ def render_scene_pack(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     segments_root = output_dir / "segments"
-    if segments_root.exists():
+    full_render = not selected_segment_ids
+    if full_render and segments_root.exists():
         shutil.rmtree(segments_root)
     segments_root.mkdir(parents=True, exist_ok=True)
 
@@ -272,6 +295,10 @@ def render_scene_pack(
     scene_file.write_text(full_code, encoding="utf-8")
 
     if enable_tts:
+        voice = tts_voice or voice_for_language("en")
+        os.environ[TTS_VOICE_ENV] = voice
+        os.environ[TTS_RATE_ENV] = SCENE_TTS_RATE
+        os.environ.setdefault(TTS_GLOBAL_CACHE_ENV, str(get_global_tts_cache_dir()))
         _pregenererate_tts(code, output_dir, tts_voice=tts_voice)
 
     segment_results = _render_segments(
@@ -279,6 +306,7 @@ def render_scene_pack(
         scene_file=scene_file,
         output_dir=output_dir,
         quality_flags=quality_flags,
+        selected_segment_ids=selected_segment_ids,
     )
     ordered_results = sorted(segment_results, key=lambda item: item.order)
 
@@ -362,15 +390,30 @@ def _render_segments(
     scene_file: Path,
     output_dir: Path,
     quality_flags: str,
+    selected_segment_ids: Optional[set[str]],
 ) -> List[SegmentRenderResult]:
-    max_workers = min(RENDER_SCENE_MAX_WORKERS, len(manifest))
-    if max_workers <= 1:
+    selected = set(selected_segment_ids or [])
+    if selected:
         return [
-            _render_single_segment(
+            _render_or_reuse_segment(
                 segment=segment,
                 scene_file=scene_file,
                 output_dir=output_dir,
                 quality_flags=quality_flags,
+                should_render=segment.segment_id in selected,
+            )
+            for segment in manifest
+        ]
+
+    max_workers = len(manifest)
+    if max_workers <= 1:
+        return [
+            _render_or_reuse_segment(
+                segment=segment,
+                scene_file=scene_file,
+                output_dir=output_dir,
+                quality_flags=quality_flags,
+                should_render=True,
             )
             for segment in manifest
         ]
@@ -379,11 +422,12 @@ def _render_segments(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
             executor.submit(
-                _render_single_segment,
+                _render_or_reuse_segment,
                 segment=segment,
                 scene_file=scene_file,
                 output_dir=output_dir,
                 quality_flags=quality_flags,
+                should_render=True,
             )
             for segment in manifest
         ]
@@ -392,14 +436,31 @@ def _render_segments(
     return results
 
 
-def _render_single_segment(
+def _render_or_reuse_segment(
     *,
     segment: SegmentSpec,
     scene_file: Path,
     output_dir: Path,
     quality_flags: str,
+    should_render: bool,
 ) -> SegmentRenderResult:
-    segment_dir = output_dir / "segments" / f"{segment.order:02d}_{_sanitize_segment_id(segment.segment_id)}"
+    segment_dir = _segment_output_dir(output_dir, segment)
+    if not should_render:
+        existing = _existing_segment_result(segment, segment_dir)
+        if existing is not None:
+            return existing
+        return SegmentRenderResult(
+            segment_id=segment.segment_id,
+            scene_name=segment.scene_name,
+            order=segment.order,
+            output_dir=segment_dir,
+            success=False,
+            error_log=(
+                f"Segment `{segment.segment_id}` was not selected for rerender, "
+                "but no prior segment video exists to reuse."
+            ),
+        )
+
     segment_dir.mkdir(parents=True, exist_ok=True)
     media_dir = segment_dir / "media"
     log_file = segment_dir / "render_log.txt"
@@ -443,6 +504,27 @@ def _render_single_segment(
 
     final_segment_video = segment_dir / "video.mp4"
     shutil.copy2(str(video_path), str(final_segment_video))
+    return SegmentRenderResult(
+        segment_id=segment.segment_id,
+        scene_name=segment.scene_name,
+        order=segment.order,
+        output_dir=segment_dir,
+        success=True,
+        video_path=final_segment_video,
+    )
+
+
+def _segment_output_dir(output_dir: Path, segment: SegmentSpec) -> Path:
+    return output_dir / "segments" / f"{segment.order:02d}_{_sanitize_segment_id(segment.segment_id)}"
+
+
+def _existing_segment_result(
+    segment: SegmentSpec,
+    segment_dir: Path,
+) -> Optional[SegmentRenderResult]:
+    final_segment_video = segment_dir / "video.mp4"
+    if not final_segment_video.exists():
+        return None
     return SegmentRenderResult(
         segment_id=segment.segment_id,
         scene_name=segment.scene_name,

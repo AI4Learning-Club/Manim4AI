@@ -7,6 +7,8 @@ Generates narration audio from text, then merges with video using ffmpeg.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 import shutil
 import subprocess
 import tempfile
@@ -20,6 +22,44 @@ VOICE_ZH = "zh-CN-YunxiNeural"
 VOICE_EN = "en-US-AriaNeural"
 LOCAL_VOICE_ZH = "Tingting"
 LOCAL_VOICE_EN = "Samantha"
+SCENE_TTS_RATE = "+5%"
+TTS_GLOBAL_CACHE_ENV = "A4L_TTS_GLOBAL_CACHE_DIR"
+TTS_VOICE_ENV = "A4L_TTS_VOICE"
+TTS_RATE_ENV = "A4L_TTS_RATE"
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def get_global_tts_cache_dir() -> Path:
+    raw = os.environ.get(TTS_GLOBAL_CACHE_ENV, "").strip()
+    if raw:
+        return Path(raw)
+    return _project_root() / ".a4l_tts_cache"
+
+
+def _scene_tts_text_key(text: str) -> str:
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def _scene_tts_voice_key(text: str, voice: str, rate: str = SCENE_TTS_RATE) -> str:
+    return hashlib.md5(f"{voice}|{rate}|{text}".encode("utf-8")).hexdigest()
+
+
+def scene_tts_round_cache_path(text: str, cache_dir: Path | None = None) -> Path:
+    cache_root = cache_dir or Path.cwd() / "tts_cache"
+    return cache_root / f"{_scene_tts_text_key(text)}.mp3"
+
+
+def scene_tts_global_cache_path(
+    text: str,
+    voice: str,
+    rate: str = SCENE_TTS_RATE,
+    cache_dir: Path | None = None,
+) -> Path:
+    cache_root = cache_dir or get_global_tts_cache_dir()
+    return cache_root / f"{_scene_tts_voice_key(text, voice, rate)}.mp3"
 
 
 def voice_for_language(output_language: str) -> str:

@@ -210,25 +210,29 @@ class AI4LearningBaseScene(NarratedScene):
             self.add(self._bg_image)
 
     # --- 右上角 section badge：跟随主题取文字、描边、底色 ---
-    def _build_title_chip(self, text: str, font_size: float = 22, max_width: float = 4.6):
-        label = self.get_text(
+    def _make_title_chip_label(self, text: str, font_size: float):
+        return self.get_text(
             text,
             color=self.theme_token("section_badge_text", self.theme_token("text_main", "#F8FAFC")),
             font_size=font_size,
             weight=BOLD,
         )
-        if label.width > max_width:
-            label.scale_to_fit_width(max_width)
-        box = RoundedRectangle(
-            corner_radius=0.22,
-            width=label.width + 0.6,
-            height=label.height + 0.38,
-            stroke_color=self.theme_token("section_badge_stroke", self.theme_token("accent_primary", YELLOW)),
-            stroke_width=2,
-            fill_color=self.theme_token("section_badge_fill", self.theme_token("panel_fill_color", "#18263C")),
-            fill_opacity=float(self.theme_token("section_badge_fill_opacity", 0.92)),
-        )
-        return VGroup(box, label.move_to(box.get_center()))
+
+    def _title_chip_box_style(self) -> dict:
+        return {
+            "stroke_color": self.theme_token(
+                "section_badge_stroke",
+                self.theme_token("accent_primary", YELLOW),
+            ),
+            "stroke_width": 2,
+            "fill_color": self.theme_token(
+                "section_badge_fill",
+                self.theme_token("panel_fill_color", "#18263C"),
+            ),
+            "fill_opacity": float(
+                self.theme_token("section_badge_fill_opacity", 0.92)
+            ),
+        }
 
     # --- 持久层控制：清场时保留背景 ---
     def get_persistent_mobjects(self):
@@ -304,23 +308,15 @@ class AI4LearningBaseScene(NarratedScene):
             return getattr(self, "default_font", "Noto Serif SC")
         return getattr(self, "latin_font", "Times New Roman")
 
-    def make_subtitle_panel(self, text: str, font_size: float = 17, max_width: float = 11.8):
-        text = self._normalize_subtitle_text(text)
+    def _make_subtitle_label(self, text: str, font_size: float):
         font = self.resolve_text_font(text)
-        label = Text(
+        return Text(
             text,
             font=font,
             font_size=font_size,
             weight=MEDIUM,
             color=self.SUBTITLE_TEXT_COLOR,
         )
-        if label.width > max_width:
-            label.scale_to_fit_width(max_width)
-        if label.height > 0.42:
-            label.scale_to_fit_height(0.42)
-        label.to_edge(DOWN, buff=0.18)
-        label.set_z_index(100)
-        return label
 
     def get_text(self, string, color=None, font_size=36, **kwargs):
         font = self.resolve_text_font(string, explicit_font=kwargs.pop("font", None))

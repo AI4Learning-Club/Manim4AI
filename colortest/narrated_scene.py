@@ -1,15 +1,22 @@
 from __future__ import annotations
 
-import glob
-import hashlib
 import os
 import re
 import shutil
 import subprocess
 import weakref
+from pathlib import Path
+
 import numpy as np
 
 from manim import *
+from agent_pipeline.tts import (
+    SCENE_TTS_RATE,
+    TTS_RATE_ENV,
+    TTS_VOICE_ENV,
+    scene_tts_global_cache_path,
+    scene_tts_round_cache_path,
+)
 
 try:
     from mutagen.mp3 import MP3
@@ -68,17 +75,32 @@ class NarratedScene(Scene):
                 pass
         return max(1.6, len(text) * 0.22)
 
+    def _tts_round_cache_path(self, text: str) -> Path:
+        return scene_tts_round_cache_path(text)
+
+    def _tts_global_cache_path(self, text: str) -> Path | None:
+        voice = os.environ.get(TTS_VOICE_ENV, "").strip()
+        if not voice:
+            return None
+        rate = os.environ.get(TTS_RATE_ENV, SCENE_TTS_RATE).strip() or SCENE_TTS_RATE
+        return scene_tts_global_cache_path(text, voice, rate)
+
     def speak(self, text: str) -> float:
-        digest = hashlib.md5(text.encode("utf-8")).hexdigest()
-        candidates = glob.glob(os.path.join("tts_cache", f"{digest}.mp3"))
-        if not candidates:
-            candidates = glob.glob(
-                os.path.join("**", "tts_cache", f"{digest}.mp3"),
-                recursive=True,
-            )
-        if candidates:
-            fp = os.path.abspath(candidates[0])
+        local_fp = self._tts_round_cache_path(text)
+        global_fp = self._tts_global_cache_path(text)
+
+        if not local_fp.exists() and global_fp is not None and global_fp.exists():
             try:
+                local_fp.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(global_fp), str(local_fp))
+            except Exception:
+                pass
+
+        for candidate in (local_fp, global_fp):
+            if candidate is None or not candidate.exists():
+                continue
+            try:
+                fp = str(candidate.resolve())
                 self.add_sound(fp)
                 return self._audio_duration(fp, text)
             except Exception:
@@ -260,13 +282,6 @@ class NarratedScene(Scene):
         self._block_bindings.append(binding)
         return mob
 
-    def bind_many_to_block(self, block, *mobs, live=True):
-        """Convenience helper for binding many dependent mobjects to one block."""
-        for mob in mobs:
-            if mob is not None:
-                self.bind_to_block(mob, block, live=live)
-        return mobs
-
     def unbind_from_block(self, *mobs):
         self._unbind_bindings("_block_bindings", *mobs)
 
@@ -318,6 +333,9 @@ class NarratedScene(Scene):
         rebuilding it from a builder callback.
 
         `builder` may be a callable or the name of a scene helper method.
+        Use `live=True` when the object must continue following moving anchors
+        during visible animation. Use `live=False` when the object only needs
+        to resync on explicit lifecycle events such as `fit_body(...)`.
         """
         if mob is None:
             return mob
@@ -345,12 +363,17 @@ class NarratedScene(Scene):
         self._anchor_bindings.append(binding)
         return mob
 
-    def build_on_anchor(self, builder, *builder_args, live=True, **builder_kwargs):
+    def build_on_anchor(self, builder, *builder_args, live=False, **builder_kwargs):
         """
-        Build dependent geometry from live anchors and keep it synchronized.
+        Build dependent geometry from anchors and keep it synchronized.
 
         Example:
             secant = self.build_on_anchor("secant_segment_on_axes", axes, 2.9, 3.1)
+
+        By default this registers a non-live anchor binding, which is intended
+        for layout stability after `fit_body(...)` / `fit_to_top_band(...)`.
+        Pass `live=True` only when the object must continuously follow anchors
+        during a visible animation.
         """
         if callable(builder):
             initial = builder(*builder_args, **builder_kwargs)
@@ -370,26 +393,6 @@ class NarratedScene(Scene):
             sync_now=False,
             **builder_kwargs,
         )
-
-    def bind_many_to_anchor(self, builder_specs, *, live=True):
-        """
-        Convenience helper for building/binding several dependent objects.
-
-        Each item in `builder_specs` should be:
-            (builder, arg1, arg2, ...)
-        or
-            (builder, (arg1, arg2, ...), {"kw": value})
-        """
-        built = []
-        for spec in builder_specs:
-            if not isinstance(spec, tuple) or not spec:
-                continue
-            builder = spec[0]
-            if len(spec) == 3 and isinstance(spec[1], tuple) and isinstance(spec[2], dict):
-                built.append(self.build_on_anchor(builder, *spec[1], live=live, **spec[2]))
-            else:
-                built.append(self.build_on_anchor(builder, *spec[1:], live=live))
-        return built
 
     def unbind_from_anchor(self, *mobs):
         self._unbind_bindings("_anchor_bindings", *mobs)
@@ -433,18 +436,27 @@ class NarratedScene(Scene):
         title = self._coerce_page_title(title, font_size=font_size)
         return self.fit_to_top_band(title, max_width=max_width, max_height=self.top_band_height() * 0.95)
 
+    def _make_title_chip_label(self, text: str, font_size: float):
+        return Text(text, font_size=font_size, weight=BOLD)
+
+    def _title_chip_box_style(self) -> dict:
+        return {
+            "stroke_color": YELLOW,
+            "stroke_width": 2,
+            "fill_color": "#18263C",
+            "fill_opacity": 0.92,
+        }
+
     def _build_title_chip(self, text: str, font_size: float = 22, max_width: float = 4.6):
-        label = Text(text, font_size=font_size, weight=BOLD)
+        label = self._make_title_chip_label(text, font_size)
         if label.width > max_width:
             label.scale_to_fit_width(max_width)
+        style = self._title_chip_box_style()
         box = RoundedRectangle(
             corner_radius=0.22,
             width=label.width + 0.6,
             height=label.height + 0.38,
-            stroke_color=YELLOW,
-            stroke_width=2,
-            fill_color="#18263C",
-            fill_opacity=0.92,
+            **style,
         )
         return VGroup(box, label.move_to(box.get_center()))
 
@@ -480,9 +492,17 @@ class NarratedScene(Scene):
             return ""
         return cleaned
 
+    def _make_subtitle_label(self, text: str, font_size: float):
+        return Text(
+            text,
+            font_size=font_size,
+            weight=MEDIUM,
+            color=self.SUBTITLE_TEXT_COLOR,
+        )
+
     def make_subtitle_panel(self, text: str, font_size: float = 17, max_width: float = 11.8):
         text = self._normalize_subtitle_text(text)
-        label = Text(text, font_size=font_size, weight=MEDIUM, color=self.SUBTITLE_TEXT_COLOR)
+        label = self._make_subtitle_label(text, font_size)
         if label.width > max_width:
             label.scale_to_fit_width(max_width)
         if label.height > 0.42:
@@ -496,6 +516,12 @@ class NarratedScene(Scene):
             self.SUBTITLE_TRANSITION_TIME,
             run_time if run_time is not None else self.SUBTITLE_TRANSITION_TIME,
         )
+        if transition_time <= 1e-4:
+            if self._subtitle_mob is not None:
+                self.remove(self._subtitle_mob)
+            self.add(new_panel)
+            self._subtitle_mob = new_panel
+            return 0.0
         if self._subtitle_mob is None:
             self.play(FadeIn(new_panel, shift=UP * 0.06), run_time=transition_time)
         else:
@@ -528,7 +554,13 @@ class NarratedScene(Scene):
         dur = self.speak(text)
         new_panel = self.make_subtitle_panel(text)
         anim_time = run_time or dur
-        subtitle_time = self._show_subtitle_panel(new_panel, run_time=anim_time)
+        subtitle_budget = anim_time
+        if animations:
+            # Reserve a small slice for the actual visual step so a short
+            # explicit run_time does not get consumed entirely by subtitle motion.
+            reserved_animation_time = min(anim_time, 0.12)
+            subtitle_budget = max(anim_time - reserved_animation_time, 0.0)
+        subtitle_time = self._show_subtitle_panel(new_panel, run_time=subtitle_budget)
         remaining_anim_time = max(anim_time - subtitle_time, 0)
         if animations:
             if remaining_anim_time > 0:

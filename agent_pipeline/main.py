@@ -31,6 +31,7 @@ from .evaluator import collect_keyframes, evaluate
 from .llm import resolve_pipeline_llm_configs, validate_pipeline_llm_configs
 from .output_language import normalize_output_language, output_language_name
 from .renderer import RenderResult, render_scene_pack
+from .scene_pack import build_segment_repair_context, replace_method_source
 from .teaching_planner import TeachingPlannerAgent
 from .theme_resolver import resolve_theme
 from .tts import has_audio_stream, voice_for_language
@@ -70,6 +71,7 @@ SYNTAX_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_SYNTAX_FIX_MAX_ATTEMPTS", 4))
 RENDER_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_RENDER_FIX_MAX_ATTEMPTS", 4))
 LANGUAGE_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_LANGUAGE_FIX_MAX_ATTEMPTS", 2))
 CODE_EVAL_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_CODE_EVAL_FIX_MAX_ATTEMPTS", 2))
+LATEX_TEXT_FIX_MAX_ATTEMPTS = max(1, _int_env("A4L_LATEX_TEXT_FIX_MAX_ATTEMPTS", 2))
 
 # =====================================================================
 # Helpers
@@ -265,6 +267,93 @@ def _detect_output_language_mismatch(code: str, output_language: str) -> str:
     )
 
 
+_LATEX_TEXT_MARKER_RE = re.compile(
+    r"(\\[A-Za-z]+|[_^]\{[^}]+\}|[A-Za-z0-9]+\s*_\s*\{[^}]+\})"
+)
+
+
+def _looks_like_inline_latex(text: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return False
+    if not _LATEX_TEXT_MARKER_RE.search(cleaned):
+        return False
+    return any(ch in cleaned for ch in "\\{}_^")
+
+
+def _detect_latex_in_user_facing_text(code: str) -> str:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return ""
+
+    issues: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _call_name(node.func)
+        if call_name not in _USER_FACING_TEXT_CALLS:
+            continue
+
+        for arg in node.args:
+            for literal in _iter_string_literals(arg):
+                snippet = re.sub(r"\s+", " ", literal).strip()
+                if snippet and _looks_like_inline_latex(snippet):
+                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:120]}")
+
+        for keyword in node.keywords:
+            for literal in _iter_string_literals(keyword.value):
+                snippet = re.sub(r"\s+", " ", literal).strip()
+                if snippet and _looks_like_inline_latex(snippet):
+                    issues.append(f"  line {node.lineno}: {call_name} -> {snippet[:120]}")
+
+    if not issues:
+        return ""
+
+    return (
+        "\n\nAUTO-DETECTED LATEX IN PLAIN TEXT:\n"
+        + "\n".join(dict.fromkeys(issues))
+    )
+
+
+def _repair_latex_in_user_facing_text_before_render(
+    agent: CodeGenAgent,
+    code: str,
+    round_dir: Path,
+    label: str,
+    output_language: str,
+    max_attempts: int = LATEX_TEXT_FIX_MAX_ATTEMPTS,
+) -> tuple[str, str, int]:
+    latex_report = _detect_latex_in_user_facing_text(code)
+    attempt = 0
+
+    while latex_report and attempt < max_attempts:
+        attempt += 1
+        _log(
+            f"{label}: found LaTeX fragments inside plain text - "
+            f"asking LLM to repair (attempt {attempt}) ..."
+        )
+        extra_hint = (
+            "\n\nThis is a text-vs-math rendering fix.\n"
+            "Do NOT leave LaTeX fragments inside plain-text helpers such as "
+            "`get_text`, `get_secondary_text`, `get_success_text`, `get_warning_text`, "
+            "`make_page_title`, `make_subtitle_panel`, `set_subtitle`, `speak`, or "
+            "`speak_with_subtitle`.\n"
+            "If a sentence contains math, split it into natural-language text plus a "
+            "separate `get_math(...)` / `get_highlighted_math(...)` object, then lay "
+            "them out together.\n"
+            "For narration or subtitle strings, rewrite the formula into natural language "
+            "instead of keeping raw LaTeX commands.\n"
+            "Do not change the lesson meaning.\n"
+        )
+        code = agent.fix(code, latex_report + extra_hint, output_language=output_language)
+        (round_dir / f"scene_latex_text_fixed_{attempt}.py").write_text(code, encoding="utf-8")
+        latex_report = _detect_latex_in_user_facing_text(code)
+
+    return code, latex_report, attempt
+
+
 def _repair_output_language_before_render(
     agent: CodeGenAgent,
     code: str,
@@ -390,6 +479,61 @@ def _repair_code_eval_before_render(
     return code, report, attempt
 
 
+def _repair_failed_segments_for_rerender(
+    agent: CodeGenAgent,
+    code: str,
+    render_result: RenderResult,
+    *,
+    label: str,
+    output_language: str,
+) -> Optional[tuple[str, set[str]]]:
+    failed_segments = [
+        segment
+        for segment in sorted(render_result.segments, key=lambda item: item.order)
+        if not segment.success
+    ]
+    if not failed_segments:
+        return None
+
+    patched_code = code
+    patched_segment_ids: set[str] = set()
+
+    for segment in failed_segments:
+        if not segment.error_log.strip():
+            _log(f"{label}: skipping segment-aware repair for {segment.segment_id} because no segment-specific error log is available")
+            return None
+
+        try:
+            context = build_segment_repair_context(patched_code, segment.segment_id)
+            updated_method_source = agent.fix_segment_method(
+                segment_id=context.segment.segment_id,
+                method_name=context.section_method.method_name,
+                manifest_source=context.manifest_source,
+                wrapper_scene_source=context.wrapper_scene_source,
+                section_method_source=context.section_method.source,
+                helper_method_sources=[helper.source for helper in context.helper_methods],
+                error_log=segment.error_log,
+                output_language=output_language,
+            )
+            patched_code = replace_method_source(
+                patched_code,
+                owner_class=context.section_owner_class,
+                method_name=context.section_method.method_name,
+                new_method_source=updated_method_source,
+            )
+            patched_segment_ids.add(segment.segment_id)
+        except Exception as exc:
+            _log(
+                f"{label}: segment-aware repair fallback to whole-file fix for "
+                f"{segment.segment_id} ({segment.scene_name}) - {exc}"
+            )
+            return None
+
+    if not patched_segment_ids:
+        return None
+    return patched_code, patched_segment_ids
+
+
 def _try_render(
     code_eval_agent: CodeEvalAgent,
     agent: CodeGenAgent,
@@ -406,14 +550,20 @@ def _try_render(
     result = RenderResult(success=False, error_log="", scene_name="")
     syntax_fix_rounds = 0
     language_fix_rounds = 0
+    latex_text_fix_rounds = 0
     code_eval_fix_rounds = 0
+    segment_fix_rounds = 0
     tts_voice = voice_for_language(output_language)
+    pending_segment_rerender_ids: Optional[set[str]] = None
 
     for attempt in range(RENDER_FIX_MAX_ATTEMPTS + 1):
+        render_segment_ids = pending_segment_rerender_ids
         code, syntax_error, syntax_attempts = _repair_syntax_before_render(
             agent, code, round_dir, label, output_language=output_language
         )
         syntax_fix_rounds += syntax_attempts
+        if syntax_attempts:
+            render_segment_ids = None
         if syntax_error:
             _log(f"{label}: syntax fix failed before render")
             result = RenderResult(success=False, error_log=syntax_error, scene_name="")
@@ -427,10 +577,14 @@ def _try_render(
             )
             language_fix_rounds += language_attempts
             if language_attempts:
+                render_segment_ids = None
+            if language_attempts:
                 code, syntax_error, syntax_attempts = _repair_syntax_before_render(
                     agent, code, round_dir, label, output_language=output_language
                 )
                 syntax_fix_rounds += syntax_attempts
+                if syntax_attempts:
+                    render_segment_ids = None
             if syntax_error:
                 _log(f"{label}: syntax fix failed after language translation")
                 result = RenderResult(success=False, error_log=syntax_error, scene_name="")
@@ -438,6 +592,31 @@ def _try_render(
             if language_error:
                 _log(f"{label}: target-language fix did not converge before render")
                 result = RenderResult(success=False, error_log=language_error, scene_name="")
+                continue
+
+            code, latex_text_error, latex_text_attempts = _repair_latex_in_user_facing_text_before_render(
+                agent,
+                code,
+                round_dir,
+                label,
+                output_language=output_language,
+            )
+            latex_text_fix_rounds += latex_text_attempts
+            if latex_text_attempts:
+                render_segment_ids = None
+                code, syntax_error, syntax_attempts = _repair_syntax_before_render(
+                    agent, code, round_dir, label, output_language=output_language
+                )
+                syntax_fix_rounds += syntax_attempts
+                if syntax_attempts:
+                    render_segment_ids = None
+            if syntax_error:
+                _log(f"{label}: syntax fix failed after latex-text repair")
+                result = RenderResult(success=False, error_log=syntax_error, scene_name="")
+                continue
+            if latex_text_error:
+                _log(f"{label}: latex-in-plain-text fix did not converge before render")
+                result = RenderResult(success=False, error_log=latex_text_error, scene_name="")
                 continue
 
             code, code_eval_report, code_eval_attempts = _repair_code_eval_before_render(
@@ -450,10 +629,14 @@ def _try_render(
             )
             code_eval_fix_rounds += code_eval_attempts
             if code_eval_attempts:
+                render_segment_ids = None
+            if code_eval_attempts:
                 code, syntax_error, syntax_attempts = _repair_syntax_before_render(
                     agent, code, round_dir, label, output_language=output_language
                 )
                 syntax_fix_rounds += syntax_attempts
+                if syntax_attempts:
+                    render_segment_ids = None
                 if syntax_error:
                     _log(f"{label}: syntax fix failed after code_eval repair")
                     result = RenderResult(success=False, error_log=syntax_error, scene_name="")
@@ -468,10 +651,14 @@ def _try_render(
                 )
                 language_fix_rounds += language_attempts
                 if language_attempts:
+                    render_segment_ids = None
+                if language_attempts:
                     code, syntax_error, syntax_attempts = _repair_syntax_before_render(
                         agent, code, round_dir, label, output_language=output_language
                     )
                     syntax_fix_rounds += syntax_attempts
+                    if syntax_attempts:
+                        render_segment_ids = None
                 if syntax_error:
                     _log(f"{label}: syntax fix failed after code_eval language repair")
                     result = RenderResult(success=False, error_log=syntax_error, scene_name="")
@@ -479,6 +666,31 @@ def _try_render(
                 if language_error:
                     _log(f"{label}: target-language fix did not converge after code_eval repair")
                     result = RenderResult(success=False, error_log=language_error, scene_name="")
+                    continue
+
+                code, latex_text_error, latex_text_attempts = _repair_latex_in_user_facing_text_before_render(
+                    agent,
+                    code,
+                    round_dir,
+                    label,
+                    output_language=output_language,
+                )
+                latex_text_fix_rounds += latex_text_attempts
+                if latex_text_attempts:
+                    render_segment_ids = None
+                    code, syntax_error, syntax_attempts = _repair_syntax_before_render(
+                        agent, code, round_dir, label, output_language=output_language
+                    )
+                    syntax_fix_rounds += syntax_attempts
+                    if syntax_attempts:
+                        render_segment_ids = None
+                if syntax_error:
+                    _log(f"{label}: syntax fix failed after code_eval latex-text repair")
+                    result = RenderResult(success=False, error_log=syntax_error, scene_name="")
+                    continue
+                if latex_text_error:
+                    _log(f"{label}: latex-in-plain-text fix did not converge after code_eval repair")
+                    result = RenderResult(success=False, error_log=latex_text_error, scene_name="")
                     continue
 
             if _code_eval_has_blockers(code_eval_report):
@@ -498,6 +710,8 @@ def _try_render(
             render_msg = f"{label}: rendering"
             if attempt:
                 render_msg += f" after fix {attempt}"
+            if render_segment_ids:
+                render_msg += f" (segments only: {', '.join(sorted(render_segment_ids))})"
             _log(render_msg + " ...")
             result = render_scene_pack(
                 code,
@@ -505,6 +719,7 @@ def _try_render(
                 quality_flags=quality_flags,
                 enable_tts=enable_tts,
                 tts_voice=tts_voice,
+                selected_segment_ids=render_segment_ids,
             )
             if result.success:
                 if attempt:
@@ -514,9 +729,18 @@ def _try_render(
                 return code, result, {
                     "syntax_fix_rounds": syntax_fix_rounds,
                     "language_fix_rounds": language_fix_rounds,
+                    "latex_text_fix_rounds": latex_text_fix_rounds,
                     "code_eval_fix_rounds": code_eval_fix_rounds,
+                    "segment_fix_rounds": segment_fix_rounds,
                     "render_fix_rounds": attempt,
-                    "total_fix_rounds": syntax_fix_rounds + language_fix_rounds + code_eval_fix_rounds + attempt,
+                    "total_fix_rounds": (
+                        syntax_fix_rounds
+                        + language_fix_rounds
+                        + latex_text_fix_rounds
+                        + code_eval_fix_rounds
+                        + segment_fix_rounds
+                        + attempt
+                    ),
                 }
 
         if attempt >= RENDER_FIX_MAX_ATTEMPTS:
@@ -527,6 +751,24 @@ def _try_render(
             if result.error_log.strip():
                 _log(f"{label}: latest render error:\n{result.error_log.strip()}")
             break
+
+        segment_fixed = _repair_failed_segments_for_rerender(
+            agent,
+            code,
+            result,
+            label=label,
+            output_language=output_language,
+        )
+        if segment_fixed is not None:
+            code, rerender_segment_ids = segment_fixed
+            pending_segment_rerender_ids = rerender_segment_ids
+            segment_fix_rounds += 1
+            (round_dir / f"scene_segment_fixed_{attempt + 1}.py").write_text(code, encoding="utf-8")
+            _log(
+                f"{label}: segment-aware repair updated "
+                f"{', '.join(sorted(rerender_segment_ids))}; rerendering only those segment(s)"
+            )
+            continue
 
         _log(
             f"{label}: render FAILED - asking LLM to fix "
@@ -539,14 +781,24 @@ def _try_render(
             _log(f"{label}: render error details:\n{result.error_log.strip()}")
         error_info = result.error_log + _detect_chinese_in_mathtex(code)
         code = agent.fix(code, error_info, output_language=output_language)
+        pending_segment_rerender_ids = None
         (round_dir / f"scene_fixed_{attempt + 1}.py").write_text(code, encoding="utf-8")
 
     return code, result, {
         "syntax_fix_rounds": syntax_fix_rounds,
         "language_fix_rounds": language_fix_rounds,
+        "latex_text_fix_rounds": latex_text_fix_rounds,
         "code_eval_fix_rounds": code_eval_fix_rounds,
+        "segment_fix_rounds": segment_fix_rounds,
         "render_fix_rounds": RENDER_FIX_MAX_ATTEMPTS,
-        "total_fix_rounds": syntax_fix_rounds + language_fix_rounds + code_eval_fix_rounds + RENDER_FIX_MAX_ATTEMPTS,
+        "total_fix_rounds": (
+            syntax_fix_rounds
+            + language_fix_rounds
+            + latex_text_fix_rounds
+            + code_eval_fix_rounds
+            + segment_fix_rounds
+            + RENDER_FIX_MAX_ATTEMPTS
+        ),
     }
 
 

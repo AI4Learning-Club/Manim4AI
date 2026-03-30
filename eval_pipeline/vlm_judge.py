@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,46 +55,87 @@ class VLMVerdict:
     raw_response: str = ""
 
 
+@dataclass
+class WholeVideoMediaCache:
+    encoded_keyframes: List[Dict[str, str]] = field(default_factory=list)
+    encoded_video_input: Optional[Dict[str, str]] = None
+
+
+def _video_mime_type(video_path: Path) -> str:
+    suffix = video_path.suffix.lower()
+    return {
+        ".mp4": "video/mp4",
+        ".webm": "video/webm",
+        ".mov": "video/quicktime",
+    }.get(suffix, "video/mp4")
+
+
+def _encode_keyframes(keyframe_paths: Optional[List[Path]]) -> List[Dict[str, str]]:
+    encoded: List[Dict[str, str]] = []
+    for img_path in keyframe_paths or []:
+        if not img_path.exists():
+            continue
+        raw = img_path.read_bytes()
+        b64 = base64.b64encode(raw).decode("ascii")
+        encoded.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
+    return encoded
+
+
+def _encode_video_input(video_path: Optional[Path]) -> Optional[Dict[str, str]]:
+    if video_path is None or not video_path.exists():
+        return None
+    video_bytes = video_path.read_bytes()
+    video_b64 = base64.b64encode(video_bytes).decode("ascii")
+    mime = _video_mime_type(video_path)
+    return {"type": "input_video", "video_url": f"data:{mime};base64,{video_b64}"}
+
+
+def prepare_whole_video_media_cache(
+    *,
+    video_path: Optional[Path] = None,
+    keyframe_paths: Optional[List[Path]] = None,
+) -> WholeVideoMediaCache:
+    """Encode whole-video media payloads once for reuse across Stage 2 reviews."""
+    return WholeVideoMediaCache(
+        encoded_keyframes=_encode_keyframes(keyframe_paths),
+        encoded_video_input=_encode_video_input(video_path),
+    )
+
+
+def _clone_media_items(items: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
+    return [dict(item) for item in (items or [])]
+
+
+def _clone_media_item(item: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+    return dict(item) if item else None
+
+
 # =====================================================================
 # Prompt construction
 # =====================================================================
 
-OVERLAP_REVIEW_PROMPT = """\
-You are a STRICT visual quality reviewer for Manim-rendered educational videos.
+WHOLE_VIDEO_VISUAL_REVIEW_PROMPT = """\
+You are a STRICT visual reviewer for Manim-rendered educational videos.
 You will receive keyframes sampled evenly across the entire video.
 
-Check EVERY keyframe for overlap / occlusion issues:
+Review the same keyframes on TWO independent dimensions:
+
+1. overlap_review
+Check EVERY keyframe for overlap / occlusion / rendering issues:
 - Two or more filled shapes overlapping each other
 - Text or formulas partially covered by shapes or other text
-- Elements extending beyond the visible canvas (truncated/cut off)
+- Elements extending beyond the visible canvas (truncated / cut off)
 - Garbled text, duplicated formula fragments, broken LaTeX
 
-Return a JSON object:
-{
-  "has_overlap": true | false,
-  "overlap_frames": <int, how many frames show overlap issues>,
-  "total_frames": <int, total frames reviewed>,
-  "overlap_ratio": <float 0-1>,
-  "issues": [
-    {"frame_index": <int>, "description": "<what's wrong>", "severity": "minor"|"moderate"|"severe"}
-  ],
-  "reason": "<one-sentence summary>"
-}
-"""
-
-ANCHOR_BINDING_REVIEW_PROMPT = """\
-You are a STRICT visual semantics reviewer for Manim-rendered educational videos.
-You will receive keyframes sampled evenly across the entire video.
-
-Check EVERY keyframe for anchor-binding mistakes: visual annotations that do not
+2. anchor_binding_review
+Check EVERY keyframe for anchor-binding mistakes: annotations that do not
 actually point to, cover, or stay attached to the thing they claim to reference.
-
 Flag only clear visible mismatches such as:
-- A label or numeric value sitting nearer to the wrong object/tick/point
+- A label or numeric value sitting nearer to the wrong object / tick / point
 - An arrow, brace, connector, or callout endpoint missing its intended target
 - A highlighted interval, range box, underline, or bracket not matching the
-  range/object set named in nearby text
-- A stale overlay that stayed behind after a transform/layout shift and now
+  range / object set named in nearby text
+- A stale overlay that stayed behind after a transform / layout shift and now
   explains the wrong object
 - An explanatory note block whose referenced region is visually ambiguous or wrong
 
@@ -102,21 +144,37 @@ Do NOT flag:
 - Pure style preferences if the target is still unambiguous
 - Generic crowding unless it causes the binding itself to become wrong
 
-Return a JSON object:
+Return JSON only with exactly this shape:
 {
-  "has_binding_issue": true | false,
-  "binding_issue_frames": <int, how many frames show anchor-binding issues>,
-  "total_frames": <int, total frames reviewed>,
-  "binding_issue_ratio": <float 0-1>,
-  "issues": [
-    {
-      "frame_index": <int>,
-      "taxonomy": "anchor_target_mismatch" | "range_span_mismatch" | "connector_endpoint_miss" | "detached_label" | "stale_overlay_after_layout",
-      "description": "<what is visibly bound to the wrong thing>",
-      "severity": "minor" | "moderate" | "severe"
-    }
-  ],
-  "reason": "<one-sentence summary>"
+  "overlap_review": {
+    "has_overlap": true | false,
+    "overlap_frames": <int>,
+    "total_frames": <int>,
+    "overlap_ratio": <float 0-1>,
+    "issues": [
+      {
+        "frame_index": <int>,
+        "description": "<what's wrong>",
+        "severity": "minor" | "moderate" | "severe"
+      }
+    ],
+    "reason": "<one-sentence summary>"
+  },
+  "anchor_binding_review": {
+    "has_binding_issue": true | false,
+    "binding_issue_frames": <int>,
+    "total_frames": <int>,
+    "binding_issue_ratio": <float 0-1>,
+    "issues": [
+      {
+        "frame_index": <int>,
+        "taxonomy": "anchor_target_mismatch" | "range_span_mismatch" | "connector_endpoint_miss" | "detached_label" | "stale_overlay_after_layout",
+        "description": "<what is visibly bound to the wrong thing>",
+        "severity": "minor" | "moderate" | "severe"
+      }
+    ],
+    "reason": "<one-sentence summary>"
+  }
 }
 """
 
@@ -184,50 +242,40 @@ class AnchorBindingVerdict:
     raw_response: str = ""
 
 
-def review_overlap_keyframes(
-    keyframe_paths: List[Path],
-    vlm_cfg: VLMConfig,
-    video_name: str = "",
-) -> OverlapReviewVerdict:
-    """Send evenly sampled keyframes to VLM for full-video overlap review."""
-    if not keyframe_paths:
-        return OverlapReviewVerdict(False, 0, 0, 0.0, [], "no keyframes", "")
+@dataclass
+class WholeVideoVisualReviewResult:
+    overlap_review: OverlapReviewVerdict
+    anchor_binding_review: AnchorBindingVerdict
+    raw_response: str = ""
 
-    api_key = vlm_cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No API key.")
 
-    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=120.0)
+def _normalize_overlap_issues(raw_issues: Any) -> List[Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    if not isinstance(raw_issues, list):
+        return issues
 
-    content: list = [{"type": "input_text", "text": OVERLAP_REVIEW_PROMPT}]
-    content.append({
-        "type": "input_text",
-        "text": (
-            f"Video: {video_name}\n"
-            f"Below are {len(keyframe_paths)} keyframes sampled evenly across the full video.\n"
-            "Check each frame carefully for overlap / occlusion / rendering issues."
-        ),
-    })
-
-    for img_path in keyframe_paths:
-        if not img_path.exists():
+    allowed_severity = {"minor", "moderate", "severe"}
+    for item in raw_issues:
+        if not isinstance(item, dict):
             continue
-        raw = img_path.read_bytes()
-        b64 = base64.b64encode(raw).decode("ascii")
-        content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
-
-    raw_text = _call_vlm(client, vlm_cfg, content)
-    parsed = _parse_vlm_json(raw_text)
-
-    return OverlapReviewVerdict(
-        has_overlap=bool(parsed.get("has_overlap", False)),
-        overlap_frames=int(parsed.get("overlap_frames", 0)),
-        total_frames=int(parsed.get("total_frames", len(keyframe_paths))),
-        overlap_ratio=float(parsed.get("overlap_ratio", 0.0)),
-        issues=parsed.get("issues", []),
-        reason=str(parsed.get("reason", "")),
-        raw_response=raw_text,
-    )
+        description = str(item.get("description", "")).strip()
+        if not description:
+            continue
+        severity = str(item.get("severity", "moderate")).strip().lower()
+        if severity not in allowed_severity:
+            severity = "moderate"
+        try:
+            frame_index = int(item.get("frame_index", -1))
+        except (TypeError, ValueError):
+            frame_index = -1
+        issues.append(
+            {
+                "frame_index": frame_index,
+                "description": description,
+                "severity": severity,
+            }
+        )
+    return issues
 
 
 def _normalize_anchor_binding_issues(raw_issues: Any) -> List[Dict[str, Any]]:
@@ -271,14 +319,18 @@ def _normalize_anchor_binding_issues(raw_issues: Any) -> List[Dict[str, Any]]:
     return issues
 
 
-def review_anchor_binding_keyframes(
+def review_whole_video_visual_keyframes(
     keyframe_paths: List[Path],
     vlm_cfg: VLMConfig,
     video_name: str = "",
-) -> AnchorBindingVerdict:
-    """Send evenly sampled keyframes to VLM for full-video anchor-binding review."""
+    *,
+    encoded_keyframes: Optional[List[Dict[str, str]]] = None,
+) -> WholeVideoVisualReviewResult:
+    """Review whole-video keyframes once for both overlap and anchor-binding issues."""
     if not keyframe_paths:
-        return AnchorBindingVerdict(False, 0, 0, 0.0, [], "no keyframes", "")
+        overlap = OverlapReviewVerdict(False, 0, 0, 0.0, [], "no keyframes", "")
+        anchor = AnchorBindingVerdict(False, 0, 0, 0.0, [], "no keyframes", "")
+        return WholeVideoVisualReviewResult(overlap_review=overlap, anchor_binding_review=anchor, raw_response="")
 
     api_key = vlm_cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
@@ -286,30 +338,63 @@ def review_anchor_binding_keyframes(
 
     client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=120.0)
 
-    content: list = [{"type": "input_text", "text": ANCHOR_BINDING_REVIEW_PROMPT}]
+    content: list = [{"type": "input_text", "text": WHOLE_VIDEO_VISUAL_REVIEW_PROMPT}]
     content.append({
         "type": "input_text",
         "text": (
             f"Video: {video_name}\n"
             f"Below are {len(keyframe_paths)} keyframes sampled evenly across the full video.\n"
-            "Check whether labels, arrows, brackets, range highlights, and explanation blocks\n"
-            "actually match the objects or ranges they claim to annotate."
+            "Judge both overlap/rendering problems and anchor-binding mistakes on the same frames."
         ),
     })
 
-    for img_path in keyframe_paths:
-        if not img_path.exists():
-            continue
-        raw = img_path.read_bytes()
-        b64 = base64.b64encode(raw).decode("ascii")
-        content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
+    content.extend(_clone_media_items(encoded_keyframes or _encode_keyframes(keyframe_paths)))
 
     raw_text = _call_vlm(client, vlm_cfg, content)
     parsed = _parse_vlm_json(raw_text)
-    issues = _normalize_anchor_binding_issues(parsed.get("issues", []))
+
+    overlap_raw = parsed.get("overlap_review", {})
+    if not isinstance(overlap_raw, dict):
+        overlap_raw = {}
+    overlap_issues = _normalize_overlap_issues(overlap_raw.get("issues", []))
+    try:
+        overlap_frames = int(overlap_raw.get("overlap_frames", 0))
+    except (TypeError, ValueError):
+        overlap_frames = 0
+    if overlap_frames <= 0 and overlap_issues:
+        frame_indices = {
+            int(issue.get("frame_index", -1))
+            for issue in overlap_issues
+            if int(issue.get("frame_index", -1)) >= 0
+        }
+        overlap_frames = len(frame_indices) if frame_indices else len(overlap_issues)
+    try:
+        overlap_total_frames = int(overlap_raw.get("total_frames", len(keyframe_paths)))
+    except (TypeError, ValueError):
+        overlap_total_frames = len(keyframe_paths)
+    try:
+        overlap_ratio = float(overlap_raw.get("overlap_ratio", 0.0))
+    except (TypeError, ValueError):
+        overlap_ratio = 0.0
+    if overlap_ratio <= 0.0 and overlap_total_frames > 0 and overlap_frames > 0:
+        overlap_ratio = overlap_frames / overlap_total_frames
+    overlap_verdict = OverlapReviewVerdict(
+        has_overlap=bool(overlap_raw.get("has_overlap", bool(overlap_issues))),
+        overlap_frames=max(0, overlap_frames),
+        total_frames=max(0, overlap_total_frames),
+        overlap_ratio=max(0.0, min(1.0, overlap_ratio)),
+        issues=overlap_issues,
+        reason=str(overlap_raw.get("reason", "")),
+        raw_response=raw_text,
+    )
+
+    anchor_raw = parsed.get("anchor_binding_review", {})
+    if not isinstance(anchor_raw, dict):
+        anchor_raw = {}
+    issues = _normalize_anchor_binding_issues(anchor_raw.get("issues", []))
 
     try:
-        binding_issue_frames = int(parsed.get("binding_issue_frames", 0))
+        binding_issue_frames = int(anchor_raw.get("binding_issue_frames", 0))
     except (TypeError, ValueError):
         binding_issue_frames = 0
     if binding_issue_frames <= 0 and issues:
@@ -321,24 +406,29 @@ def review_anchor_binding_keyframes(
         binding_issue_frames = len(frame_indices) if frame_indices else len(issues)
 
     try:
-        total_frames = int(parsed.get("total_frames", len(keyframe_paths)))
+        total_frames = int(anchor_raw.get("total_frames", len(keyframe_paths)))
     except (TypeError, ValueError):
         total_frames = len(keyframe_paths)
 
     try:
-        binding_issue_ratio = float(parsed.get("binding_issue_ratio", 0.0))
+        binding_issue_ratio = float(anchor_raw.get("binding_issue_ratio", 0.0))
     except (TypeError, ValueError):
         binding_issue_ratio = 0.0
     if binding_issue_ratio <= 0.0 and total_frames > 0 and binding_issue_frames > 0:
         binding_issue_ratio = binding_issue_frames / total_frames
 
-    return AnchorBindingVerdict(
-        has_binding_issue=bool(parsed.get("has_binding_issue", bool(issues))),
+    anchor_verdict = AnchorBindingVerdict(
+        has_binding_issue=bool(anchor_raw.get("has_binding_issue", bool(issues))),
         binding_issue_frames=max(0, binding_issue_frames),
         total_frames=max(0, total_frames),
         binding_issue_ratio=max(0.0, min(1.0, binding_issue_ratio)),
         issues=issues,
-        reason=str(parsed.get("reason", "")),
+        reason=str(anchor_raw.get("reason", "")),
+        raw_response=raw_text,
+    )
+    return WholeVideoVisualReviewResult(
+        overlap_review=overlap_verdict,
+        anchor_binding_review=anchor_verdict,
         raw_response=raw_text,
     )
 
@@ -482,12 +572,21 @@ def review_segments(
     if not to_review:
         return []
 
+    client_local = threading.local()
+
+    def _get_segment_client():
+        client = getattr(client_local, "client", None)
+        if client is None:
+            client = make_openai_client(
+                api_key=api_key,
+                base_url=vlm_cfg.base_url,
+                timeout=120.0,
+            )
+            client_local.client = client
+        return client
+
     def _review_one(index: int, seg: SegmentFeatures) -> tuple[int, VLMVerdict]:
-        local_client = make_openai_client(
-            api_key=api_key,
-            base_url=vlm_cfg.base_url,
-            timeout=120.0,
-        )
+        local_client = _get_segment_client()
         seg_dir = frames_dir / seg.segment_id
         images = sorted(seg_dir.glob("*.jpg")) if seg_dir.exists() else []
         user_content = _build_user_content(seg, images, video_name)
@@ -604,6 +703,9 @@ def review_av_alignment(
     video_name: str = "",
     video_path: Optional[Path] = None,
     keyframe_paths: Optional[List[Path]] = None,
+    *,
+    encoded_keyframes: Optional[List[Dict[str, str]]] = None,
+    encoded_video_input: Optional[Dict[str, str]] = None,
 ) -> AVAlignmentVerdict:
     """
     Send video (with audio) to MLLM for semantic AV alignment review.
@@ -625,13 +727,8 @@ def review_av_alignment(
     content: list = [{"type": "input_text", "text": AV_ALIGNMENT_PROMPT}]
 
     use_video = False
-    if video_path and video_path.exists():
-        video_bytes = video_path.read_bytes()
-        video_b64 = base64.b64encode(video_bytes).decode("ascii")
-        suffix = video_path.suffix.lower()
-        mime = {".mp4": "video/mp4", ".webm": "video/webm",
-                ".mov": "video/quicktime"}.get(suffix, "video/mp4")
-
+    video_input = _clone_media_item(encoded_video_input or _encode_video_input(video_path))
+    if video_input is not None:
         content.append({
             "type": "input_text",
             "text": (
@@ -640,10 +737,7 @@ def review_av_alignment(
                 "to whether the narration and the visuals are synchronised."
             ),
         })
-        content.append({
-            "type": "input_video",
-            "video_url": f"data:{mime};base64,{video_b64}",
-        })
+        content.append(video_input)
         use_video = True
 
     if not use_video and keyframe_paths:
@@ -656,15 +750,7 @@ def review_av_alignment(
                 "For narration_naturalness, return 3 (neutral) since audio is not provided."
             ),
         })
-        for img_path in keyframe_paths:
-            if not img_path.exists():
-                continue
-            raw = img_path.read_bytes()
-            b64 = base64.b64encode(raw).decode("ascii")
-            content.append({
-                "type": "input_image",
-                "image_url": f"data:image/jpeg;base64,{b64}",
-            })
+        content.extend(_clone_media_items(encoded_keyframes or _encode_keyframes(keyframe_paths)))
 
     raw_text = _call_vlm(client, vlm_cfg, content)
 
@@ -680,12 +766,7 @@ def review_av_alignment(
                 "For narration_naturalness, return 3 (neutral)."
             ),
         })
-        for img_path in (keyframe_paths or []):
-            if not img_path.exists():
-                continue
-            raw_bytes = img_path.read_bytes()
-            b64 = base64.b64encode(raw_bytes).decode("ascii")
-            fb.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
+        fb.extend(_clone_media_items(encoded_keyframes or _encode_keyframes(keyframe_paths)))
         raw_text = _call_vlm(client, vlm_cfg, fb)
 
     parsed = _parse_vlm_json(raw_text)
@@ -797,6 +878,9 @@ def review_task_correctness(
     video_path: Optional[Path] = None,
     keyframe_paths: Optional[List[Path]] = None,
     teaching_plan: Optional[Dict] = None,
+    *,
+    encoded_keyframes: Optional[List[Dict[str, str]]] = None,
+    encoded_video_input: Optional[Dict[str, str]] = None,
 ) -> TaskCorrectnessVerdict:
     """
     Evaluate task correctness via VLM.
@@ -837,21 +921,13 @@ def review_task_correctness(
 
     # Mode 1: Direct video
     use_video = False
-    if video_path and video_path.exists():
-        video_bytes = video_path.read_bytes()
-        video_b64 = base64.b64encode(video_bytes).decode("ascii")
-        suffix = video_path.suffix.lower()
-        mime = {".mp4": "video/mp4", ".webm": "video/webm",
-                ".mov": "video/quicktime"}.get(suffix, "video/mp4")
-
+    video_input = _clone_media_item(encoded_video_input or _encode_video_input(video_path))
+    if video_input is not None:
         content.append({
             "type": "input_text",
             "text": context_block + "\nThe full video is attached below.",
         })
-        content.append({
-            "type": "input_video",
-            "video_url": f"data:{mime};base64,{video_b64}",
-        })
+        content.append(video_input)
         use_video = True
 
     # Mode 2: Keyframe fallback
@@ -863,15 +939,7 @@ def review_task_correctness(
                 f"\nBelow are {len(keyframe_paths)} keyframes sampled across the full video."
             ),
         })
-        for img_path in keyframe_paths:
-            if not img_path.exists():
-                continue
-            raw = img_path.read_bytes()
-            b64 = base64.b64encode(raw).decode("ascii")
-            content.append({
-                "type": "input_image",
-                "image_url": f"data:image/jpeg;base64,{b64}",
-            })
+        content.extend(_clone_media_items(encoded_keyframes or _encode_keyframes(keyframe_paths)))
 
     # Call VLM (try direct video first, fallback to keyframes on error)
     raw_text = _call_vlm(client, vlm_cfg, content)
@@ -890,15 +958,7 @@ def review_task_correctness(
                 "Please evaluate content accuracy, pedagogical clarity, and engagement."
             ),
         })
-        for img_path in keyframe_paths:
-            if not img_path.exists():
-                continue
-            raw = img_path.read_bytes()
-            b64 = base64.b64encode(raw).decode("ascii")
-            fallback_content.append({
-                "type": "input_image",
-                "image_url": f"data:image/jpeg;base64,{b64}",
-            })
+        fallback_content.extend(_clone_media_items(encoded_keyframes or _encode_keyframes(keyframe_paths)))
         raw_text = _call_vlm(client, vlm_cfg, fallback_content)
 
     parsed = _parse_vlm_json(raw_text)
@@ -953,6 +1013,9 @@ def review_visual_coverage(
     video_name: str = "",
     video_path: Optional[Path] = None,
     keyframe_paths: Optional[List[Path]] = None,
+    *,
+    encoded_keyframes: Optional[List[Dict[str, str]]] = None,
+    encoded_video_input: Optional[Dict[str, str]] = None,
 ) -> VisualCoverageVerdict:
     """
     Check whether the video covers every section of the teaching plan.
@@ -983,14 +1046,10 @@ def review_visual_coverage(
     content: list = [{"type": "input_text", "text": VISUAL_COVERAGE_PROMPT}]
 
     use_video = False
-    if video_path and video_path.exists():
-        video_bytes = video_path.read_bytes()
-        video_b64 = base64.b64encode(video_bytes).decode("ascii")
-        suffix = video_path.suffix.lower()
-        mime = {".mp4": "video/mp4", ".webm": "video/webm",
-                ".mov": "video/quicktime"}.get(suffix, "video/mp4")
+    video_input = _clone_media_item(encoded_video_input or _encode_video_input(video_path))
+    if video_input is not None:
         content.append({"type": "input_text", "text": f"Video: {video_name}\n\n{plan_text}"})
-        content.append({"type": "input_video", "video_url": f"data:{mime};base64,{video_b64}"})
+        content.append(video_input)
         use_video = True
 
     if not use_video and keyframe_paths:
@@ -998,12 +1057,7 @@ def review_visual_coverage(
             "type": "input_text",
             "text": f"Video: {video_name}\n\n{plan_text}\n\nKeyframes from the full video:",
         })
-        for img_path in keyframe_paths:
-            if not img_path.exists():
-                continue
-            raw = img_path.read_bytes()
-            b64 = base64.b64encode(raw).decode("ascii")
-            content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
+    content.extend(_clone_media_items(encoded_keyframes or _encode_keyframes(keyframe_paths)))
 
     raw_text = _call_vlm(client, vlm_cfg, content)
 
@@ -1011,12 +1065,7 @@ def review_visual_coverage(
         print("    Video failed for coverage check, falling back to keyframes ...")
         fb: list = [{"type": "input_text", "text": VISUAL_COVERAGE_PROMPT}]
         fb.append({"type": "input_text", "text": f"Video: {video_name}\n\n{plan_text}\n\nKeyframes:"})
-        for img_path in (keyframe_paths or []):
-            if not img_path.exists():
-                continue
-            raw = img_path.read_bytes()
-            b64 = base64.b64encode(raw).decode("ascii")
-            fb.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
+        fb.extend(_clone_media_items(encoded_keyframes or _encode_keyframes(keyframe_paths)))
         raw_text = _call_vlm(client, vlm_cfg, fb)
 
     parsed = _parse_vlm_json(raw_text)
@@ -1078,6 +1127,9 @@ def review_semantic_coherence(
     video_name: str = "",
     video_path: Optional[Path] = None,
     keyframe_paths: Optional[List[Path]] = None,
+    *,
+    encoded_keyframes: Optional[List[Dict[str, str]]] = None,
+    encoded_video_input: Optional[Dict[str, str]] = None,
 ) -> SemanticCoherenceVerdict:
     """
     VLM-based semantic coherence check 鈥?no teaching plan required.
@@ -1095,14 +1147,10 @@ def review_semantic_coherence(
     content: list = [{"type": "input_text", "text": SEMANTIC_COHERENCE_PROMPT}]
 
     use_video = False
-    if video_path and video_path.exists():
-        video_bytes = video_path.read_bytes()
-        video_b64 = base64.b64encode(video_bytes).decode("ascii")
-        suffix = video_path.suffix.lower()
-        mime = {".mp4": "video/mp4", ".webm": "video/webm",
-                ".mov": "video/quicktime"}.get(suffix, "video/mp4")
+    video_input = _clone_media_item(encoded_video_input or _encode_video_input(video_path))
+    if video_input is not None:
         content.append({"type": "input_text", "text": f"Video: {video_name}"})
-        content.append({"type": "input_video", "video_url": f"data:{mime};base64,{video_b64}"})
+        content.append(video_input)
         use_video = True
 
     if not use_video and keyframe_paths:
@@ -1110,12 +1158,7 @@ def review_semantic_coherence(
             "type": "input_text",
             "text": f"Video: {video_name}\n\nKeyframes from the full video (in chronological order):",
         })
-        for img_path in keyframe_paths:
-            if not img_path.exists():
-                continue
-            raw = img_path.read_bytes()
-            b64 = base64.b64encode(raw).decode("ascii")
-            content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
+        content.extend(_clone_media_items(encoded_keyframes or _encode_keyframes(keyframe_paths)))
 
     raw_text = _call_vlm(client, vlm_cfg, content)
 
@@ -1123,12 +1166,7 @@ def review_semantic_coherence(
         print("    Video failed for coherence check, falling back to keyframes ...")
         fb: list = [{"type": "input_text", "text": SEMANTIC_COHERENCE_PROMPT}]
         fb.append({"type": "input_text", "text": f"Video: {video_name}\n\nKeyframes:"})
-        for img_path in (keyframe_paths or []):
-            if not img_path.exists():
-                continue
-            raw = img_path.read_bytes()
-            b64 = base64.b64encode(raw).decode("ascii")
-            fb.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
+        fb.extend(_clone_media_items(encoded_keyframes or _encode_keyframes(keyframe_paths)))
         raw_text = _call_vlm(client, vlm_cfg, fb)
 
     parsed = _parse_vlm_json(raw_text)

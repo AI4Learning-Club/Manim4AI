@@ -217,101 +217,8 @@ def _frame_motion(prev: np.ndarray, cur: np.ndarray, thresh: float) -> int:
     return int((dist >= thresh).sum())
 
 
-def _color_histogram(frame: np.ndarray, bins: int) -> np.ndarray:
-    """Compute a normalised HSV hue-saturation histogram."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([hsv], [0, 1], None, [bins, bins], [0, 180, 0, 256])
-    cv2.normalize(hist, hist)
-    return hist.flatten().astype(np.float32)
-
-
 def _chi_square_dist(h1: np.ndarray, h2: np.ndarray) -> float:
     return float(cv2.compareHist(h1, h2, cv2.HISTCMP_CHISQR))
-
-
-# =====================================================================
-# Per-frame extraction
-# =====================================================================
-
-def _extract_masks(
-    frame: np.ndarray, cfg: CVConfig
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return (text_mask, solid_main, dark_mask) as boolean arrays."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-    text = (hsv[:, :, 1] <= cfg.text_max_sat) & (hsv[:, :, 2] >= cfg.text_min_val)
-    solid = (hsv[:, :, 1] >= cfg.solid_min_sat) & (hsv[:, :, 2] >= cfg.solid_min_val)
-    dark = (hsv[:, :, 1] <= cfg.dark_max_sat) & (hsv[:, :, 2] <= cfg.dark_max_val)
-
-    solid_u8 = solid.astype(np.uint8) * 255
-    k_open = _ensure_odd(max(3, cfg.solid_open_k))
-    k_close = _ensure_odd(max(5, cfg.solid_close_k))
-    open_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
-    close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
-    solid_main = cv2.morphologyEx(solid_u8, cv2.MORPH_OPEN, open_k)
-    solid_main = cv2.morphologyEx(solid_main, cv2.MORPH_CLOSE, close_k) > 0
-
-    return text, solid_main, dark
-
-
-def _layout_density(
-    frame: np.ndarray,
-    cfg: CVConfig,
-    bg_gray: Optional[np.ndarray] = None,
-) -> Tuple[float, int]:
-    """Compute grid-based foreground density."""
-    if not cfg.enable_layout_density_eval:
-        return 0.0, 0
-
-    fg = _subtract_bg(frame, bg_gray, cfg.fg_thresh, cfg)
-
-    h, w = fg.shape
-    rh = max(1, h // cfg.layout_grid_rows)
-    rw = max(1, w // cfg.layout_grid_cols)
-
-    max_density = 0.0
-    dense_count = 0
-    for r in range(cfg.layout_grid_rows):
-        for c in range(cfg.layout_grid_cols):
-            cell = fg[r * rh : (r + 1) * rh, c * rw : (c + 1) * rw]
-            cell_area = max(cell.shape[0] * cell.shape[1], 1)
-            density = float(np.count_nonzero(cell)) / cell_area
-            if density > max_density:
-                max_density = density
-            if density >= cfg.layout_density_warn:
-                dense_count += 1
-
-    return max_density, dense_count
-
-
-def _count_components(
-    frame: np.ndarray,
-    min_area: int,
-    bg_gray: Optional[np.ndarray] = None,
-    cfg: Optional[CVConfig] = None,
-) -> int:
-    """Count foreground connected components above *min_area*."""
-    fg = _subtract_bg(frame, bg_gray, 30, cfg)
-    n_labels, _, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
-    count = 0
-    for i in range(1, n_labels):
-        if int(stats[i, cv2.CC_STAT_AREA]) >= min_area:
-            count += 1
-    return count
-
-
-def _ocr_region_text(frame: np.ndarray, bbox: Tuple[int, int, int, int], lang: str) -> str:
-    """Run Tesseract on a cropped region.  Returns empty string on failure."""
-    if not _HAS_TESSERACT:
-        return ""
-    x1, y1, x2, y2 = bbox
-    crop = frame[y1:y2, x1:x2]
-    if crop.size == 0:
-        return ""
-    try:
-        return pytesseract.image_to_string(crop, lang=lang, config="--psm 6").strip()
-    except Exception:
-        return ""
 
 
 def _ocr_crop_text(crop: np.ndarray, lang: str) -> str:
@@ -356,55 +263,121 @@ class _BBoxComp:
     area: int
 
 
-def _subtract_bg(
-    frame: np.ndarray,
-    bg_gray: Optional[np.ndarray],
-    fg_thresh: int = 30,
-    cfg: Optional[CVConfig] = None,
-) -> np.ndarray:
-    """Subtract background reference from frame to isolate true foreground.
+@dataclass
+class _FrameEvalContext:
+    frame: np.ndarray
+    gray: np.ndarray
+    hsv: np.ndarray
+    text_mask: np.ndarray
+    solid_main: np.ndarray
+    dark_mask: np.ndarray
+    fg: np.ndarray
+    cc_n_labels: int
+    cc_labels: np.ndarray
+    cc_stats: np.ndarray
 
-    If *bg_gray* is None, falls back to simple grayscale thresholding.
-    Otherwise, computes |frame_gray - bg_gray| and thresholds the difference
-    so that static background texture (e.g. starry nebula) is excluded.
-    """
+
+def _build_frame_eval_context(
+    frame: np.ndarray,
+    cfg: CVConfig,
+    bg_gray: Optional[np.ndarray],
+) -> _FrameEvalContext:
+    """Compute and share all reusable per-frame CV intermediates."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    text_mask = (hsv[:, :, 1] <= cfg.text_max_sat) & (hsv[:, :, 2] >= cfg.text_min_val)
+    solid = (hsv[:, :, 1] >= cfg.solid_min_sat) & (hsv[:, :, 2] >= cfg.solid_min_val)
+    dark_mask = (hsv[:, :, 1] <= cfg.dark_max_sat) & (hsv[:, :, 2] <= cfg.dark_max_val)
+
+    solid_u8 = solid.astype(np.uint8) * 255
+    k_open = _ensure_odd(max(3, cfg.solid_open_k))
+    k_close = _ensure_odd(max(5, cfg.solid_close_k))
+    open_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
+    close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
+    solid_main = cv2.morphologyEx(solid_u8, cv2.MORPH_OPEN, open_k)
+    solid_main = cv2.morphologyEx(solid_main, cv2.MORPH_CLOSE, close_k) > 0
+
     if bg_gray is not None:
         diff = cv2.absdiff(gray, bg_gray)
-        _, fg = cv2.threshold(diff, fg_thresh, 255, cv2.THRESH_BINARY)
-    elif cfg is not None:
-        text_mask, solid_main, _ = _extract_masks(frame, cfg)
-        fg = ((text_mask | solid_main).astype(np.uint8) * 255)
+        _, fg = cv2.threshold(diff, cfg.fg_thresh, 255, cv2.THRESH_BINARY)
     else:
-        _, fg = cv2.threshold(gray, fg_thresh, 255, cv2.THRESH_BINARY)
-    return fg
+        fg = ((text_mask | solid_main).astype(np.uint8) * 255)
+
+    cc_n_labels, cc_labels, cc_stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
+    return _FrameEvalContext(
+        frame=frame,
+        gray=gray,
+        hsv=hsv,
+        text_mask=text_mask,
+        solid_main=solid_main,
+        dark_mask=dark_mask,
+        fg=fg,
+        cc_n_labels=cc_n_labels,
+        cc_labels=cc_labels,
+        cc_stats=cc_stats,
+    )
 
 
-def _get_fg_components(frame: np.ndarray, min_area: int, fg_thresh: int = 30,
-                       bg_gray: Optional[np.ndarray] = None,
-                       cfg: Optional[CVConfig] = None) -> List[_BBoxComp]:
+def _color_histogram(ctx: _FrameEvalContext, bins: int) -> np.ndarray:
+    """Compute a normalised HSV hue-saturation histogram."""
+    hist = cv2.calcHist([ctx.hsv], [0, 1], None, [bins, bins], [0, 180, 0, 256])
+    cv2.normalize(hist, hist)
+    return hist.flatten().astype(np.float32)
+
+
+def _layout_density(ctx: _FrameEvalContext, cfg: CVConfig) -> Tuple[float, int]:
+    """Compute grid-based foreground density."""
+    if not cfg.enable_layout_density_eval:
+        return 0.0, 0
+
+    h, w = ctx.fg.shape
+    rh = max(1, h // cfg.layout_grid_rows)
+    rw = max(1, w // cfg.layout_grid_cols)
+
+    max_density = 0.0
+    dense_count = 0
+    for r in range(cfg.layout_grid_rows):
+        for c in range(cfg.layout_grid_cols):
+            cell = ctx.fg[r * rh : (r + 1) * rh, c * rw : (c + 1) * rw]
+            cell_area = max(cell.shape[0] * cell.shape[1], 1)
+            density = float(np.count_nonzero(cell)) / cell_area
+            if density > max_density:
+                max_density = density
+            if density >= cfg.layout_density_warn:
+                dense_count += 1
+
+    return max_density, dense_count
+
+
+def _count_components(ctx: _FrameEvalContext, min_area: int) -> int:
+    """Count foreground connected components above *min_area*."""
+    count = 0
+    for i in range(1, ctx.cc_n_labels):
+        if int(ctx.cc_stats[i, cv2.CC_STAT_AREA]) >= min_area:
+            count += 1
+    return count
+
+
+def _bbox_components(ctx: _FrameEvalContext, min_area: int) -> List[_BBoxComp]:
     """Extract foreground connected components as bounding boxes."""
-    fg = _subtract_bg(frame, bg_gray, fg_thresh, cfg)
-    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
-    comps = []
-    for i in range(1, n_labels):
-        area = int(stats[i, cv2.CC_STAT_AREA])
+    comps: List[_BBoxComp] = []
+    for i in range(1, ctx.cc_n_labels):
+        area = int(ctx.cc_stats[i, cv2.CC_STAT_AREA])
         if area < min_area:
             continue
         comps.append(_BBoxComp(
             label=i,
-            x=int(stats[i, cv2.CC_STAT_LEFT]),
-            y=int(stats[i, cv2.CC_STAT_TOP]),
-            w=int(stats[i, cv2.CC_STAT_WIDTH]),
-            h=int(stats[i, cv2.CC_STAT_HEIGHT]),
+            x=int(ctx.cc_stats[i, cv2.CC_STAT_LEFT]),
+            y=int(ctx.cc_stats[i, cv2.CC_STAT_TOP]),
+            w=int(ctx.cc_stats[i, cv2.CC_STAT_WIDTH]),
+            h=int(ctx.cc_stats[i, cv2.CC_STAT_HEIGHT]),
             area=area,
         ))
     return comps
 
 
-def _bbox_iou_overlap(
-    frame: np.ndarray, cfg: CVConfig, bg_gray: Optional[np.ndarray] = None
-) -> Tuple[int, float]:
+def _bbox_iou_overlap(ctx: _FrameEvalContext, cfg: CVConfig) -> Tuple[int, float]:
     """
     Detect overlapping foreground components via bounding-box IoU.
     Returns (num_overlapping_pairs, max_iou).
@@ -413,7 +386,7 @@ def _bbox_iou_overlap(
     if not cfg.bbox_iou_enabled:
         return 0, 0.0
 
-    comps = _get_fg_components(frame, cfg.bbox_min_area, cfg.fg_thresh, bg_gray, cfg)
+    comps = _bbox_components(ctx, cfg.bbox_min_area)
     if len(comps) < 2:
         return 0, 0.0
 
@@ -422,7 +395,6 @@ def _bbox_iou_overlap(
     for i in range(len(comps)):
         for j in range(i + 1, len(comps)):
             a, b = comps[i], comps[j]
-            # Intersection
             ix1 = max(a.x, b.x)
             iy1 = max(a.y, b.y)
             ix2 = min(a.x + a.w, b.x + b.w)
@@ -432,10 +404,8 @@ def _bbox_iou_overlap(
             inter = (ix2 - ix1) * (iy2 - iy1)
             if inter < cfg.bbox_min_intersection:
                 continue
-            # IoU
             union = a.w * a.h + b.w * b.h - inter
             iou = inter / max(union, 1)
-            # Overlap ratio (intersection / smaller bbox)
             smaller = min(a.w * a.h, b.w * b.h)
             ratio = inter / max(smaller, 1)
 
@@ -446,9 +416,7 @@ def _bbox_iou_overlap(
     return pairs, max_iou
 
 
-def _fg_pixel_overlap(
-    frame: np.ndarray, cfg: CVConfig, bg_gray: Optional[np.ndarray] = None
-) -> int:
+def _fg_pixel_overlap(ctx: _FrameEvalContext, cfg: CVConfig) -> int:
     """
     Detect pixel-level overlap between distinct foreground components.
     Dilates each component slightly, then checks if dilated regions of
@@ -458,13 +426,9 @@ def _fg_pixel_overlap(
     if not cfg.fg_pixel_overlap_enabled:
         return 0
 
-    fg = _subtract_bg(frame, bg_gray, cfg.fg_thresh, cfg)
-    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
-
-    # Keep only significant components
-    valid = []
-    for i in range(1, n_labels):
-        if int(stats[i, cv2.CC_STAT_AREA]) >= cfg.bbox_min_area:
+    valid: List[int] = []
+    for i in range(1, ctx.cc_n_labels):
+        if int(ctx.cc_stats[i, cv2.CC_STAT_AREA]) >= cfg.bbox_min_area:
             valid.append(i)
 
     if len(valid) < 2:
@@ -473,22 +437,17 @@ def _fg_pixel_overlap(
     dk = _ensure_odd(cfg.fg_dilate_k)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dk, dk))
 
-    # Dilate each component and accumulate overlap count
-    h, w = labels.shape
+    h, w = ctx.cc_labels.shape
     coverage = np.zeros((h, w), dtype=np.int32)
     for lbl in valid:
-        comp_mask = (labels == lbl).astype(np.uint8) * 255
+        comp_mask = (ctx.cc_labels == lbl).astype(np.uint8) * 255
         dilated = cv2.dilate(comp_mask, kernel, iterations=1)
         coverage += (dilated > 0).astype(np.int32)
 
-    # Pixels covered by >= 2 components = overlap
-    overlap_pixels = int((coverage >= 2).sum())
-    return overlap_pixels
+    return int((coverage >= 2).sum())
 
 
-def _text_on_edge_overlap(
-    frame: np.ndarray, cfg: CVConfig, bg_gray: Optional[np.ndarray] = None
-) -> int:
+def _text_on_edge_overlap(ctx: _FrameEvalContext, cfg: CVConfig) -> int:
     """
     Detect text/annotation overlapping lines or curves.
 
@@ -500,22 +459,16 @@ def _text_on_edge_overlap(
     if not cfg.text_line_cross_enabled:
         return 0
 
-    fg = _subtract_bg(frame, bg_gray, cfg.fg_thresh, cfg)
-
-    # "Thick" foreground: survives aggressive erosion → text / large shapes
     thick_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    thick_eroded = cv2.erode(fg, thick_k, iterations=1)
-    thick_mask = cv2.dilate(thick_eroded, thick_k, iterations=2) > 0  # restore + expand
+    thick_eroded = cv2.erode(ctx.fg, thick_k, iterations=1)
+    thick_mask = cv2.dilate(thick_eroded, thick_k, iterations=2) > 0
 
-    # "Thin" foreground: original fg minus thick regions → lines, curves, arrows
-    thin_mask = (fg > 0) & (~thick_mask)
+    thin_mask = (ctx.fg > 0) & (~thick_mask)
 
-    # Dilate thin mask slightly so nearby text triggers
     dk = _ensure_odd(cfg.edge_dilate_k)
     dilate_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dk, dk))
     thin_dilated = cv2.dilate(thin_mask.astype(np.uint8) * 255, dilate_k, iterations=1) > 0
 
-    # Overlap: thick (text) pixels that sit on dilated thin (line) regions
     overlap = thick_mask & thin_dilated
     return int(overlap.sum())
 
@@ -545,11 +498,6 @@ def extract_all_frames(
 
     total_est = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    ok, frame = cap.read()
-    if not ok or frame is None:
-        cap.release()
-        raise RuntimeError("Video is empty or unreadable")
-
     step = max(1, cfg.frame_step)
     features: List[FrameFeatures] = []
 
@@ -561,118 +509,131 @@ def extract_all_frames(
     processed = 0
     ocr_jobs: List[Tuple[int, np.ndarray]] = []
 
-    # Use the first main-canvas frame as a stable background reference.
+    # Use the first sampled main-canvas frame as a stable background reference.
     # This is a stopgap that works much better for textured dark themes than
     # raw grayscale thresholding, which tends to classify the whole background
     # as foreground and causes severe layout false positives.
-    bg_gray: Optional[np.ndarray] = cv2.cvtColor(
-        _main_canvas_frame(frame, cfg),
-        cv2.COLOR_BGR2GRAY,
-    )
+    bg_gray: Optional[np.ndarray] = None
 
-    while ok and frame is not None:
-        if frame_idx % step == 0:
-            main_frame = _main_canvas_frame(frame, cfg)
-            ff = FrameFeatures(frame=frame_idx, sec=frame_idx / fps)
+    while True:
+        ok = cap.grab()
+        if not ok:
+            break
 
-            # --- 1. Overlap / occlusion masks ---
-            text_mask, solid_main, dark_mask = _extract_masks(main_frame, cfg)
-            ff.text_pixels = int(text_mask.sum())
-            signal_mask = np.zeros_like(text_mask, dtype=bool)
+        if frame_idx % step != 0:
+            frame_idx += 1
+            continue
 
-            if prev_frame is not None:
-                ff.motion_pixels = _frame_motion(prev_frame, main_frame, cfg.motion_diff_thresh)
-                delta = main_frame.astype(np.float32) - prev_frame.astype(np.float32)
-                delta_dist = np.linalg.norm(delta, axis=2)
-                changed = delta_dist >= cfg.change_diff_thresh
+        ok, frame = cap.retrieve()
+        if not ok or frame is None:
+            frame_idx += 1
+            continue
 
-                if prev_solid is not None:
-                    occ_mask = changed & dark_mask & prev_solid
-                    wr_mask = changed & text_mask & prev_solid
-                else:
-                    occ_mask = np.zeros_like(changed, dtype=bool)
-                    wr_mask = np.zeros_like(changed, dtype=bool)
+        main_frame = _main_canvas_frame(frame, cfg)
+        if bg_gray is None:
+            bg_gray = cv2.cvtColor(main_frame, cv2.COLOR_BGR2GRAY)
+        ctx = _build_frame_eval_context(main_frame, cfg, bg_gray)
+        ff = FrameFeatures(frame=frame_idx, sec=frame_idx / fps)
 
-                ff.occlusion_pixels = int(occ_mask.sum())
-                ff.write_pixels = int(wr_mask.sum())
-                signal_mask = signal_mask | occ_mask | wr_mask
+        # --- 1. Overlap / occlusion masks ---
+        ff.text_pixels = int(ctx.text_mask.sum())
+        signal_mask = np.zeros_like(ctx.text_mask, dtype=bool)
 
-            ff.overlap_pixels = int(signal_mask.sum())
-            ff.cx, ff.cy = _mask_centroid(signal_mask)
-            ff.bbox_x1, ff.bbox_y1, ff.bbox_x2, ff.bbox_y2 = _mask_bbox(signal_mask)
+        if prev_frame is not None:
+            ff.motion_pixels = _frame_motion(prev_frame, main_frame, cfg.motion_diff_thresh)
+            delta = main_frame.astype(np.float32) - prev_frame.astype(np.float32)
+            delta_dist = np.linalg.norm(delta, axis=2)
+            changed = delta_dist >= cfg.change_diff_thresh
 
-            # --- 1b. BBox IoU overlap (colour-agnostic) ---
-            ff.bbox_overlap_pairs, ff.bbox_max_iou = _bbox_iou_overlap(main_frame, cfg, bg_gray)
+            if prev_solid is not None:
+                occ_mask = changed & ctx.dark_mask & prev_solid
+                wr_mask = changed & ctx.text_mask & prev_solid
+            else:
+                occ_mask = np.zeros_like(changed, dtype=bool)
+                wr_mask = np.zeros_like(changed, dtype=bool)
 
-            # --- 1c. Foreground pixel-level overlap (colour-agnostic) ---
-            ff.fg_overlap_pixels = _fg_pixel_overlap(main_frame, cfg, bg_gray)
+            ff.occlusion_pixels = int(occ_mask.sum())
+            ff.write_pixels = int(wr_mask.sum())
+            signal_mask = signal_mask | occ_mask | wr_mask
 
-            # --- 1d. Text-on-line/curve cross detection ---
-            ff.text_on_edge_pixels = _text_on_edge_overlap(main_frame, cfg, bg_gray)
+        ff.overlap_pixels = int(signal_mask.sum())
+        ff.cx, ff.cy = _mask_centroid(signal_mask)
+        ff.bbox_x1, ff.bbox_y1, ff.bbox_x2, ff.bbox_y2 = _mask_bbox(signal_mask)
 
-            # --- Candidate: ANY overlap method triggers ---
-            hsv_candidate = (
-                cfg.enable_hsv_text_overlap_candidate
-                and ff.overlap_pixels >= cfg.candidate_min_pixels
-            )
-            bbox_candidate = ff.bbox_overlap_pairs >= 1
-            fg_candidate = ff.fg_overlap_pixels >= cfg.fg_min_overlap_pixels
-            edge_candidate = ff.text_on_edge_pixels >= cfg.text_on_edge_min_pixels
-            ff.candidate = hsv_candidate or bbox_candidate or fg_candidate or edge_candidate
+        # --- 1b. BBox IoU overlap (colour-agnostic) ---
+        ff.bbox_overlap_pairs, ff.bbox_max_iou = _bbox_iou_overlap(ctx, cfg)
 
-            # --- 2. Layout density ---
-            ff.layout_max_density, ff.layout_dense_cells = _layout_density(main_frame, cfg, bg_gray)
+        # --- 1c. Foreground pixel-level overlap (colour-agnostic) ---
+        ff.fg_overlap_pixels = _fg_pixel_overlap(ctx, cfg)
 
-            # --- 3. Element lifecycle (component count change) ---
-            n_comp = _count_components(main_frame, cfg.lifecycle_min_area, bg_gray, cfg)
-            ff.num_components = n_comp
-            if prev_frame is not None:
-                appeared = max(0, n_comp - prev_components)
-                disappeared = max(0, prev_components - n_comp)
-                if disappeared > 0 and processed >= 2:
-                    prev_ff = features[-1] if features else None
-                    if prev_ff is not None and prev_ff.num_components > prev_components:
-                        ff.flash_events = min(appeared, disappeared)
-            prev_components = n_comp
+        # --- 1d. Text-on-line/curve cross detection ---
+        ff.text_on_edge_pixels = _text_on_edge_overlap(ctx, cfg)
 
-            # --- 4. Colour consistency ---
-            hist = _color_histogram(main_frame, cfg.color_hist_bins)
-            if prev_hist is not None:
-                ff.color_shift = _chi_square_dist(prev_hist, hist)
-            prev_hist = hist
+        # --- Candidate: ANY overlap method triggers ---
+        hsv_candidate = (
+            cfg.enable_hsv_text_overlap_candidate
+            and ff.overlap_pixels >= cfg.candidate_min_pixels
+        )
+        bbox_candidate = ff.bbox_overlap_pairs >= 1
+        fg_candidate = ff.fg_overlap_pixels >= cfg.fg_min_overlap_pixels
+        edge_candidate = ff.text_on_edge_pixels >= cfg.text_on_edge_min_pixels
+        ff.candidate = hsv_candidate or bbox_candidate or fg_candidate or edge_candidate
 
-            # --- bookkeeping ---
-            prev_frame = main_frame
-            prev_solid = solid_main
-            feature_idx = len(features)
-            features.append(ff)
+        # --- 2. Layout density ---
+        ff.layout_max_density, ff.layout_dense_cells = _layout_density(ctx, cfg)
 
-            # --- 5. Rendering-artifact detection via OCR (deferred post-pass) ---
-            if (
-                cfg.ocr_enabled
-                and _HAS_TESSERACT
-                and ff.bbox_x1 is not None
-                and ff.overlap_pixels >= cfg.candidate_min_pixels
-                and processed % max(1, cfg.ocr_sample_interval) == 0
-            ):
-                bbox = (ff.bbox_x1, ff.bbox_y1, ff.bbox_x2, ff.bbox_y2)
-                x1, y1, x2, y2 = bbox
-                crop = main_frame[y1:y2, x1:x2]
-                if crop.size > 0:
-                    ocr_jobs.append((feature_idx, crop.copy()))
+        # --- 3. Element lifecycle (component count change) ---
+        n_comp = _count_components(ctx, cfg.lifecycle_min_area)
+        ff.num_components = n_comp
+        if prev_frame is not None:
+            appeared = max(0, n_comp - prev_components)
+            disappeared = max(0, prev_components - n_comp)
+            if disappeared > 0 and processed >= 2:
+                prev_ff = features[-1] if features else None
+                if prev_ff is not None and prev_ff.num_components > prev_components:
+                    ff.flash_events = min(appeared, disappeared)
+        prev_components = n_comp
 
-            processed += 1
+        # --- 4. Colour consistency ---
+        hist = _color_histogram(ctx, cfg.color_hist_bins)
+        if prev_hist is not None:
+            ff.color_shift = _chi_square_dist(prev_hist, hist)
+        prev_hist = hist
 
-            if progress_callback and processed % 50 == 0:
-                progress_callback(frame_idx, total_est)
+        # --- bookkeeping ---
+        prev_frame = main_frame
+        prev_solid = ctx.solid_main
+        feature_idx = len(features)
+        features.append(ff)
+
+        # --- 5. Rendering-artifact detection via OCR (deferred post-pass) ---
+        if (
+            cfg.ocr_enabled
+            and _HAS_TESSERACT
+            and ff.bbox_x1 is not None
+            and ff.overlap_pixels >= cfg.candidate_min_pixels
+            and processed % max(1, cfg.ocr_sample_interval) == 0
+        ):
+            bbox = (ff.bbox_x1, ff.bbox_y1, ff.bbox_x2, ff.bbox_y2)
+            x1, y1, x2, y2 = bbox
+            crop = main_frame[y1:y2, x1:x2]
+            if crop.size > 0:
+                ocr_jobs.append((feature_idx, crop.copy()))
+
+        processed += 1
+
+        if progress_callback and processed % 50 == 0:
+            progress_callback(frame_idx, total_est)
 
         frame_idx += 1
-        ok, frame = cap.read()
 
     if progress_callback:
         progress_callback(frame_idx, total_est)
 
     cap.release()
+
+    if not features:
+        raise RuntimeError("Video is empty or unreadable")
 
     if cfg.ocr_enabled and _HAS_TESSERACT and ocr_jobs:
         results: List[Tuple[int, int, str]] = []

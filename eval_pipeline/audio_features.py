@@ -23,6 +23,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+PCMResult = Tuple[np.ndarray, int]
+
 
 # =====================================================================
 # Dataclasses
@@ -120,7 +122,7 @@ def _probe_durations(video_path: Path) -> Tuple[float, float]:
 def _extract_audio_pcm(
     video_path: Path,
     sample_rate: int = 16000,
-) -> Optional[Tuple[np.ndarray, int]]:
+) -> Optional[PCMResult]:
     """Extract audio as mono float32 PCM using ffmpeg.
 
     Returns (samples_array, sample_rate) or None if no audio.
@@ -500,29 +502,19 @@ def _interval_iou(
 # Top-level extraction functions
 # =====================================================================
 
-def extract_audio_metrics(video_path: Path, cfg) -> AudioMetrics:
-    """Full audio quality analysis.
-
-    Returns neutral AudioMetrics(has_audio=False) if no audio stream.
-    *cfg* is an AudioConfig instance.
-    """
+def _compute_audio_metrics_from_pcm(
+    *,
+    pcm_result: PCMResult,
+    audio_dur: float,
+    video_dur: float,
+    cfg,
+) -> AudioMetrics:
     metrics = AudioMetrics()
-
-    # Probe durations
-    audio_dur, video_dur = _probe_durations(video_path)
-    metrics.video_duration_sec = video_dur
-
-    if audio_dur <= 0:
-        return metrics
-
-    # Extract PCM
-    pcm_result = _extract_audio_pcm(video_path, sample_rate=cfg.sample_rate)
-    if pcm_result is None:
-        return metrics
-
     samples, sr = pcm_result
+
     metrics.has_audio = True
     metrics.audio_duration_sec = audio_dur
+    metrics.video_duration_sec = video_dur
     metrics.sample_rate = sr
     metrics.duration_mismatch_sec = abs(audio_dur - video_dur)
 
@@ -565,11 +557,52 @@ def extract_audio_metrics(video_path: Path, cfg) -> AudioMetrics:
     return metrics
 
 
+def extract_audio_metrics_with_pcm(video_path: Path, cfg) -> Tuple[AudioMetrics, Optional[PCMResult]]:
+    """Full audio quality analysis plus reusable decoded PCM.
+
+    Returns `(metrics, pcm_result)`. If no audio stream exists, pcm_result is None
+    and metrics.has_audio stays False.
+    """
+    metrics = AudioMetrics()
+
+    # Probe durations
+    audio_dur, video_dur = _probe_durations(video_path)
+    metrics.video_duration_sec = video_dur
+
+    if audio_dur <= 0:
+        return metrics, None
+
+    # Extract PCM
+    pcm_result = _extract_audio_pcm(video_path, sample_rate=cfg.sample_rate)
+    if pcm_result is None:
+        return metrics, None
+
+    metrics = _compute_audio_metrics_from_pcm(
+        pcm_result=pcm_result,
+        audio_dur=audio_dur,
+        video_dur=video_dur,
+        cfg=cfg,
+    )
+    return metrics, pcm_result
+
+
+def extract_audio_metrics(video_path: Path, cfg) -> AudioMetrics:
+    """Full audio quality analysis.
+
+    Returns neutral AudioMetrics(has_audio=False) if no audio stream.
+    *cfg* is an AudioConfig instance.
+    """
+    metrics, _ = extract_audio_metrics_with_pcm(video_path, cfg)
+    return metrics
+
+
 def extract_alignment_metrics(
     video_path: Path,
     frame_features: list,
     fps: float,
     cfg,
+    *,
+    pcm_result: Optional[PCMResult] = None,
 ) -> AlignmentMetrics:
     """Compute audio-visual alignment.
 
@@ -578,7 +611,8 @@ def extract_alignment_metrics(
     """
     metrics = AlignmentMetrics()
 
-    pcm_result = _extract_audio_pcm(video_path, sample_rate=cfg.sample_rate)
+    if pcm_result is None:
+        pcm_result = _extract_audio_pcm(video_path, sample_rate=cfg.sample_rate)
     if pcm_result is None:
         return metrics
 

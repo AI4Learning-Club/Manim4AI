@@ -97,14 +97,11 @@ _CONTAINER_BASE_CALLS = {
 
 _EXPLICIT_BIND_HELPERS = {
     "bind_to_anchor",
-    "bind_many_to_anchor",
     "bind_to_block",
-    "bind_many_to_block",
 }
 
 _EXPLICIT_BUILD_HELPERS = {
     "build_on_anchor",
-    "bind_many_to_anchor",
 }
 
 _GEOMETRY_CONSTRUCTORS = {
@@ -589,13 +586,6 @@ def _deterministic_anchor_lifecycle_issues(code: str) -> List[Dict[str, Any]]:
                     if isinstance(first, ast.Name):
                         explicit_bind_lines[first.id] = stmt.lineno
                         _mark_candidate_valid(candidates, first.id, via=call_name)
-                    continue
-
-                if call_name == "bind_many_to_block" and len(call.args) >= 2:
-                    for arg in call.args[1:]:
-                        if isinstance(arg, ast.Name):
-                            explicit_bind_lines[arg.id] = stmt.lineno
-                            _mark_candidate_valid(candidates, arg.id, via=call_name)
                     continue
 
                 if call_name == "add" and isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):

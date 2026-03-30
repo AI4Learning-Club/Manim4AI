@@ -129,8 +129,8 @@ BLOCK BINDING SAFETY:
 - If a non-text dependent object is created before `fit_body(...)` and should
   inherit the later scale/shift of a graph block, panel block, or other visual
   container, immediately bind it with `self.bind_to_block(dependent, parent_block)`.
-- If several dependent objects share the same parent block, prefer
-  `self.bind_many_to_block(parent_block, obj1, obj2, obj3)`.
+- Bind each dependent object immediately after creation with
+  `self.bind_to_block(dependent, parent_block)`.
 - This helper is the DEFAULT way to keep dependent geometry attached to a block
   without manually placing that geometry inside the block's layout tree.
 - Use block binding for dependent dots, secants, tangents, helper lines,
@@ -145,11 +145,19 @@ BLOCK BINDING SAFETY:
 - If the object must be recomputed from live anchors rather than merely follow
   the parent block's transform, use `self.build_on_anchor(...)` or
   `self.bind_to_anchor(...)`.
-- `self.build_on_anchor(builder, ...)` is the DEFAULT helper for dependent
-  geometry whose shape or endpoints must be rebuilt from live anchors.
+- `self.build_on_anchor(builder, ...)` defaults to NON-LIVE anchor binding.
+  Use that default for objects that only need to resync after layout events
+  such as `fit_body(...)`, `fit_to_top_band(...)`, or explicit scene-level
+  synchronization.
+- Do NOT blindly force `live=False` for every anchor-bound object.
+  If the object must visibly keep following moving anchors during animation,
+  you MUST pass `live=True` explicitly.
+- `self.build_on_anchor(builder, ..., live=True)` is for dependent geometry
+  whose shape or endpoints must continuously rebuild from moving anchors.
 - `self.bind_to_anchor(existing_mobject, builder, ...)` is the repair helper
   when the dependent mobject already exists and now needs to stay synchronized
-  to its anchors.
+  to its anchors. Keep `live=True` when that repair target must continue
+  following visible anchor motion.
 
 STATE / CLEARING SAFETY:
 - If the scene inherits from `AI4LearningBaseScene`, prefer
@@ -227,8 +235,7 @@ _ANCHOR_LIFECYCLE_HARD_RULES = """\
   the same fitted `graph_block` / `bodyN`. Then the anchor moves during
   fitting while the geometry stays behind.
 - Preferred fix: call `self.bind_to_block(dependent, parent_block)` immediately
-  after creating that dependent geometry, or use `self.bind_many_to_block(...)`
-  for several related objects.
+  after creating each dependent geometry.
 - If the dependent geometry must be recomputed from the fitted anchor rather
   than merely inherit the parent block transform, prefer
   `self.build_on_anchor(...)` or `self.bind_to_anchor(...)`.
@@ -1015,6 +1022,47 @@ Output ONLY the corrected Python code inside a ```python``` block.
 """
 )
 
+_SYSTEM_SEGMENT_FIX = (
+_CLAUDE_REVIEW_NOTICE
+    + """\
+You are an expert Manim segment repair agent.
+
+You are fixing ONE failed Scene Pack segment. The shared helpers and manifest
+shown below are reference context only. Your edit scope is STRICT:
+- Modify ONLY the target section method.
+- Do NOT edit `SCENE_MANIFEST`.
+- Do NOT edit wrapper scene classes.
+- Do NOT edit shared helper methods unless the user explicitly asked for a
+  whole-file refactor. For this task, treat helper methods as read-only.
+- Keep the Scene Pack architecture unchanged.
+
+Before fixing the render error, scan the target section method against these
+shared rules and correct any violation that can be solved INSIDE that method:
+"""
+    + _COMMON_RUNTIME_SAFETY_RULES
+    + "\n\n"
+    + _SCENE_PACK_CONTRACT
+    + "\n\n"
+    + _PAGE_BLOCK_LAYOUT_CONTRACT
+    + """
+
+Repair discipline:
+- Return a COMPLETE replacement `def ...` block for the target section method.
+- Preserve the method name and signature exactly.
+- Keep the teaching intent, narration beats, and section order unchanged.
+- Prefer using existing helpers already shown in the context.
+- If the render error points to one segment object drifting or failing, fix it
+  locally inside this method rather than rewriting unrelated pages.
+- Do NOT return the whole file.
+
+Output JSON ONLY:
+{
+  "method_name": "exact target method name",
+  "updated_method_code": "full replacement def block"
+}
+"""
+)
+
 _SYSTEM_CODE_EVAL_FIX = (
 _CLAUDE_REVIEW_NOTICE
     + """\
@@ -1158,8 +1206,8 @@ RULE #2: Fix visual bugs surgically
 - If keyframe screenshots show lines, rectangles, icons, labels, highlights, or
   other dependent objects drifting away from the graph/node/panel they belong
   to, rebuild them so they share the same positioning lifecycle as the parent
-  visual block. Prefer `self.bind_to_block(...)` / `self.bind_many_to_block(...)`
-  when the object should inherit the parent block's transform. Do NOT patch
+  visual block. Prefer `self.bind_to_block(...)` when the object should inherit
+  the parent block's transform. Do NOT patch
   this with raw absolute shifts.
 - If keyframe screenshots show floating dots, point rows, threshold guides, or
   other non-text markers detached from the axes / graph / number line they are
@@ -1246,6 +1294,19 @@ def _extract_code(text: str) -> str:
     if m2:
         return m2.group(1).strip()
     return text.strip()
+
+
+def _extract_json_object(text: str) -> Dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+    left = cleaned.find("{")
+    right = cleaned.rfind("}")
+    if left < 0 or right <= left:
+        raise ValueError("No JSON object found in segment-fix response")
+    return json.loads(cleaned[left : right + 1])
 
 
 def _image_to_data_url(path: Path) -> str:
@@ -1724,6 +1785,52 @@ class CodeGenAgent:
         }]
         raw = self._call(_SYSTEM_CODE_EVAL_FIX, content)
         return _extract_code(raw)
+
+    def fix_segment_method(
+        self,
+        *,
+        segment_id: str,
+        method_name: str,
+        manifest_source: str,
+        wrapper_scene_source: str,
+        section_method_source: str,
+        helper_method_sources: List[str],
+        error_log: str,
+        output_language: str = "en",
+    ) -> str:
+        """Repair one failed section method and return the replacement def block."""
+        helpers_block = "\n\n".join(helper_method_sources).strip()
+        content: list = [{
+            "type": "input_text",
+            "text": (
+                _build_output_language_prompt(output_language)
+                + "\n\n"
+                + f"## Target segment id\n{segment_id}\n\n"
+                + f"## Target method name\n{method_name}\n\n"
+                + f"## Scene manifest\n```python\n{manifest_source}\n```\n\n"
+                + f"## Wrapper scene\n```python\n{wrapper_scene_source}\n```\n\n"
+                + f"## Target section method\n```python\n{section_method_source}\n```\n\n"
+                + (
+                    "## Read-only shared helper methods\n```python\n"
+                    + helpers_block
+                    + "\n```\n\n"
+                    if helpers_block
+                    else ""
+                )
+                + f"## Render error for this segment\n```\n{error_log[-3000:]}\n```"
+            ),
+        }]
+        raw = self._call(_SYSTEM_SEGMENT_FIX, content)
+        payload = _extract_json_object(raw)
+        returned_name = str(payload.get("method_name", "")).strip()
+        updated_method_code = str(payload.get("updated_method_code", "")).strip()
+        if returned_name != method_name:
+            raise ValueError(
+                f"Segment fix returned method `{returned_name}`, expected `{method_name}`."
+            )
+        if not updated_method_code:
+            raise ValueError("Segment fix response did not include `updated_method_code`.")
+        return updated_method_code
 
     def narrate(self, code: str, request_text: str, output_language: str = "en") -> List[str]:
         """Generate a narration script (list of paragraphs) for the video."""

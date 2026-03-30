@@ -40,7 +40,7 @@ from typing import List, Optional
 
 from dotenv import load_dotenv
 
-from .audio_features import extract_alignment_metrics, extract_audio_metrics
+from .audio_features import extract_alignment_metrics, extract_audio_metrics_with_pcm
 from .config import AudioConfig, CVConfig, ExternalMeta, FusionConfig, PipelineConfig, VLMConfig
 from .cv_features import (
     SegmentFeatures,
@@ -57,13 +57,15 @@ from .vlm_judge import (
     AnchorBindingVerdict,
     AVAlignmentVerdict,
     OverlapReviewVerdict,
+    WholeVideoMediaCache,
+    WholeVideoVisualReviewResult,
     SemanticCoherenceVerdict,
     TaskCorrectnessVerdict,
     VisualCoverageVerdict,
     VLMVerdict,
-    review_anchor_binding_keyframes,
+    prepare_whole_video_media_cache,
     review_av_alignment,
-    review_overlap_keyframes,
+    review_whole_video_visual_keyframes,
     review_segments,
     review_semantic_coherence,
     review_task_correctness,
@@ -123,6 +125,11 @@ def build_parser() -> argparse.ArgumentParser:
     vlm.add_argument("--base-url", type=str, default=DEFAULT_BASE_URL, help="Custom API base URL (default: OPENAI_BASE_URL from .env/env)")
     vlm.add_argument("--model", type=str, default=DEFAULT_MODEL, help="VLM model name (default: OPENAI_MODEL from .env/env)")
     vlm.add_argument("--max-vlm-segments", type=int, default=0, help="Max segments to send to VLM (0=all)")
+    vlm.add_argument(
+        "--enable-direct-video-vlm",
+        action="store_true",
+        help="Allow whole-video VLM stages to send input_video instead of using keyframes only",
+    )
     vlm.add_argument(
         "--vlm-all",
         action="store_true",
@@ -194,6 +201,7 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
         base_url=args.base_url,
         max_segments=args.max_vlm_segments,
         include_cv_fail=True,
+        enable_direct_video=args.enable_direct_video_vlm,
     )
 
     audio_cfg = AudioConfig(
@@ -282,7 +290,11 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
 
     with ThreadPoolExecutor(max_workers=1) as layer1_executor:
         if not cfg.skip_audio:
-            audio_future = layer1_executor.submit(extract_audio_metrics, video_path, cfg.audio)
+                audio_future = layer1_executor.submit(
+                    extract_audio_metrics_with_pcm,
+                    video_path,
+                    cfg.audio,
+                )
 
         features, fps, total_frames = extract_all_frames(
             video_path, cfg.cv, progress_callback=cv_progress
@@ -344,10 +356,14 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
         # ------------------------------------------------------------------
         if not cfg.skip_audio and audio_future is not None:
             try:
-                audio_metrics = audio_future.result()
+                audio_metrics, pcm_result = audio_future.result()
                 if audio_metrics.has_audio:
                     alignment_metrics = extract_alignment_metrics(
-                        video_path, features, fps, cfg.audio
+                        video_path,
+                        features,
+                        fps,
+                        cfg.audio,
+                        pcm_result=pcm_result,
                     )
                     print(
                         f"  Audio: {audio_metrics.audio_duration_sec:.1f}s, "
@@ -426,11 +442,16 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
     if not topic:
         topic = f"Educational video: {video_name}"
 
+    direct_video_enabled = bool(cfg.vlm.enable_direct_video and video_path.exists())
+
     if skip_tc:
         print("\n[Layer 2b] Task Correctness skipped (--skip-vlm)")
     else:
         print(f"\n[Layer 2b] Task Correctness VLM review (topic: {topic[:60]}...)")
         print(f"  Mode: direct video → VLM (fallback: {tc_keyframes_count} keyframes)")
+
+        if not direct_video_enabled:
+            print(f"  Direct video disabled; using {tc_keyframes_count} sampled keyframes for whole-video VLM stages")
 
         # Always prepare keyframes as fallback
         import cv2 as _cv2
@@ -454,12 +475,39 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
 
         # Whole-video VLM stages are launched together below.
 
+    if skip_tc and not cfg.skip_vlm:
+        import cv2 as _cv2
+        tc_frames_dir = out_dir / "tc_keyframes"
+        tc_frames_dir.mkdir(parents=True, exist_ok=True)
+        tc_kf_paths = []
+
+        cap = _cv2.VideoCapture(str(video_path))
+        tc_total = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+        if tc_total > 0:
+            step = max(1, tc_total // tc_keyframes_count)
+            indices = [min(i * step, tc_total - 1) for i in range(tc_keyframes_count)]
+            for idx in indices:
+                cap.set(_cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if ret:
+                    p = tc_frames_dir / f"frame_{idx:06d}.jpg"
+                    _cv2.imwrite(str(p), frame)
+                    tc_kf_paths.append(p)
+        cap.release()
+
     overlap_review: Optional[OverlapReviewVerdict] = None
     anchor_binding_review: Optional[AnchorBindingVerdict] = None
     visual_coverage: Optional[VisualCoverageVerdict] = None
     semantic_coherence: Optional[SemanticCoherenceVerdict] = None
     av_alignment_verdict: Optional[AVAlignmentVerdict] = None
     has_audio_stream = audio_metrics is not None and audio_metrics.has_audio
+    whole_video_media = WholeVideoMediaCache()
+
+    if (not skip_tc or not cfg.skip_vlm) and (direct_video_enabled or tc_kf_paths):
+        whole_video_media = prepare_whole_video_media_cache(
+            video_path=video_path if direct_video_enabled else None,
+            keyframe_paths=tc_kf_paths if tc_kf_paths else None,
+        )
 
     stage_tasks = {}
 
@@ -468,53 +516,59 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
             topic=topic,
             vlm_cfg=cfg.vlm,
             video_name=video_name,
-            video_path=video_path,
+            video_path=video_path if direct_video_enabled else None,
             keyframe_paths=tc_kf_paths if tc_kf_paths else None,
             teaching_plan=teaching_plan,
+            encoded_keyframes=whole_video_media.encoded_keyframes,
+            encoded_video_input=whole_video_media.encoded_video_input,
         )
 
     if not cfg.skip_vlm and tc_kf_paths:
-        print(f"\n[Layer 2b-2] Anchor binding VLM review ({len(tc_kf_paths)} keyframes) ...")
-        stage_tasks["anchor_binding_review"] = lambda: review_anchor_binding_keyframes(
+        print(f"\n[Layer 2b-2] Whole-video visual VLM review ({len(tc_kf_paths)} keyframes) ...")
+        stage_tasks["whole_video_visual_review"] = lambda: review_whole_video_visual_keyframes(
             keyframe_paths=tc_kf_paths,
             vlm_cfg=cfg.vlm,
             video_name=video_name,
+            encoded_keyframes=whole_video_media.encoded_keyframes,
         )
 
     if not cfg.skip_vlm and tc_kf_paths:
-        print(f"\n[Layer 2b-3] Overlap VLM review ({len(tc_kf_paths)} keyframes) ...")
-        stage_tasks["overlap_review"] = lambda: review_overlap_keyframes(
-            keyframe_paths=tc_kf_paths,
-            vlm_cfg=cfg.vlm,
-            video_name=video_name,
-        )
-
-    if not cfg.skip_vlm:
         if teaching_plan and teaching_plan.get("sections"):
             print(f"\n[Layer 2b-4] Visual coverage check ({len(teaching_plan['sections'])} sections) ...")
             stage_tasks["visual_coverage"] = lambda: review_visual_coverage(
                 vlm_cfg=cfg.vlm,
                 teaching_plan=teaching_plan,
                 video_name=video_name,
-                video_path=video_path,
+                video_path=video_path if direct_video_enabled else None,
                 keyframe_paths=tc_kf_paths if tc_kf_paths else None,
+                encoded_keyframes=whole_video_media.encoded_keyframes,
+                encoded_video_input=whole_video_media.encoded_video_input,
             )
         else:
             print("\n[Layer 2b-4] No teaching plan -> running semantic coherence check ...")
             stage_tasks["semantic_coherence"] = lambda: review_semantic_coherence(
                 vlm_cfg=cfg.vlm,
                 video_name=video_name,
-                video_path=video_path,
+                video_path=video_path if direct_video_enabled else None,
                 keyframe_paths=tc_kf_paths if tc_kf_paths else None,
+                encoded_keyframes=whole_video_media.encoded_keyframes,
+                encoded_video_input=whole_video_media.encoded_video_input,
             )
+    elif not cfg.skip_vlm:
+        print("\n[Layer 2b-4] Whole-video semantic review skipped (no keyframes available)")
 
     if not skip_tc and not cfg.skip_vlm and has_audio_stream:
-        print("\n[Layer 2c] AV Alignment MLLM review (direct video) ...")
+        if direct_video_enabled:
+            print("\n[Layer 2c] AV Alignment MLLM review (direct video) ...")
+        else:
+            print("\n[Layer 2c] AV Alignment MLLM review (keyframes-only mode) ...")
         stage_tasks["av_alignment"] = lambda: review_av_alignment(
             vlm_cfg=cfg.vlm,
             video_name=video_name,
-            video_path=video_path,
+            video_path=video_path if direct_video_enabled else None,
             keyframe_paths=tc_kf_paths if tc_kf_paths else None,
+            encoded_keyframes=whole_video_media.encoded_keyframes,
+            encoded_video_input=whole_video_media.encoded_video_input,
         )
     elif not cfg.skip_vlm and not skip_tc:
         reason = "no audio" if not has_audio_stream else "VLM skipped"
@@ -527,17 +581,21 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
             print(f"  Content Accuracy: {'YES' if result.content_accuracy else 'NO'}")
             print(f"  Pedagogical Clarity: {result.pedagogical_clarity:.0%}")
             print(f"  Engagement: {result.engagement:.0%}")
-        elif stage_name == "anchor_binding_review":
-            anchor_binding_review = result
-            status = "HAS ISSUES" if result.has_binding_issue else "CLEAN"
+        elif stage_name == "whole_video_visual_review":
+            if not isinstance(result, WholeVideoVisualReviewResult):
+                raise TypeError("whole_video_visual_review returned an unexpected result type")
+            overlap_review = result.overlap_review
+            anchor_binding_review = result.anchor_binding_review
+            overlap_status = "HAS OVERLAP" if overlap_review.has_overlap else "CLEAN"
+            anchor_status = "HAS ISSUES" if anchor_binding_review.has_binding_issue else "CLEAN"
             print(
-                f"  Result: {status} "
-                f"(ratio={result.binding_issue_ratio:.3f}, issues={len(result.issues)})"
+                f"  Overlap: {overlap_status} "
+                f"(ratio={overlap_review.overlap_ratio:.3f}, issues={len(overlap_review.issues)})"
             )
-        elif stage_name == "overlap_review":
-            overlap_review = result
-            status = "HAS OVERLAP" if result.has_overlap else "CLEAN"
-            print(f"  Result: {status} (ratio={result.overlap_ratio:.3f}, issues={len(result.issues)})")
+            print(
+                f"  Anchor Binding: {anchor_status} "
+                f"(ratio={anchor_binding_review.binding_issue_ratio:.3f}, issues={len(anchor_binding_review.issues)})"
+            )
         elif stage_name == "visual_coverage":
             visual_coverage = result
             print(f"  Coverage: {result.coverage_ratio:.0%}")
@@ -561,10 +619,8 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
     def _handle_stage_error(stage_name: str, exc: Exception) -> None:
         if stage_name == "task_correctness":
             print(f"  Task Correctness VLM error: {exc}")
-        elif stage_name == "anchor_binding_review":
-            print(f"  Anchor binding VLM review error: {exc}")
-        elif stage_name == "overlap_review":
-            print(f"  Overlap VLM review error: {exc}")
+        elif stage_name == "whole_video_visual_review":
+            print(f"  Whole-video visual VLM review error: {exc}")
         elif stage_name == "visual_coverage":
             print(f"  Visual coverage error: {exc}")
         elif stage_name == "semantic_coherence":

@@ -137,7 +137,17 @@ python -m agent_pipeline "
 中文示例：
 
 ```bash
-python -m agent_pipeline "用动画解释机器学习的线性回归和逻辑回归" --language zh
+python -m agent_pipeline '用动画讲解这道题：已知椭圆$C:\dfrac{x^2}{a^2}+\dfrac{y^2}{b^2}=1(a>b>0)$的离心率为$\dfrac{2\sqrt{2}}{3}$，下顶点为$A$，右顶点为$B$，$|AB|=\sqrt{10}$.
+
+\begin{enumerate}
+    \item 求$C$的方程；
+    \item 已知动点$P$不在$y$轴上，点$R$在射线$AP$上，且满足$|AP|\cdot|AR|=3$.
+    \begin{enumerate}
+        \item 设$P(m,n)$，求$R$的坐标（用$m,n$表示）；
+        \item 设$O$为坐标原点，$Q$是$C$上的动点，直线$OR$的斜率是直线$OP$的斜率的$3$倍，求$|PQ|$的最大值.
+    \end{enumerate}
+\end{enumerate}' --language eg
+
 ```
 
 带图片输入：

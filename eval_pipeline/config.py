@@ -158,6 +158,7 @@ class VLMConfig:
     max_segments: int = 0                   # 0 = no limit
     include_cv_fail: bool = True            # also send cv_fail to VLM
     keyframes_per_segment: int = 3          # start / mid / end
+    enable_direct_video: bool = False       # whole-video VLM stages use keyframes by default
 
 
 # ---------------------------------------------------------------------------
