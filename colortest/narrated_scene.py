@@ -414,6 +414,71 @@ class NarratedScene(Scene):
             center=center,
         )
 
+    def _prepare_in_place_target(
+        self,
+        source,
+        target,
+        *,
+        match_size: bool = True,
+        match_position: bool = True,
+        stretch: bool = False,
+    ):
+        """Copy a target mobject into an existing fitted slot."""
+        if source is None or target is None:
+            raise ValueError("source and target are required")
+
+        prepared = target.copy()
+
+        if match_size:
+            source_width = max(float(source.width), 1e-6)
+            source_height = max(float(source.height), 1e-6)
+            target_width = max(float(prepared.width), 1e-6)
+            target_height = max(float(prepared.height), 1e-6)
+
+            if stretch:
+                if prepared.width > 1e-6:
+                    prepared.stretch_to_fit_width(source_width)
+                if prepared.height > 1e-6:
+                    prepared.stretch_to_fit_height(source_height)
+            else:
+                ratios = []
+                if target_width > 1e-6:
+                    ratios.append(source_width / target_width)
+                if target_height > 1e-6:
+                    ratios.append(source_height / target_height)
+                if ratios:
+                    prepared.scale(min(ratios), about_point=prepared.get_center())
+
+        if match_position:
+            prepared.move_to(source.get_center())
+
+        return prepared
+
+    def transform_in_place(
+        self,
+        source,
+        target,
+        *,
+        match_size: bool = True,
+        match_position: bool = True,
+        stretch: bool = False,
+        **transform_kwargs,
+    ):
+        """
+        Morph a fitted object in place so it stays in the same page-layout slot.
+
+        Preferred after `fit_body(...)` when a block must change appearance
+        without introducing a second detached layout state.
+        """
+        prepared = self._prepare_in_place_target(
+            source,
+            target,
+            match_size=match_size,
+            match_position=match_position,
+            stretch=stretch,
+        )
+        return Transform(source, prepared, **transform_kwargs)
+
     def make_page_title(self, title, font_size: float = 34, max_width: float = 11.4):
         """Preferred helper: build the long top title for a page."""
         title = self._coerce_page_title(title, font_size=font_size)

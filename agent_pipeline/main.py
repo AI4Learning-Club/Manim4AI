@@ -45,11 +45,7 @@ ROUND1_MANIM_QUALITY = os.environ.get(
     os.environ.get("ROUND2_MANIM_QUALITY", MANIM_QUALITY),
 )
 RUNS_DIR = ROOT_DIR / "runs"
-USE_LOCAL_ICONS = os.environ.get("A4L_USE_LOCAL_ICONS", "1").lower() not in {
-    "0",
-    "false",
-    "no",
-}
+USE_LOCAL_ICONS = False  # Temporarily hard-disabled: do not select local icons.
 DEFAULT_OUTPUT_LANGUAGE = normalize_output_language(
     os.environ.get("A4L_VIDEO_LANGUAGE", "en")
 )
@@ -857,6 +853,7 @@ def run_pipeline(
             teaching_plan["selected_assets"] = []
             _log(f"Asset resolver: skipped due to error - {exc}")
     else:
+        assets_info["disabled_reason"] = "temporarily_disabled"
         teaching_plan["selected_assets"] = []
 
     selected_assets_path = run_dir / "selected_assets.json"
