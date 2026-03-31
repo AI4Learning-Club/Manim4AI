@@ -446,9 +446,10 @@ graph_block = Group(axes, graph, secant, dot)
 body3 = Group(graph_block, text_block).arrange(RIGHT, buff=0.5)
 self.fit_body(body3, max_width=11.6, center=UP * 0.2)
 
-new_secant = Line(axes.c2p(x1, y1), axes.c2p(x3, y3))
-new_dot = Dot(axes.c2p(x3, y3))
-self.play(ReplacementTransform(secant, new_secant), ReplacementTransform(dot, new_dot))
+self.play(
+    self.transform_in_place(secant, Line(axes.c2p(x1, y1), axes.c2p(x3, y3))),
+    self.transform_in_place(dot, Dot(axes.c2p(x3, y3))),
+)
 ```
 
 Good when the structure must change:
@@ -675,6 +676,20 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
   - Good pattern: write helpers such as `build_secant_on_axes(axes, x2)` or
     `build_rectangles_on_axes(axes, graph, n)` that consume the fitted anchor
     and return only the dependent geometry for that exact on-screen anchor.
+  - If an already fitted block must visually change into another block on the
+    same page, keep the original fitted object identity and morph it in place
+    with `self.transform_in_place(old_block, target_block)`.
+  - Use `self.transform_in_place(...)` when replacing the visual contents of an
+    already visible fitted object while keeping the same layout slot. This is
+    preferred for "same object, new appearance" transitions.
+  - Do NOT use `self.transform_in_place(...)` as a generic workaround for newly
+    added detached objects. If the new object is a persistent anchor-dependent
+    overlay, it still needs proper structural ownership or
+    `bind_to_block(...)` / `build_on_anchor(...)` / `bind_to_anchor(...)`.
+  - Default `self.transform_in_place(...)` behavior keeps the new visual in
+    the old block's slot by matching size and center. If the new visual truly
+    needs a different footprint, that is usually a new page, not a refit of
+    the current page.
   - In most pages, call `self.fit_body(bodyN, ...)` once on the page's unique
     `bodyN` before the first reveal, not repeatedly on later small text panels.
   - After calling `self.fit_body(bodyN, ...)`, do NOT call `.move_to()`,
