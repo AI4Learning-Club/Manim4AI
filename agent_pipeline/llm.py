@@ -5,9 +5,33 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List
+from datetime import datetime
+from typing import Any, Dict, FrozenSet, List
 
 from openai import OpenAI
+
+# Responses API stream events that carry user-visible text deltas.
+_STREAM_TEXT_DELTA_TYPES: FrozenSet[str] = frozenset({
+    "response.output_text.delta",
+    "response.reasoning_text.delta",
+    "response.reasoning_summary_text.delta",
+})
+
+
+def _print_stream_text_deltas(event: Any) -> None:
+    """Print incremental model text to stdout so CLI runs feel live."""
+    et = getattr(event, "type", None)
+    if et not in _STREAM_TEXT_DELTA_TYPES:
+        return
+    delta = getattr(event, "delta", None) or ""
+    if delta:
+        print(delta, end="", flush=True)
+
+
+def _log_api(message: str) -> None:
+    """Timestamped API trace (start/end/duration), same style as main._log."""
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"[{ts}] [API] {message}", flush=True)
 
 
 DEFAULT_OPENAI_BASE_URL = "https://api2.tabcode.cc/openai"
@@ -64,7 +88,7 @@ def _resolve_stage_config(stage: str) -> LLMConfig:
     model = _first_non_empty(
         os.environ.get(f"{prefix}_MODEL"),
         os.environ.get("OPENAI_MODEL"),
-        "gpt-4o",
+        "gpt-5.4",
     )
     return LLMConfig(
         stage=stage,
@@ -102,21 +126,28 @@ class LLMClient:
         )
 
     def _call_openai(self, system: str, user_content: List[Dict[str, Any]]) -> str:
-        full_content = [{"type": "input_text", "text": system}] + user_content
-        resp = self.client.responses.create(
-            model=self.config.model,
-            input=[{"role": "user", "content": full_content}],
-            stream=True,
-        )
-        text = ""
-        last_chunk = time.time()
-        for event in resp:
-            if time.time() - last_chunk > self.config.timeout_sec:
-                break
-            if hasattr(event, "type") and event.type == "response.output_text.delta":
-                text += event.delta
-                last_chunk = time.time()
-        return text.strip()
+        stage = self.config.stage
+        model = self.config.model
+        _log_api(f"start stage={stage} model={model}")
+        t0 = time.time()
+        try:
+            full_content = [{"type": "input_text", "text": system}] + user_content
+            print(f"\n[LLM · {stage}] {model}\n", flush=True)
+            with self.client.responses.stream(
+                model=self.config.model,
+                input=[{"role": "user", "content": full_content}],
+                max_output_tokens=self.config.max_tokens,
+                service_tier="priority",
+            ) as stream:
+                for event in stream:
+                    _print_stream_text_deltas(event)
+                final = stream.get_final_response()
+                text = (final.output_text or "").strip()
+            print(flush=True)
+            return text
+        finally:
+            elapsed = time.time() - t0
+            _log_api(f"end stage={stage} model={model} duration_sec={elapsed:.2f}")
 
     def generate_text(
         self,
@@ -131,8 +162,17 @@ class LLMClient:
                 if text:
                     return text
                 raise TimeoutError("Empty response from API")
-            except Exception:
+            except Exception as exc:
                 if attempt >= max_retries - 1:
+                    _log_api(
+                        f"failed stage={self.config.stage} model={self.config.model} "
+                        f"after {max_retries} attempt(s): {exc!r}"
+                    )
                     raise
-                time.sleep(5 * (attempt + 1))
+                wait = 5 * (attempt + 1)
+                _log_api(
+                    f"retry stage={self.config.stage} in {wait}s "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
+                time.sleep(wait)
         raise RuntimeError("LLM call failed")

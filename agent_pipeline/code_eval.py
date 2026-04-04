@@ -230,7 +230,7 @@ class CodeEvalAgent:
         self,
         api_key: str | LLMConfig,
         base_url: str = "https://api2.tabcode.cc/openai",
-        model: str = "gpt-4o",
+        model: str = "gpt-5.4",
     ):
         if isinstance(api_key, LLMConfig):
             llm_config = api_key
