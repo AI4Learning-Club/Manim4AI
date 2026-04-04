@@ -987,6 +987,7 @@ def _call_vlm(client, vlm_cfg: VLMConfig, content: list) -> str:
             model=vlm_cfg.model,
             input=[{"role": "user", "content": content}],
             max_output_tokens=vlm_cfg.max_tokens,
+            service_tier="priority",
         ) as stream:
             return stream.get_final_response().output_text.strip()
     except Exception as exc:
