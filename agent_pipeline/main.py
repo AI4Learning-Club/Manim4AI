@@ -30,7 +30,7 @@ from .renderer import RenderResult, render_scene_pack
 from .scene_pack import build_segment_repair_context, replace_method_source
 from .teaching_planner import TeachingPlannerAgent
 from .theme_resolver import resolve_theme
-from .tts import has_audio_stream, voice_for_language
+from .tts import has_audio_stream, resolve_tts_voice, voice_for_language
 
 # =====================================================================
 # Configuration constants (override via .env or process env)
@@ -510,7 +510,7 @@ def _try_render(
     latex_text_fix_rounds = 0
     code_eval_fix_rounds = 0
     segment_fix_rounds = 0
-    tts_voice = voice_for_language(output_language)
+    tts_voice = resolve_tts_voice(output_language)
     pending_segment_rerender_ids: Optional[set[str]] = None
 
     for attempt in range(RENDER_FIX_MAX_ATTEMPTS + 1):

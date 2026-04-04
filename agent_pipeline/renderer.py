@@ -15,7 +15,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
@@ -24,7 +26,6 @@ from typing import List, Optional
 
 from .scene_pack import SegmentSpec, parse_scene_pack
 from .tts import (
-    SCENE_TTS_RATE,
     TTS_GLOBAL_CACHE_ENV,
     TTS_RATE_ENV,
     TTS_VOICE_ENV,
@@ -32,6 +33,7 @@ from .tts import (
     get_global_tts_cache_dir,
     has_audio_stream,
     scene_tts_global_cache_path,
+    scene_tts_rate,
     scene_tts_round_cache_path,
     voice_for_language,
 )
@@ -44,7 +46,30 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _log_render(message: str) -> None:
+    """Timestamped render trace (start/end/duration), same style as main._log / llm._log_api."""
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"[{ts}] [RENDER] {message}", flush=True)
+
+
 TTS_MAX_WORKERS = max(1, _int_env("A4L_TTS_WORKERS", 8))
+
+
+def _render_worker_count(manifest_len: int) -> int:
+    """Return max concurrent Manim subprocesses for segment rendering.
+
+    ``A4L_RENDER_WORKERS`` caps parallelism; 0 or unset means up to one worker per
+    manifest segment (legacy). Actual load is scheduled by
+    :class:`concurrent.futures.ThreadPoolExecutor`: at most this many segments
+    run at once; when one finishes, the same pool slot starts the next queued
+    segment—no separate “resource transfer” step is required.
+    """
+    if manifest_len <= 1:
+        return 1
+    cap = _int_env("A4L_RENDER_WORKERS", 0)
+    if cap <= 0:
+        return manifest_len
+    return min(manifest_len, max(1, cap))
 
 
 @dataclass
@@ -153,13 +178,15 @@ def _pregenererate_tts(
         global_cache_dir.mkdir(parents=True, exist_ok=True)
         unique_texts = list(dict.fromkeys(texts))
 
+        rate = scene_tts_rate()
+
         def _ensure_tts(text: str) -> bool:
             voice = tts_voice or voice_for_language("en")
             round_fp = scene_tts_round_cache_path(text, cache_dir)
             global_fp = scene_tts_global_cache_path(
                 text,
                 voice,
-                SCENE_TTS_RATE,
+                rate,
                 global_cache_dir,
             )
             if round_fp.exists():
@@ -167,7 +194,7 @@ def _pregenererate_tts(
             if global_fp.exists():
                 shutil.copy2(str(global_fp), str(round_fp))
                 return False
-            if not generate_audio(text, global_fp, voice=voice, rate=SCENE_TTS_RATE):
+            if not generate_audio(text, global_fp, voice=voice, rate=rate):
                 return False
             shutil.copy2(str(global_fp), str(round_fp))
             return True
@@ -271,11 +298,19 @@ def render_scene_pack(
     scenes declared in ``SCENE_MANIFEST`` in parallel, and concatenates the
     available segment videos into ``output_dir/video.mp4``.
     """
+    render_t0 = time.time()
+    _log_render(f"start output_dir={output_dir}")
+
+    def _render_done(status: str) -> None:
+        elapsed = time.time() - render_t0
+        _log_render(f"end status={status} duration_sec={elapsed:.2f}")
+
     code = _sanitize_chinese_in_latex(code)
 
     try:
         scene_pack = parse_scene_pack(code)
     except ValueError as exc:
+        _render_done("parse_error")
         return RenderResult(
             success=False,
             error_log=str(exc),
@@ -296,8 +331,9 @@ def render_scene_pack(
 
     if enable_tts:
         voice = tts_voice or voice_for_language("en")
+        rate = scene_tts_rate()
         os.environ[TTS_VOICE_ENV] = voice
-        os.environ[TTS_RATE_ENV] = SCENE_TTS_RATE
+        os.environ[TTS_RATE_ENV] = rate
         os.environ.setdefault(TTS_GLOBAL_CACHE_ENV, str(get_global_tts_cache_dir()))
         _pregenererate_tts(code, output_dir, tts_voice=tts_voice)
 
@@ -314,6 +350,7 @@ def render_scene_pack(
     if failed:
         error_log = _format_segment_failures(failed)
         _write_round_render_log(output_dir, ordered_results, final_error=error_log)
+        _render_done("segment_failed")
         return RenderResult(
             success=False,
             error_log=error_log,
@@ -325,6 +362,7 @@ def render_scene_pack(
     concat_error = _concat_segment_videos(ordered_results, final_video)
     if concat_error:
         _write_round_render_log(output_dir, ordered_results, final_error=concat_error)
+        _render_done("concat_failed")
         return RenderResult(
             success=False,
             error_log=concat_error,
@@ -338,6 +376,7 @@ def render_scene_pack(
             "Rendered Scene Pack video is missing an audio track even though the code uses TTS calls."
         )
         _write_round_render_log(output_dir, ordered_results, final_error=error_log)
+        _render_done("tts_audio_missing")
         return RenderResult(
             success=False,
             error_log=error_log,
@@ -346,6 +385,7 @@ def render_scene_pack(
         )
 
     _write_round_render_log(output_dir, ordered_results, final_video=final_video)
+    _render_done("success")
     return RenderResult(
         success=True,
         video_path=final_video,
@@ -392,20 +432,21 @@ def _render_segments(
     quality_flags: str,
     selected_segment_ids: Optional[set[str]],
 ) -> List[SegmentRenderResult]:
-    selected = set(selected_segment_ids or [])
-    if selected:
-        return [
-            _render_or_reuse_segment(
-                segment=segment,
-                scene_file=scene_file,
-                output_dir=output_dir,
-                quality_flags=quality_flags,
-                should_render=segment.segment_id in selected,
-            )
-            for segment in manifest
-        ]
+    """Render each manifest segment (or reuse), optionally in parallel.
 
-    max_workers = len(manifest)
+    Uses a :class:`~concurrent.futures.ThreadPoolExecutor` with
+    ``max_workers`` from :func:`_render_worker_count`. All segments are
+    submitted up front; excess work waits in the executor queue until a worker
+    finishes its current Manim subprocess and picks the next task.
+    """
+    selected = set(selected_segment_ids or ())
+
+    def _should_render(segment: SegmentSpec) -> bool:
+        if not selected:
+            return True
+        return segment.segment_id in selected
+
+    max_workers = _render_worker_count(len(manifest))
     if max_workers <= 1:
         return [
             _render_or_reuse_segment(
@@ -413,7 +454,7 @@ def _render_segments(
                 scene_file=scene_file,
                 output_dir=output_dir,
                 quality_flags=quality_flags,
-                should_render=True,
+                should_render=_should_render(segment),
             )
             for segment in manifest
         ]
@@ -427,7 +468,7 @@ def _render_segments(
                 scene_file=scene_file,
                 output_dir=output_dir,
                 quality_flags=quality_flags,
-                should_render=True,
+                should_render=_should_render(segment),
             )
             for segment in manifest
         ]

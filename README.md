@@ -78,6 +78,9 @@ MANIM_QUALITY=-qm --fps 60
 ROUND1_MANIM_QUALITY=-qm --fps 60
 MANIM_TIMEOUT_SEC=1200
 
+A4L_RENDER_WORKERS=0
+A4L_TTS_WORKERS=8
+
 A4L_SYNTAX_FIX_MAX_ATTEMPTS=4
 A4L_RENDER_FIX_MAX_ATTEMPTS=4
 A4L_CODE_EVAL_FIX_MAX_ATTEMPTS=2
@@ -94,6 +97,8 @@ APP_PORT=8000
 - `A4L_CODE_*` 覆盖代码生成与修复阶段模型
 - `A4L_VIDEO_LANGUAGE` 设置默认输出语言，目前支持 `en`、`zh`
 - `ROUND1_MANIM_QUALITY` 是主流水线实际使用的渲染质量
+- `A4L_RENDER_WORKERS` 限制多段 Manim 渲染的**最大并发**；为 `0` 或未设置时，并发数等于 manifest 段数（每段可同时起一个 `manim` 子进程）。设为正整数时，同时最多运行该数量的段；先完成的段会释放槽位，由 `ThreadPoolExecutor` 自动调度队列中的下一段，无需额外“资源转移”逻辑
+- `A4L_TTS_WORKERS` 限制 TTS 预生成时的线程池大小（默认 8）
 - `A4L_USE_LOCAL_ICONS` 变量仍保留，但当前主流水线里本地图标选择默认是临时禁用状态
 
 ## 快速开始

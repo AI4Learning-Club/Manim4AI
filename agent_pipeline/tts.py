@@ -66,6 +66,18 @@ def voice_for_language(output_language: str) -> str:
     return VOICE_ZH if normalize_output_language(output_language) == "zh" else VOICE_EN
 
 
+def resolve_tts_voice(output_language: str) -> str:
+    """Prefer A4L_TTS_VOICE when set; otherwise pick edge-tts voice from output language."""
+    raw = os.environ.get(TTS_VOICE_ENV, "").strip()
+    return raw if raw else voice_for_language(output_language)
+
+
+def scene_tts_rate() -> str:
+    """Effective narration rate: A4L_TTS_RATE if set, else default SCENE_TTS_RATE."""
+    raw = os.environ.get(TTS_RATE_ENV, "").strip()
+    return raw if raw else SCENE_TTS_RATE
+
+
 async def _generate_audio_async(
     text: str,
     output_path: Path,
