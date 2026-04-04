@@ -2,7 +2,7 @@
 # 安装: pip install -r requirements.txt
 
 # 代码生成与 API
-openai>=1.30.0
+openai>=1.66.0
 python-dotenv>=1.0.1
 
 # 评测管道：CV + 数值
