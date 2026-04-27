@@ -7,12 +7,11 @@ Usage examples:
   # CV-only mode (no VLM, no API key needed):
   python -m eval_pipeline.run video.mp4 --skip-vlm
 
-  # Full pipeline (CV + VLM):
-  python -m eval_pipeline.run video.mp4 --api-key sk-xxx
-
-  # Full pipeline with env var:
-  set OPENAI_API_KEY=sk-xxx
+  # Full pipeline (CV + VLM, defaults from settings.toml [manim.llm.eval]):
   python -m eval_pipeline.run video.mp4
+
+  # Override API key for one-off runs:
+  python -m eval_pipeline.run video.mp4 --api-key sk-xxx
 
   # Custom model / endpoint:
   python -m eval_pipeline.run video.mp4 --model gpt-4.1 --base-url https://...
@@ -31,14 +30,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
-
-from dotenv import load_dotenv
 
 from .audio_features import extract_alignment_metrics, extract_audio_metrics_with_pcm
 from .config import AudioConfig, CVConfig, ExternalMeta, FusionConfig, PipelineConfig, VLMConfig
@@ -73,24 +69,15 @@ from .vlm_judge import (
     save_verdicts_jsonl,
 )
 from .fusion import compute_report, print_report, save_report_json
+from plugins.manim.runtime_config import get_manim_settings
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT_DIR / ".env")
-
-DEFAULT_API_KEY = os.environ.get("OPENAI_API_KEY")
-DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api2.tabcode.cc/openai")
-DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
-
-
-def _int_env(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, str(default)))
-    except ValueError:
-        return default
-
-
-VLM_STAGE_MAX_WORKERS = max(1, _int_env("EVAL_VLM_STAGE_WORKERS", 4))
+MANIM_SETTINGS = get_manim_settings()
+DEFAULT_VLM_SETTINGS = MANIM_SETTINGS.llm.eval
+DEFAULT_API_KEY = DEFAULT_VLM_SETTINGS.api_key
+DEFAULT_BASE_URL = DEFAULT_VLM_SETTINGS.base_url
+DEFAULT_MODEL = DEFAULT_VLM_SETTINGS.model
+VLM_STAGE_MAX_WORKERS = max(1, MANIM_SETTINGS.eval_vlm_stage_workers)
 
 
 # =====================================================================
@@ -121,9 +108,9 @@ def build_parser() -> argparse.ArgumentParser:
     # --- VLM options ---
     vlm = p.add_argument_group("VLM options")
     vlm.add_argument("--skip-vlm", action="store_true", help="Run CV-only mode")
-    vlm.add_argument("--api-key", type=str, default=DEFAULT_API_KEY, help="OpenAI API key (default: OPENAI_API_KEY from .env/env)")
-    vlm.add_argument("--base-url", type=str, default=DEFAULT_BASE_URL, help="Custom API base URL (default: OPENAI_BASE_URL from .env/env)")
-    vlm.add_argument("--model", type=str, default=DEFAULT_MODEL, help="VLM model name (default: OPENAI_MODEL from .env/env)")
+    vlm.add_argument("--api-key", type=str, default=DEFAULT_API_KEY, help="OpenAI-compatible API key (default: settings.toml [manim.llm.eval].api_key)")
+    vlm.add_argument("--base-url", type=str, default=DEFAULT_BASE_URL, help="Custom API base URL (default: settings.toml [manim.llm.eval].base_url)")
+    vlm.add_argument("--model", type=str, default=DEFAULT_MODEL, help="VLM model name (default: settings.toml [manim.llm.eval].model)")
     vlm.add_argument("--max-vlm-segments", type=int, default=0, help="Max segments to send to VLM (0=all)")
     vlm.add_argument(
         "--enable-direct-video-vlm",

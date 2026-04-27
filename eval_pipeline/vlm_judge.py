@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -25,16 +24,20 @@ from typing import Dict, List, Optional  # noqa: F811 鈥?Optional used for vide
 from .config import VLMConfig
 from .cv_features import SegmentFeatures
 from .utils import make_openai_client
+from plugins.manim.runtime_config import get_manim_settings
 
 
-def _int_env(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, str(default)))
-    except ValueError:
-        return default
+VLM_SEGMENT_MAX_WORKERS = max(1, get_manim_settings().eval_vlm_segment_workers)
 
 
-VLM_SEGMENT_MAX_WORKERS = max(1, _int_env("EVAL_VLM_SEGMENT_WORKERS", 3))
+def _require_api_key(vlm_cfg: VLMConfig, *, context: str) -> str:
+    api_key = (vlm_cfg.api_key or "").strip()
+    if api_key:
+        return api_key
+    raise RuntimeError(
+        f"No API key provided for {context}. "
+        "Configure settings.toml at [manim.llm.eval].api_key or pass --api-key."
+    )
 
 
 # =====================================================================
@@ -332,9 +335,7 @@ def review_whole_video_visual_keyframes(
         anchor = AnchorBindingVerdict(False, 0, 0, 0.0, [], "no keyframes", "")
         return WholeVideoVisualReviewResult(overlap_review=overlap, anchor_binding_review=anchor, raw_response="")
 
-    api_key = vlm_cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No API key.")
+    api_key = _require_api_key(vlm_cfg, context="whole-video visual review")
 
     client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=120.0)
 
@@ -558,11 +559,7 @@ def review_segments(
     """
 
     # Resolve API key
-    api_key = vlm_cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError(
-            "No API key provided. Set VLMConfig.api_key or configure OPENAI_API_KEY in .env/env."
-        )
+    api_key = _require_api_key(vlm_cfg, context="segment review")
 
     # Segments are pre-filtered by the caller; just apply max limit.
     to_review = list(segments)
@@ -717,9 +714,7 @@ def review_av_alignment(
     if video_path is None and not keyframe_paths:
         raise ValueError("Provide video_path or keyframe_paths for AV alignment review.")
 
-    api_key = vlm_cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No API key for AV alignment VLM review.")
+    api_key = _require_api_key(vlm_cfg, context="AV alignment review")
 
     client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=180.0)
 
@@ -892,9 +887,7 @@ def review_task_correctness(
     if video_path is None and not keyframe_paths:
         raise ValueError("Provide video_path or keyframe_paths for task correctness review.")
 
-    api_key = vlm_cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No API key for task correctness VLM review.")
+    api_key = _require_api_key(vlm_cfg, context="task correctness review")
 
     client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=180.0)
 
@@ -982,15 +975,25 @@ def review_task_correctness(
 
 def _call_vlm(client, vlm_cfg: VLMConfig, content: list) -> str:
     """Send content to VLM and return raw text response."""
+    stream_kwargs = {
+        "model": vlm_cfg.model,
+        "input": [{"role": "user", "content": content}],
+        "max_output_tokens": vlm_cfg.max_tokens,
+        # Official Responses API parameter; some gateways may not support it.
+        "service_tier": "priority",
+    }
     try:
-        with client.responses.stream(
-            model=vlm_cfg.model,
-            input=[{"role": "user", "content": content}],
-            max_output_tokens=vlm_cfg.max_tokens,
-            service_tier="priority",
-        ) as stream:
+        with client.responses.stream(**stream_kwargs) as stream:
             return stream.get_final_response().output_text.strip()
     except Exception as exc:
+        message = str(exc)
+        if "Unsupported parameter" in message and "service_tier" in message:
+            try:
+                stream_kwargs.pop("service_tier", None)
+                with client.responses.stream(**stream_kwargs) as stream:
+                    return stream.get_final_response().output_text.strip()
+            except Exception as retry_exc:
+                return f"API_ERROR: {retry_exc}"
         return f"API_ERROR: {exc}"
 
 
@@ -1030,9 +1033,7 @@ def review_visual_coverage(
     if video_path is None and not keyframe_paths:
         raise ValueError("Provide video_path or keyframe_paths.")
 
-    api_key = vlm_cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No API key.")
+    api_key = _require_api_key(vlm_cfg, context="visual coverage review")
 
     client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=180.0)
 
@@ -1139,9 +1140,7 @@ def review_semantic_coherence(
     if video_path is None and not keyframe_paths:
         raise ValueError("Provide video_path or keyframe_paths.")
 
-    api_key = vlm_cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("No API key.")
+    api_key = _require_api_key(vlm_cfg, context="semantic coherence review")
 
     client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=180.0)
 
@@ -1214,4 +1213,3 @@ def save_verdicts_jsonl(verdicts: List[VLMVerdict], path: Path) -> None:
                 "raw_response": v.raw_response,
             }
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
-

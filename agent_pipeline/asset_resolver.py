@@ -1,25 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List
 
 from .llm import LLMClient, LLMConfig
+from plugins.manim.runtime_config import get_manim_settings
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ICON_DIR = ROOT_DIR / "icon"
 ICON_SUFFIXES = {".png", ".svg", ".jpg", ".jpeg", ".webp"}
-
-
-def _env_enabled(name: str, default: bool = True) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.lower() not in {"0", "false", "no"}
-
 
 _SYSTEM_SELECT_ASSETS = """\
 You are selecting local icon files for an educational animation pipeline.
@@ -230,7 +222,7 @@ def resolve_local_assets(
     )
 
     return {
-        "enabled": _env_enabled("A4L_USE_LOCAL_ICONS", True),
+        "enabled": get_manim_settings().use_local_icons,
         "icon_dir": str(icon_dir.resolve()),
         "available_icon_count": len(available_icons),
         "selected_assets": selected_assets,

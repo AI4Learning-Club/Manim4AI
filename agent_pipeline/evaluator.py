@@ -18,8 +18,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from eval_pipeline.config import AudioConfig, CVConfig, ExternalMeta, PipelineConfig, VLMConfig
-from eval_pipeline.run import evaluate_video
+from plugins.manim.eval_pipeline.config import AudioConfig, CVConfig, ExternalMeta, PipelineConfig, VLMConfig
+from plugins.manim.eval_pipeline.run import evaluate_video
 
 DEFAULT_FRAME_STEP = 10
 

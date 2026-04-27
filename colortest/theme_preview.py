@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from manim import *
 
-from colortest.ai4learning_theme import AI4LearningBaseScene
+from plugins.manim.colortest.ai4learning_theme import AI4LearningBaseScene
 
 
 class _ThemePackPreviewBase(AI4LearningBaseScene):

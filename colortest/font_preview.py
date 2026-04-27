@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from manim import *
 
-from colortest.ai4learning_theme import AI4LearningBaseScene
+from plugins.manim.colortest.ai4learning_theme import AI4LearningBaseScene
 
 
 class FontPreviewScene(AI4LearningBaseScene):
@@ -11,7 +11,7 @@ class FontPreviewScene(AI4LearningBaseScene):
     def construct(self):
         title = self.get_text("字体预览：中文与英文自动分流", font_size=34, weight=BOLD)
         intro = self.get_secondary_text(
-            "中文默认 Noto Serif SC，纯英文默认 Times New Roman",
+            "中文优先 SimSun，未安装则回退到系统宋体（如 Songti SC）；纯英文默认 Times New Roman",
             font_size=20,
         )
 

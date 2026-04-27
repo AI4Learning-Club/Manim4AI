@@ -1,20 +1,30 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 from manim import *
 
-from colortest.narrated_scene import NarratedScene
+from plugins.manim.colortest.narrated_scene import NarratedScene
 
 from .registry import DEFAULT_THEME_ID, get_theme
+
+# 当 default_font（首选 SimSun）未安装时，按顺序回退到系统宋体 / 通用中文衬线
+_CJK_FONT_FALLBACK_CHAIN = (
+    "Songti SC",
+    "Songti TC",
+    "STSong",
+    "Noto Serif SC",
+)
 
 
 class AI4LearningBaseScene(NarratedScene):
     """Shared base scene for AI4Learning videos with pluggable theme packs."""
 
-    default_font = "SimSun"  # 默认中文正文字体：再试更经典的宋体风格
+    # 首选中文宋体；实际使用见 _pick_cjk_font（Windows 常见 SimSun，macOS 会落到 Songti 等）
+    default_font = "SimSun"
     latin_font = "Times New Roman"  # 默认英文字体：标题、数字、英文标签统一走衬线体
     local_icon_dir = Path(__file__).resolve().parents[2] / "icon"  # 本地图标目录
     theme_id = DEFAULT_THEME_ID  # 默认主题：未显式指定时使用注册表默认项
@@ -203,6 +213,7 @@ class AI4LearningBaseScene(NarratedScene):
     def setup(self):
         self.theme = self.resolve_theme()
         self.SUBTITLE_TEXT_COLOR = self.theme_token("subtitle_text", "#EDF5FF")
+        self._resolved_cjk_font = self._pick_cjk_font()
         super().setup()
         self.camera.background_color = self.theme_token("canvas_bg", config.background_color)
         self._bg_image = self._build_background()
@@ -297,15 +308,50 @@ class AI4LearningBaseScene(NarratedScene):
             icon.scale_to_fit_width(width)
         return icon
 
+    @staticmethod
+    def _match_font_name(font: str, available: set[str]) -> str:
+        """Align with Manim Text: try exact name then capitalize / lower / title."""
+        if not font:
+            return ""
+        if font in available:
+            return font
+        if font.lower() == "sans-serif":
+            font = "sans"
+        for variant in (font.capitalize(), font.lower(), font.title()):
+            if variant in available:
+                return variant
+        return ""
+
+    def _pick_cjk_font(self) -> str:
+        preference = getattr(self, "default_font", None) or "SimSun"
+        chain = [preference]
+        for name in _CJK_FONT_FALLBACK_CHAIN:
+            if name not in chain:
+                chain.append(name)
+        available = set(Text.font_list())
+        for name in chain:
+            matched = self._match_font_name(name, available)
+            if matched:
+                return matched
+        return ""
+
+    def _get_resolved_cjk_font(self) -> str:
+        resolved = getattr(self, "_resolved_cjk_font", None)
+        if resolved is None:
+            self._resolved_cjk_font = self._pick_cjk_font()
+            return self._resolved_cjk_font
+        return resolved
+
     # --- 文本 / 公式 helper：把常用语义颜色封装成稳定接口 ---
     def resolve_text_font(self, string, explicit_font=None):
         if explicit_font:
             return explicit_font
         text = str(string or "")
-        has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in text)
+        if self._CJK_CHAR_RE.search(text):
+            return self._get_resolved_cjk_font()
         has_non_ascii = any(ord(ch) > 127 for ch in text if not ch.isspace())
-        if has_cjk or has_non_ascii:
-            return getattr(self, "default_font", "Noto Serif SC")
+        if has_non_ascii:
+            return self._get_resolved_cjk_font()
         return getattr(self, "latin_font", "Times New Roman")
 
     def _make_subtitle_label(self, text: str, font_size: float):
@@ -322,6 +368,84 @@ class AI4LearningBaseScene(NarratedScene):
         font = self.resolve_text_font(string, explicit_font=kwargs.pop("font", None))
         color = color or self.theme_token("text_main", "#EDF5FF")
         return Text(string, color=color, font=font, font_size=font_size, **kwargs)
+
+    # Extended CJK character class: ideographs + Extension A + CJK symbols
+    # & punctuation + compatibility ideographs + full/half-width forms.
+    _CJK_CHAR_RE = re.compile(
+        r"[\u3000-\u303f\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\uff00-\uffef]"
+    )
+    # CJK "text run": starts with a CJK char, may continue with more CJK
+    # chars and CJK punctuation, but stops before Latin/math characters so
+    # they are not swallowed into the text chunk.
+    _CJK_RUN_RE = re.compile(
+        r"[\u3000-\u303f\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\uff00-\uffef]"
+        r"[\u3000-\u303f\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\uff00-\uffef"
+        r"\uff0c\u3002\uff1b\uff1a\u3001"       # ，。；：、
+        r"\u201c\u201d\u2018\u2019"              # ""''
+        r"\uff08\uff09\u300a\u300b\u3010\u3011"  # （）《》【】
+        r"\uff1f\uff01]*"                        # ？！
+    )
+
+    def _contains_cjk(self, text: str) -> bool:
+        return bool(self._CJK_CHAR_RE.search(str(text or "")))
+
+    def _build_mixed_math(self, string, *, color, font_size, math_factory, **kwargs):
+        """Split a string containing both CJK text and LaTeX math into a
+        ``VGroup`` of ``Text`` (for CJK runs) and ``MathTex`` (for math runs),
+        arranged horizontally with baseline alignment.
+
+        Improvements over the previous implementation:
+
+        * Uses a precise regex that only captures CJK characters and their
+          immediately-adjacent CJK punctuation — Latin letters, digits, and
+          math symbols adjacent to a CJK char are no longer swallowed.
+        * Extended CJK range covers Extension A, CJK symbols & punctuation,
+          compatibility ideographs, and full/half-width forms.
+        * Adaptive horizontal buffer scales with ``font_size`` for consistent
+          visual spacing at different sizes.
+        * Strips leading/trailing whitespace from math fragments so ``MathTex``
+          never receives a blank string.
+        """
+        text = str(string or "")
+        if not text.strip():
+            return math_factory("", color=color, font_size=font_size, **kwargs)
+
+        # Split by CJK runs while keeping the delimiters.
+        parts = self._CJK_RUN_RE.split(text)
+        # re.split drops the captured groups; use findall + manual merge.
+        cjk_runs = self._CJK_RUN_RE.findall(text)
+        # Interleave: parts[0], cjk_runs[0], parts[1], cjk_runs[1], ...
+        merged: list[tuple[str, bool]] = []  # (fragment, is_cjk)
+        for idx, part in enumerate(parts):
+            if part:
+                merged.append((part, False))
+            if idx < len(cjk_runs):
+                merged.append((cjk_runs[idx], True))
+
+        chunks = []
+        for fragment, is_cjk in merged:
+            stripped = fragment.strip()
+            if not stripped:
+                continue
+            if is_cjk:
+                chunks.append(
+                    self.get_text(stripped, color=color, font_size=font_size, **kwargs)
+                )
+            else:
+                chunks.append(
+                    math_factory(stripped, color=color, font_size=font_size, **kwargs)
+                )
+
+        if not chunks:
+            return math_factory("", color=color, font_size=font_size, **kwargs)
+        if len(chunks) == 1:
+            return chunks[0]
+
+        group = VGroup(*chunks)
+        # Scale buffer proportionally to font_size for consistent spacing.
+        buff = 0.08 * (font_size / 48)
+        group.arrange(RIGHT, buff=buff, aligned_edge=DOWN)
+        return group
 
     def get_secondary_text(self, string, font_size=32, **kwargs):
         color = kwargs.pop("color", None) or self.theme_token(
@@ -347,9 +471,25 @@ class AI4LearningBaseScene(NarratedScene):
 
     def get_math(self, string, color=None, font_size=48, **kwargs):
         color = color or self.theme_token("formula_base", self.theme_token("text_main", "#EDF5FF"))
+        if self._contains_cjk(string):
+            return self._build_mixed_math(
+                string,
+                color=color,
+                font_size=font_size,
+                math_factory=MathTex,
+                **kwargs,
+            )
         return MathTex(string, color=color, font_size=font_size, **kwargs)
 
     def get_highlighted_math(self, string, color=None, font_size=48, level: str = "primary", **kwargs):
         # level 支持 primary / secondary：直接接公式高亮 token
         color = color or self.get_formula_highlight_color(level)
+        if self._contains_cjk(string):
+            return self._build_mixed_math(
+                string,
+                color=color,
+                font_size=font_size,
+                math_factory=MathTex,
+                **kwargs,
+            )
         return MathTex(string, color=color, font_size=font_size, **kwargs)

@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .llm import LLMClient, LLMConfig
+from .llm import LLMClient, LLMConfig, LLMDeltaCallback
 
 
 OPENING_STYLES = {
@@ -342,7 +342,13 @@ class TeachingPlannerAgent:
                 ),
             )
 
-    def plan(self, request_text: str, image_path: Optional[Path] = None) -> Dict:
+    def plan(
+        self,
+        request_text: str,
+        image_path: Optional[Path] = None,
+        *,
+        on_delta: LLMDeltaCallback | None = None,
+    ) -> Dict:
         content = [{"type": "input_text", "text": request_text}]
         if image_path and image_path.exists():
             content.append({
@@ -356,6 +362,7 @@ class TeachingPlannerAgent:
                     _SYSTEM_PLAN,
                     content,
                     max_retries=1,
+                    on_delta=on_delta,
                 )
                 return _normalize_plan(_extract_json_object(text))
             except Exception:

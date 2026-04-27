@@ -13,8 +13,14 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .llm import LLMClient, LLMConfig
+from plugins.manim.runtime_config import get_manim_settings
+
+from .agent_skills import build_manim_skill_prompt
+from .llm import LLMClient, LLMConfig, LLMDeltaCallback, StreamTerminated
 from .output_language import normalize_output_language, output_language_name
+from .scene_pack import parse_scene_pack
+from .streaming_scene_pack import sanitize_streaming_code
+from .tool_runtime import ManimToolRuntime, ToolResult, build_openai_tool_schemas
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -24,7 +30,7 @@ _COMMON_RUNTIME_SAFETY_RULES = """\
 COMMON RUNTIME SAFETY RULES (shared across generate / fix / improve):
 
 THEME & COLOR SAFETY:
-- You MUST import our custom base class from `colortest.ai4learning_theme`.
+- You MUST import our custom base class from `plugins.manim.colortest.ai4learning_theme`.
 - New code MUST use a Scene Pack, not a single master scene.
 - The file MUST define `class LessonBase(AI4LearningBaseScene):`.
 - Every renderable wrapper scene MUST inherit from `LessonBase`, NOT `Scene`.
@@ -89,6 +95,9 @@ GROUP / VGROUP / CREATE SAFETY:
 
 LANGUAGE / API SAFETY:
 - `from manim import *` at the top.
+- Manim CE does **not** define a `CENTER` constant (using it raises NameError).
+  For the center of the frame use **`ORIGIN`** (e.g. `mob.move_to(ORIGIN)`).
+  Do not use `CENTER` in code even if layout prose says "center".
 - Use `Text(...)` or theme text helpers for natural-language titles, labels,
   captions, subtitles, and narration-related screen text.
 - Do NOT put full natural-language phrases inside `MathTex(...)` / `Tex(...)`.
@@ -125,26 +134,69 @@ CALLBACK / DEEPCOPY SAFETY:
   close over the live `Scene`, renderer, audio client, locks, threads, or
   other non-picklable runtime state.
 
-BLOCK BINDING SAFETY:
-- If a non-text dependent object is created before `fit_body(...)` and should
-  inherit the later scale/shift of a graph block, panel block, or other visual
-  container, immediately bind it with `self.bind_to_block(dependent, parent_block)`.
-- Bind each dependent object immediately after creation with
-  `self.bind_to_block(dependent, parent_block)`.
-- This helper is the DEFAULT way to keep dependent geometry attached to a block
-  without manually placing that geometry inside the block's layout tree.
-- Use block binding for dependent dots, secants, tangents, helper lines,
-  rectangles, bars, braces, highlights, icons, and similar geometry that
-  should simply follow the parent block's transform lifecycle.
+STATE / CLEARING SAFETY:
+- If the scene inherits from `AI4LearningBaseScene`, prefer
+  `self.clear_scene_keep_bg()` over `FadeOut(Group(*self.mobjects))` so the
+  persistent background is not removed.
+- Use the available `AI4LearningBaseScene` layout helpers before stacking many
+  manual `.shift()` / `.to_edge()` calls.
+- Use `self.make_page_title(...)`, `self.show_page_title_chip(...)`, and
+  `self.fit_body(...)`.
+"""
+
+_GEOMETRY_ANCHOR_PROTOCOL = """\
+GEOMETRY / ANCHOR PROTOCOL:
+- Treat each page as a composition of Layout Blocks, not as a flat list of
+  unrelated mobjects.
+- A `Layout Block` is a page-level block such as `graph_block`,
+  `formula_block`, `note_block`, `prompt_block`, `question_block`, or another
+  container that participates in page composition.
+- A `Geometry Block` is the visual core of a coordinate-based or diagram-based
+  graphic, such as axes + graph, number line + markers, or a diagram canvas +
+  its primary shapes.
+- `Anchor Followers` are dependent visual objects such as dots, tangents,
+  secants, helper lines, braces, shaded regions, arrows, local labels, and
+  highlights that must stay attached to a semantic anchor.
+- In this codebase, use one default ownership rule:
+  1. primary geometry belongs directly inside `graph_block`,
+  2. persistent detached geometry leaves should be created with
+     `self.build_on_anchor(...)`.
+- Treat `self.build_on_anchor(...)` as the DEFAULT generation path for
+  persistent geometry leaves that are not structural children of `graph_block`.
+- Only Layout Blocks may use `arrange(...)`, `next_to(...)`, or `fit_body(...)`
+  for page composition.
+- Do NOT directly arrange geometry leaf objects such as `axes`, `curve`,
+  `dot`, `tangent`, `secant`, or local point labels together with page title,
+  note, prompt, or explanation blocks.
+- Do NOT treat a tangent, secant, point marker, arrow, or brace as an
+  independent page-layout block unless it is intentionally packaged inside a
+  larger `graph_block` / `diagram_block`.
 - Treat outputs of anchor-derived methods such as `axes.get_area(...)`,
   `axes.get_riemann_rectangles(...)`, `axes.plot(...)`, and
   `graph.get_secant_slope_group(...)` as dependent geometry too. If they are
-  not structural children of the fitted visual block, they must be explicitly
-  synchronized with `self.bind_to_block(...)`, `self.build_on_anchor(...)`, or
-  `self.bind_to_anchor(...)`.
-- If the object must be recomputed from live anchors rather than merely follow
-  the parent block's transform, use `self.build_on_anchor(...)` or
-  `self.bind_to_anchor(...)`.
+  not structural children of the fitted visual block, they should normally be
+  created through `self.build_on_anchor(...)`.
+- The expected pattern is: write a small local builder such as
+  `build_tangent_on_axes(...)`, `build_secant_on_axes(...)`,
+  `build_point_marker_on_axes(...)`, or `build_label_on_point(...)`, then call
+  `self.build_on_anchor(...)`.
+- BUILDER PROTOCOL:
+  - Define anchor builders on `LessonBase` or the current scene when a section
+    needs persistent geometry leaves.
+  - Use stable names such as `build_tangent_on_axes(...)`,
+    `build_secant_on_axes(...)`, `build_point_marker_on_axes(...)`,
+    `build_local_label_on_dot(...)`, or similarly clear semantic names.
+  - Builder inputs MUST be the current on-screen anchor objects or stable
+    semantic parameters derived from them.
+  - Builder outputs MUST be only the dependent leaf object or a small leaf
+    group for that anchor state, not a rebuilt full graph block or page body.
+  - A builder MUST NOT recreate the whole visual owner such as a fresh axes +
+    graph + labels bundle just to obtain one tangent / secant / dot / label.
+  - A builder MUST NOT depend on a stale pre-fit copy of a block or anchor.
+  - If the scene layout changes, the builder should still be valid when called
+    against the fitted on-screen anchor instance that already lives in `bodyN`.
+  - Keep builders local and minimal: they are small semantic constructors for
+    leaves, not generic page-layout helpers.
 - `self.build_on_anchor(builder, ...)` defaults to NON-LIVE anchor binding.
   Use that default for objects that only need to resync after layout events
   such as `fit_body(...)`, `fit_to_top_band(...)`, or explicit scene-level
@@ -154,29 +206,55 @@ BLOCK BINDING SAFETY:
   you MUST pass `live=True` explicitly.
 - `self.build_on_anchor(builder, ..., live=True)` is for dependent geometry
   whose shape or endpoints must continuously rebuild from moving anchors.
-- `self.bind_to_anchor(existing_mobject, builder, ...)` is the repair helper
-  when the dependent mobject already exists and now needs to stay synchronized
-  to its anchors. Keep `live=True` when that repair target must continue
-  following visible anchor motion.
+- `self.bind_to_anchor(...)` and `self.bind_to_block(...)` remain available as
+  lower-level repair helpers, but they are not the default generation path.
+- Any non-text visual object whose position or shape is meant to relate to
+  another visual structure must have an explicit anchor or coordinate system,
+  and it must share the same positioning lifecycle as that anchor. This
+  applies both before and after `fit_body(...)`.
+- A follower should be created from a semantic anchor builder whenever its
+  geometry depends on the fitted anchor state rather than merely inheriting a
+  parent block transform.
+- Prefer helpers such as `build_tangent_on_axes(axes, x0)`,
+  `build_secant_on_axes(axes, x0, x1)`, `build_point_marker_on_axes(...)`, or
+  similar anchor-aware builders over one-off geometry derived from stale
+  measurements.
+- Good anchor patterns include `axes.c2p(...)`,
+  `graph.point_from_proportion(...)`, `obj.get_center()`, `obj.get_right()`,
+  `obj.get_corner(...)`, `next_to(anchor, ...)`, `move_to(anchor)`, or helper
+  functions that consume the actual on-screen anchor instance and return
+  geometry for that exact anchor.
+- Bad pattern: use `get_center() + RIGHT * ... + UP * ...` or similar one-off
+  measurement math as the final persistent placement rule for a follower that
+  should stay semantically attached to a point, line, region, or panel.
+- Bad pattern: a floating dot / point row / arrow / icon positioned by ad-hoc
+  raw coordinates or by only one-axis alignment when it is supposed to live on
+  an axes, graph, node, bar, or panel.
+- Also bad: create a line, plot, dot, point row, area, or shaded region from
+  `axes.c2p(...)`, `axes.plot(...)`, `axes.get_area(...)`, or another anchor
+  expression before `fit_body(...)`, but do not include that geometry inside
+  the same fitted `graph_block` / `bodyN`. Then the anchor moves during
+  fitting while the geometry stays behind.
+- Preferred fix: move the object into `graph_block` if it is truly structural;
+  otherwise rewrite it as a local builder plus `self.build_on_anchor(...)`.
+- If you create dependent geometry after `fit_body(...)`, compute it from the
+  SAME fitted anchor instance that is already on screen inside `bodyN`, and
+  then immediately make the lifecycle explicit by inserting it into the
+  structural owner or by using `self.build_on_anchor(...)`.
+- Hard rule: any anchor-dependent non-text object must satisfy one of these
+  two accepted lifecycle patterns:
+  1. it is a structural child of the fitted visual block that owns the anchor,
+  2. it is created through `self.build_on_anchor(...)`.
+- Never precompute dependent geometry from one layout state and then fit
+  `bodyN` afterward.
+- If a helper is used after `fit_body(...)`, it must accept the fitted anchor
+  as an argument and return only the dependent geometry tied to that anchor
+  (for example `build_secant_on_axes(axes, x2)`), rather than recreating the
+  full visual block.
+"""
 
-STATE / CLEARING SAFETY:
-- If the scene inherits from `AI4LearningBaseScene`, prefer
-  `self.clear_scene_keep_bg()` over `FadeOut(Group(*self.mobjects))` so the
-  persistent background is not removed.
-- Use the available `AI4LearningBaseScene` layout helpers before stacking many
-  manual `.shift()` / `.to_edge()` calls.
-- Use `self.make_page_title(...)`, `self.show_page_title_chip(...)`, and
-  `self.fit_body(...)`.
-
-STAGED REVEAL SAFETY:
-- Do NOT put all future text, formulas, arrows, labels, captions, examples,
-  and conclusions on screen at the start of a section.
-- For each page, define the persistent page objects before the first reveal of
-  that page. Then reveal those objects beat by beat.
-- A section may reserve stable final positions, but only the elements being
-  discussed right now may be visible.
-- Reveal each teaching beat in sync with narration: usually main visual or
-  title first, then local labels, then formulas, then the takeaway.
+_TITLE_PROTOCOL = """\
+TITLE PROTOCOL:
 - Each page MUST choose exactly ONE page-title style:
   1. long top title via `self.make_page_title(...)` or
      `self.fit_to_top_band(...)`,
@@ -186,6 +264,28 @@ STAGED REVEAL SAFETY:
 - If a page uses the long top title style, that title MUST be explicitly shown
   in the page's first reveal beat, then remain visible for the rest of that
   page until the page ends.
+- Every page may have only one title system.
+- The long page title is page-persistent: show it once at the start of that
+  page, keep it visible while that page's body teaches, and clear it only when
+  the page ends.
+- The title chip is also page-persistent: it enters as a large center title,
+  then parks at the top-right and stays there until the page ends.
+- The long page title does NOT belong inside `bodyN`. Keep it in the top band,
+  and fit only `bodyN` with `self.fit_body(...)`.
+- The title chip does NOT belong inside `bodyN` either. It is a separate
+  persistent page-title system outside the fitted body.
+"""
+
+_REVEAL_NARRATION_PROTOCOL = """\
+REVEAL / NARRATION PROTOCOL:
+- Do NOT put all future text, formulas, arrows, labels, captions, examples,
+  and conclusions on screen at the start of a section.
+- For each page, define the persistent page objects before the first reveal of
+  that page. Then reveal those objects beat by beat.
+- A section may reserve stable final positions, but only the elements being
+  discussed right now may be visible.
+- Reveal each teaching beat in sync with narration: usually main visual or
+  title first, then local labels, then formulas, then the takeaway.
 - Do NOT reveal an entire page container such as `Group(title, bodyN)` at
   once. Reveal the page title and the body's internal teaching beats in order.
 - Avoid patterns like `self.play(FadeIn(page))`, `self.play(Write(page))`,
@@ -198,9 +298,55 @@ STAGED REVEAL SAFETY:
   a new page instead of repacking the old one.
 - Good rhythm: build the board like a teacher in real time, not like a fully
   finished slide that gets explained afterward.
+- Keep a bottom subtitle module during explanation-heavy beats.
+- Prefer `self.speak_with_subtitle(...)` so subtitle, narration, and animation
+  stay aligned.
+- Subtitle changes must follow semantic pauses that a human reader can track:
+  prefer one natural clause per `self.speak_with_subtitle(...)`, instead of
+  one long sentence covering multiple ideas.
+- Prefer a single-line subtitle whenever possible. If narration is too long for
+  one bottom line, split it into multiple explanation beats instead of forcing
+  multi-line subtitles.
+- Subtitle changes should be visually quiet. Use simple fade-in / fade-out
+  behavior only. Avoid flashy transforms, sliding subtitles, or morphing text.
+- Subtitle text must match the spoken TTS content for that beat. Do not
+  paraphrase the subtitle into different wording than the narration.
+- Update subtitles when the spoken focus changes, and clear them before dense
+  transitions if necessary.
+- Nothing except the subtitle module itself should occupy the subtitle band.
+- Keep the subtitle-safe margin tight. Leave only a small visual buffer above
+  the subtitle band; do not invent oversized empty bottom margins.
+- Think like a teacher building the board live.
+- At the start of a section, show only the minimum needed to begin the
+  explanation.
+- When narration says "now look at this label / this step / this formula",
+  that specific object should appear at that beat, not earlier.
+- Do NOT pre-place a full explanation panel if its lines will be explained one
+  by one. Reveal those lines progressively.
+- Do NOT pre-place the final formula before the intuition or derivation has
+  happened.
+- If a section has 3 teaching beats, implement 3 reveals, not one full-page
+  reveal plus 3 repeated explanations.
+- Page/layout helpers are for positioning and stable composition, not for
+  dumping all content on screen at once.
+- Use `dur = self.speak("...")` or `self.speak_with_subtitle(...)` to pace
+  explanation beats, and call narration BEFORE or AT THE SAME TIME as the
+  animation it describes.
+- Use short narration chunks: roughly 6-16 English words or 15-30 Chinese
+  characters per speak call.
+- One speak() per visual step. Do not narrate everything at once.
+- For transitions such as `FadeOut`, keep them silent and fast unless the
+  teaching goal truly needs narrated emphasis.
+- Let narration duration drive pacing; do NOT add extra `self.wait()` after a
+  speak-synced animation unless you need a deliberate pause.
+- If a speak call is longer than the simple animation it describes, split the
+  beat so the scene does not freeze on a trivial visual.
+- Section titles should be narrated rather than appearing as silent cards.
 """
 
-_SCENE_PACK_OUTPUT_SUMMARY = """\
+_SCENE_PACK_CONTRACT = (
+    """\
+SCENE PACK CONTRACT:
 - Output a Scene Pack in ONE Python file, not a single master scene.
 - The file MUST define a top-level `SCENE_MANIFEST` list in final playback order.
 - Every manifest `id` MUST be a stable snake_case identifier such as
@@ -220,59 +366,6 @@ _SCENE_PACK_OUTPUT_SUMMARY = """\
   `section_one_xxx()`, `section_two_xxx()`, and `closing_page()`.
 - Do NOT output a single master scene whose `construct()` calls multiple
   section methods in sequence.
-"""
-
-_ANCHOR_LIFECYCLE_HARD_RULES = """\
-- Any non-text visual object whose position or shape is meant to relate to
-  another visual structure must have an explicit anchor or coordinate system,
-  and it must share the same positioning lifecycle as that anchor. This
-  applies both before and after `fit_body(...)`.
-- Treat outputs of anchor-derived methods such as `axes.get_area(...)`,
-  `axes.get_riemann_rectangles(...)`, `axes.plot(...)`, and
-  `graph.get_secant_slope_group(...)` as dependent geometry too.
-- Good anchor patterns include `axes.c2p(...)`,
-  `graph.point_from_proportion(...)`, `obj.get_center()`, `obj.get_right()`,
-  `obj.get_corner(...)`, `next_to(anchor, ...)`, `move_to(anchor)`, or helper
-  functions that consume the actual on-screen anchor instance and return
-  geometry for that exact anchor.
-- Bad pattern: a floating dot / point row / arrow / icon positioned by ad-hoc
-  raw coordinates or by only one-axis alignment when it is supposed to live on
-  an axes, graph, node, bar, or panel.
-- Also bad: create a line, plot, dot, point row, area, or shaded region from
-  `axes.c2p(...)`, `axes.plot(...)`, `axes.get_area(...)`, or another anchor
-  expression before `fit_body(...)`, but do not include that geometry inside
-  the same fitted `graph_block` / `bodyN`. Then the anchor moves during
-  fitting while the geometry stays behind.
-- Preferred fix: call `self.bind_to_block(dependent, parent_block)` immediately
-  after creating each dependent geometry.
-- If the dependent geometry must be recomputed from the fitted anchor rather
-  than merely inherit the parent block transform, prefer
-  `self.build_on_anchor(...)` or `self.bind_to_anchor(...)`.
-- If you create dependent geometry after `fit_body(...)`, compute it from the
-  SAME fitted anchor instance that is already on screen inside `bodyN`, and
-  then immediately make the lifecycle explicit with
-  `self.bind_to_block(...)`, `self.build_on_anchor(...)`, or
-  `self.bind_to_anchor(...)` unless that geometry is inserted directly as a
-  structural child of the fitted visual block.
-- Hard rule: any anchor-dependent non-text object must satisfy one of these
-  two accepted lifecycle patterns:
-  1. it is a structural child of the fitted visual block that owns the anchor,
-  2. it is explicitly synchronized with `self.bind_to_block(...)`,
-     `self.build_on_anchor(...)`, or `self.bind_to_anchor(...)`.
-- Never precompute dependent geometry from one layout state and then fit
-  `bodyN` afterward.
-- If a helper is used after `fit_body(...)`, it must accept the fitted anchor
-  as an argument and return only the dependent geometry tied to that anchor
-  (for example `build_secant_on_axes(axes, x2)`), rather than recreating the
-  full visual block.
-"""
-
-_SCENE_PACK_CONTRACT = (
-    """\
-SCENE PACK CONTRACT:
-"""
-    + _SCENE_PACK_OUTPUT_SUMMARY
-    + """\
 - Every `SCENE_MANIFEST` entry MUST be a dictionary with keys:
   `id`, `scene`, and `method`.
 - Section methods MUST live on `LessonBase`.
@@ -326,8 +419,11 @@ PAGE / BODY AUTHORING CONTRACT:
 - Compose each page before its first reveal.
 - Each page must have exactly one fitted body root named `body1`, `body2`,
   `body3`, and so on.
-- Build every persistent teaching object for that page inside that page's
-  single `bodyN`.
+- Build every persistent teaching-content object for that page inside that
+  page's single `bodyN`.
+- Explicit exceptions:
+  - the page title system belongs to the top band, not `bodyN`
+  - the subtitle module belongs to the subtitle band, not `bodyN`
 - `bodyN` may contain internal sub-blocks such as `top_row`, `bottom_row`,
   `left_col`, `right_col`, `graph_block`, `formula_block`, or `note_block`.
 - Inner sub-blocks may be arranged locally, but they must NOT be fitted
@@ -346,7 +442,8 @@ PAGE / BODY AUTHORING CONTRACT:
 - All actual teaching content belongs in the body band inside `bodyN`. This
   includes graphs, diagrams, formulas, comparisons, prompts, roadmap lines,
   takeaway lines, summary lines, note blocks, example rows, and other
-  persistent sentence-like teaching text.
+  persistent sentence-like teaching text. The page title system and subtitle
+  module are explicit exceptions and must stay outside `bodyN`.
 - Sentence-like teaching text must be inside `bodyN`.
 - Only symbolic labels or very short object names may stay local near graphics,
   such as `A`, `B`, `x`, `y`, `T`, `q1`, or similarly short identifiers.
@@ -357,20 +454,6 @@ PAGE / BODY AUTHORING CONTRACT:
   `takeaway.align_to(bodyN, ...)`, or `takeaway.move_to(DOWN * ...)`.
 - If a sentence-like object should persist on that page, it must be planned
   inside `bodyN` before the first reveal of that page.
-- Every page may have only one title system.
-- Each page must choose exactly one title style:
-  long top title via `self.make_page_title(...)` or title chip via
-  `self.show_page_title_chip(...)`.
-- Never use both the long top title and the title chip on the same page.
-- The long page title is page-persistent: show it once at the start of that
-  page, keep it visible while that page's body teaches, and clear it only when
-  the page ends.
-- The title chip is also page-persistent: it enters as a large center title,
-  then parks at the top-right and stays there until the page ends.
-- The long page title does NOT belong inside `bodyN`. Keep it in the top band,
-  and fit only `bodyN` with `self.fit_body(...)`.
-- The title chip does NOT belong inside `bodyN` either. It is a separate
-  persistent page-title system outside the fitted body.
 - Respect minimum readable font sizes:
   - page titles: at least 28
   - body sentence text, prompts, takeaways, roadmap/promise/summary text: at least 20
@@ -383,9 +466,6 @@ PAGE / BODY AUTHORING CONTRACT:
 - `bodyN` should make strong use of the available body band.
 - If a page is dense, do NOT leave a large unused lower-body area while the
   upper half is crowded. Expand downward or split into the next page.
-"""
-    + _ANCHOR_LIFECYCLE_HARD_RULES
-    + """\
 - After a page starts, do NOT refit or reposition the whole page. If a new
   persistent element would change the page structure, start a new page instead.
 
@@ -421,13 +501,90 @@ body2 = Group(graph_block, text_block).arrange(RIGHT, buff=0.5)
 self.fit_body(body2, max_width=11.6, center=UP * 0.2)
 ```
 
-Also good:
+Bad geometry/layout mixing:
 ```python
+body2 = VGroup(
+    axes,
+    curve,
+    dot,
+    tangent,
+    note_panel,
+    prompt_block,
+).arrange(DOWN, buff=0.25)
+self.fit_body(body2, max_width=11.6, center=UP * 0.2)
+```
+
+Good geometry block + anchor-built followers:
+```python
+graph_block = Group(axes, curve)
+dot = self.build_on_anchor("build_point_marker_on_axes", axes, 2.0)
+tangent = self.build_on_anchor("build_tangent_on_axes", axes, 2.0)
+
+right_col = Group(note_panel, prompt_block).arrange(DOWN, buff=0.22, aligned_edge=LEFT)
+body2 = Group(graph_block, right_col).arrange(RIGHT, buff=0.5, aligned_edge=UP)
+self.fit_body(body2, max_width=11.6, center=UP * 0.2)
+```
+
+Good local-builder pattern:
+```python
+def build_tangent_on_axes(self, axes, x0):
+    y0 = self.func(x0)
+    slope = self.derivative(x0)
+    return axes.plot(lambda x: y0 + slope * (x - x0), x_range=[x0 - 1.0, x0 + 1.0])
+
+graph_block = Group(axes, curve)
+tangent = self.build_on_anchor("build_tangent_on_axes", axes, 2.0)
+point_label = self.build_on_anchor("build_point_label_on_axes", axes, 2.0, "P")
+
+side_block = Group(note_panel, question_block).arrange(DOWN, buff=0.22, aligned_edge=LEFT)
+body2 = Group(graph_block, side_block).arrange(RIGHT, buff=0.5, aligned_edge=UP)
+self.fit_body(body2, max_width=11.6, center=UP * 0.2)
+```
+
+Good area-builder pattern:
+```python
+def build_area_on_axes(self, axes, graph, x_range):
+    return axes.get_area(graph, x_range=x_range)
+
+graph_block = Group(axes, graph)
+area = self.build_on_anchor("build_area_on_axes", axes, graph, [1.0, 2.0])
+
+body2 = Group(graph_block, text_block).arrange(RIGHT, buff=0.5, aligned_edge=UP)
+self.fit_body(body2, max_width=11.6, center=UP * 0.2)
+```
+
+Good label-builder pattern:
+```python
+def build_local_label_on_dot(self, dot, text):
+    label = self.get_secondary_text(text, font_size=18)
+    label.next_to(dot, UP + RIGHT, buff=0.08)
+    return label
+
+graph_block = Group(axes, graph, dot)
+label = self.build_on_anchor("build_local_label_on_dot", dot, "P")
+
+body2 = Group(graph_block, side_block).arrange(RIGHT, buff=0.5, aligned_edge=UP)
+self.fit_body(body2, max_width=11.6, center=UP * 0.2)
+```
+
+Good connector-builder pattern:
+```python
+def build_connector_on_objects(self, source, target):
+    return Arrow(source.get_right(), target.get_left(), buff=0.08, stroke_width=3)
+
+graph_block = Group(axes, graph, point)
+connector = self.build_on_anchor("build_connector_on_objects", point, note_panel)
+
+body2 = Group(graph_block, note_panel).arrange(RIGHT, buff=0.5, aligned_edge=UP)
+self.fit_body(body2, max_width=11.6, center=UP * 0.2)
+```
+
+Also good when the object is truly structural:
+```python
+point = Dot(axes.c2p(x0, y0))
 graph_block = Group(axes, graph, point)
 body3 = Group(graph_block, text_block).arrange(RIGHT, buff=0.5)
 self.fit_body(body3, max_width=11.6, center=UP * 0.2)
-
-secant_hint = Line(axes.c2p(x1, y1), axes.c2p(x2, y2))
 ```
 
 Bad after fit:
@@ -534,9 +691,9 @@ Before writing any code, plan a multi-step teaching flow:
 
 STEP 1 - OPENING HOOK (5-10 seconds):
   What is the problem?  Why should the student care?
-  Start with the planned `opening.style` and `opening.hook_line` when provided.
-  Every lesson still needs a roadmap, but the roadmap must follow
-  `opening.roadmap_style` instead of defaulting to one numbered outline.
+  The opening must feel lesson-specific, not like a reusable stock intro.
+  Every lesson still needs a roadmap, but the roadmap must match THIS lesson
+  rather than falling back to a stock outline.
   Valid roadmap styles include:
     - `task_line`: one short task-oriented path for this lesson
     - `question_chain`: 2 linked questions that define the route
@@ -545,8 +702,7 @@ STEP 1 - OPENING HOOK (5-10 seconds):
     - `result_path`: start from the result, then state the route back to it
     - `classic_outline`: a true outline, used only when it really fits
   The roadmap must explain how THIS lesson will proceed.
-  Do NOT write empty slogans.
-  Do NOT default to "我们将看懂三件事" or any fixed numbered outline.
+  Do not use stock numbered roadmap slogans or generic motivational filler.
   Use simple language.  Make the student feel "I want to know the answer."
 STEP 2+ - TEACH EACH CONCEPT with VISUAL + FORMULA TOGETHER:
   This is the CORE of the animation.  For EACH concept in the planned lesson path:
@@ -563,15 +719,16 @@ STEP 2+ - TEACH EACH CONCEPT with VISUAL + FORMULA TOGETHER:
      Best for: graphs with labels, network diagrams
   E) FULL-WIDTH formula slide (no visual)
      Best for: pure derivation steps with no diagram needed
-  F) CENTER visual + small caption block below or beside it
+  F) MIDDLE (frame-center) visual + small caption block below or beside it
       Best for: intuition-heavy pages where the picture should dominate
+      (Prose only: in Manim code use `ORIGIN` for frame center, not `CENTER`.)
 
   Example for "diffusion forward process":
     TOP: title  MIDDLE: row of images (noise -> clean)  BOTTOM: formula
   Example for "forces on sliding block":
     LEFT: block diagram  RIGHT: equations
   Example for "Punnett square":
-    TOP: title  CENTER: 4x4 grid  BOTTOM: ratio summary
+    TOP: title  MIDDLE: 4x4 grid  BOTTOM: ratio summary
 
   These are REFERENCE PATTERNS, not fixed templates. Choose, adapt, or combine
   them according to the lesson content. Do not force every section into one of
@@ -617,6 +774,12 @@ PART 2: MANIM CODE RULES (avoid crashes and visual bugs)
     + "\n\n"
     + _PAGE_BLOCK_LAYOUT_CONTRACT
     + "\n\n"
+    + _TITLE_PROTOCOL
+    + "\n\n"
+    + _GEOMETRY_ANCHOR_PROTOCOL
+    + "\n\n"
+    + _REVEAL_NARRATION_PROTOCOL
+    + "\n\n"
     + _VISUAL_CLARITY_CONTRACT
     + """
 
@@ -641,9 +804,9 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
   - Any standalone sentence-like teaching text belongs to the body band by
     default, even if it is only one line. Do not classify sentence-like text as
     a local overlay.
-  - Visual graphics and text blocks must not overlap each other. Body blocks
-    must not overlap other body blocks.
-  - Minimum readable font sizes are hard floors:
+- Visual graphics and text blocks must not overlap each other. Body blocks
+  must not overlap other body blocks.
+- Minimum readable font sizes are hard floors:
     - page titles >= 28
     - body sentence text / prompts / takeaways / roadmap / promise / summary >= 20
     - secondary explanatory text >= 18
@@ -654,10 +817,10 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
     split the teaching point into another page.
   - Use `self.make_page_title(...)` or `self.fit_to_top_band(...)` for
     title-like objects in the top band.
-  - Use `self.fit_body(bodyN, max_width=..., max_height=..., center=...)`
-    only for the page's unique finished `bodyN` in the body band.
-  - `self.fit_body(...)` is a body-band safety helper, not a layout author.
-  - Any dependent object whose geometry is computed from another object
+- Use `self.fit_body(bodyN, max_width=..., max_height=..., center=...)`
+  only for the page's unique finished `bodyN` in the body band.
+- `self.fit_body(...)` is a body-band safety helper, not a layout author.
+- Any dependent object whose geometry is computed from another object
     (secant, tangent, line, rectangle, shaded region, dot, icon, label,
     highlight, arrow, brace, connector) must either be inside the same fitted
     visual block, be created only after that parent block reaches final
@@ -684,8 +847,8 @@ LAYOUT RULES (canvas is 14.2 x 8 units, safe area +/-6.0 x +/-3.3):
     preferred for "same object, new appearance" transitions.
   - Do NOT use `self.transform_in_place(...)` as a generic workaround for newly
     added detached objects. If the new object is a persistent anchor-dependent
-    overlay, it still needs proper structural ownership or
-    `bind_to_block(...)` / `build_on_anchor(...)` / `bind_to_anchor(...)`.
+    overlay, it still needs proper structural ownership or a local builder plus
+    `self.build_on_anchor(...)`.
   - Default `self.transform_in_place(...)` behavior keeps the new visual in
     the old block's slot by matching size and center. If the new visual truly
     needs a different footprint, that is usually a new page, not a refit of
@@ -798,11 +961,6 @@ Preferred new-code pattern: for each page choose exactly one of
 `self.fit_body(bodyN, ...)` exactly once for that page's unique body root.
 
 SECTION TITLE RULES:
-- After that, each page must choose one title style: long top title or title
-  chip.
-- Never use both title styles on the same page.
-- If the page uses the title chip style, the top-right corner becomes that
-  page's persistent title region.
 - Keep section titles short, usually 2-6 words in English or 4-10 Chinese characters.
 - Title names should be informative and teacher-like, not vague slogans.
 - Prefer titles that tell the student what this step is for, such as
@@ -1003,7 +1161,6 @@ PACING RULES:
 
 GEOMETRY RULES:
 - Shapes on polygon edges MUST extend OUTWARD (check normal direction).
-- Group all geometry -> `scale_to_fit_width(10)` to prevent overflow.
 - No two filled shapes should overlap.
 
 Output ONLY the Python code inside a ```python``` block.
@@ -1024,6 +1181,12 @@ shared runtime safety rules below and fix every violation first:
     + _SCENE_PACK_CONTRACT
     + "\n\n"
     + _PAGE_BLOCK_LAYOUT_CONTRACT
+    + "\n\n"
+    + _TITLE_PROTOCOL
+    + "\n\n"
+    + _GEOMETRY_ANCHOR_PROTOCOL
+    + "\n\n"
+    + _REVEAL_NARRATION_PROTOCOL
     + "\n\n"
     + _VISUAL_CLARITY_CONTRACT
     + """
@@ -1071,6 +1234,12 @@ shared rules and correct any violation that can be solved INSIDE that method:
     + _SCENE_PACK_CONTRACT
     + "\n\n"
     + _PAGE_BLOCK_LAYOUT_CONTRACT
+    + "\n\n"
+    + _TITLE_PROTOCOL
+    + "\n\n"
+    + _GEOMETRY_ANCHOR_PROTOCOL
+    + "\n\n"
+    + _REVEAL_NARRATION_PROTOCOL
     + """
 
 Repair discipline:
@@ -1080,6 +1249,63 @@ Repair discipline:
 - Prefer using existing helpers already shown in the context.
 - If the render error points to one segment object drifting or failing, fix it
   locally inside this method rather than rewriting unrelated pages.
+- If the bug is an anchor-leaf lifecycle problem, prefer extracting a small
+  local builder and recreating that leaf through `self.build_on_anchor(...)`
+  instead of introducing another detached pre-fit object.
+- Do NOT return the whole file.
+
+Output JSON ONLY:
+{
+  "method_name": "exact target method name",
+  "updated_method_code": "full replacement def block"
+}
+"""
+)
+
+_SYSTEM_SEGMENT_VALIDATION_FIX = (
+_CLAUDE_REVIEW_NOTICE
+    + """\
+You are an expert Manim validation-driven segment repair agent.
+
+You are fixing ONE Scene Pack segment after section-local validation found
+blocking issues. The shared helpers and manifest shown below are reference
+context only. Your edit scope is STRICT:
+- Modify ONLY the target section method.
+- Do NOT edit `SCENE_MANIFEST`.
+- Do NOT edit wrapper scene classes.
+- Do NOT edit shared helper methods unless the user explicitly asked for a
+  whole-file refactor. For this task, treat helper methods as read-only.
+- Keep the Scene Pack architecture unchanged.
+
+Before fixing the validation issues, scan the target section method against
+these shared rules and correct any violation that can be solved INSIDE that
+method:
+"""
+    + _COMMON_RUNTIME_SAFETY_RULES
+    + "\n\n"
+    + _SCENE_PACK_CONTRACT
+    + "\n\n"
+    + _SCENE_PACK_REPAIR_CONTRACT
+    + "\n\n"
+    + _PAGE_BLOCK_LAYOUT_CONTRACT
+    + "\n\n"
+    + _TITLE_PROTOCOL
+    + "\n\n"
+    + _REVEAL_NARRATION_PROTOCOL
+    + "\n\n"
+    + _GEOMETRY_ANCHOR_PROTOCOL
+    + """
+
+Repair discipline:
+- Return a COMPLETE replacement `def ...` block for the target section method.
+- Preserve the method name and signature exactly.
+- Keep the teaching intent, narration beats, and section order unchanged.
+- Prefer using existing helpers already shown in the context.
+- Fix only issues supported by the validation report; do not rewrite unrelated
+  pages.
+- For drifting or detached geometry leaves, prefer a local builder plus
+  `self.build_on_anchor(...)` instead of patching with ad-hoc shifts or adding
+  another detached object.
 - Do NOT return the whole file.
 
 Output JSON ONLY:
@@ -1112,6 +1338,10 @@ You MUST follow these layout contracts while fixing:
     + _SCENE_PACK_REPAIR_CONTRACT
     + "\n\n"
     + _PAGE_BLOCK_LAYOUT_CONTRACT
+    + "\n\n"
+    + _TITLE_PROTOCOL
+    + "\n\n"
+    + _GEOMETRY_ANCHOR_PROTOCOL
     + """
 
 Focus only on these three code-eval categories:
@@ -1123,10 +1353,8 @@ Focus only on these three code-eval categories:
   spacing, or alignment when the current `next_to(...)` placement looks likely
   to collide with nearby objects.
 - `non_text_anchor_lifecycle`:
-"""
-    + "  "
-    + _ANCHOR_LIFECYCLE_HARD_RULES.replace("\n- ", "\n  - ")
-    + """\
+  apply the geometry / anchor protocol above to make the dependent object's
+  lifecycle explicit and consistent with its fitted anchor.
   For replacement / transform targets, give the target a FULL anchor position.
   Do not rely on only one-axis placement such as a bare `align_to(..., LEFT)`
   or `match_x(...)` when the other axis is not clearly fixed.
@@ -1138,6 +1366,9 @@ Repair discipline:
   was misclassified.
 - If a persistent note/takeaway/prompt appears after `fit_body(...)`, fold it
   back into the planned body layout instead of leaving it as a floating overlay.
+- For `non_text_anchor_lifecycle`, prefer rewriting detached geometry leaves as
+  a local builder plus `self.build_on_anchor(...)` instead of introducing a new
+  detached pre-fit object.
 - Keep all changes inside the existing segment methods unless a broken Scene Pack
   reference forces a minimal consistency repair.
 
@@ -1233,9 +1464,9 @@ RULE #2: Fix visual bugs surgically
 - If keyframe screenshots show lines, rectangles, icons, labels, highlights, or
   other dependent objects drifting away from the graph/node/panel they belong
   to, rebuild them so they share the same positioning lifecycle as the parent
-  visual block. Prefer `self.bind_to_block(...)` when the object should inherit
-  the parent block's transform. Do NOT patch
-  this with raw absolute shifts.
+  visual block. Prefer a local builder plus `self.build_on_anchor(...)` for
+  detached leaves, or make the object a true structural child of the visual
+  owner. Do NOT patch this with raw absolute shifts.
 - If keyframe screenshots show floating dots, point rows, threshold guides, or
   other non-text markers detached from the axes / graph / number line they are
   supposed to live on, rebuild them from explicit anchors such as
@@ -1244,8 +1475,7 @@ RULE #2: Fix visual bugs surgically
 - If a line, plot, dot, point row, or marker was created from an axes / graph
   anchor before `fit_body(...)`, but was not included in the same fitted block,
   rebuild the page so that object either joins the fitted visual block or is
-  explicitly synchronized with `self.bind_to_block(...)`,
-  `self.build_on_anchor(...)`, or `self.bind_to_anchor(...)`.
+  rebuilt through a local builder plus `self.build_on_anchor(...)`.
 - If a section currently appears as a full finished page before the narration
   explains it, rebuild it as a staged reveal: keep the layout stable, but let
   labels, formulas, bullets, and takeaways appear only when that beat is
@@ -1271,6 +1501,12 @@ RULE #3: Never introduce new crashes
     + _SCENE_PACK_REPAIR_CONTRACT
     + "\n\n"
     + _PAGE_BLOCK_LAYOUT_CONTRACT
+    + "\n\n"
+    + _TITLE_PROTOCOL
+    + "\n\n"
+    + _GEOMETRY_ANCHOR_PROTOCOL
+    + "\n\n"
+    + _REVEAL_NARRATION_PROTOCOL
     + "\n\n"
     + _VISUAL_CLARITY_CONTRACT
     + """
@@ -1517,7 +1753,8 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
             lines.append(
                 f"- HARD BUG ({severity}, confidence={conf}): {desc}\n"
                 f"  -> Time range: {tr}\n"
-                "  -> FIX: repair this concrete bug locally. Rebuild only the affected block/page if necessary, while preserving the overall teaching flow.\n"
+                "  -> FIX: repair this concrete bug locally. Rebuild only the affected block/page if necessary, while preserving the overall teaching flow. "
+                "If the bug is a drifting geometry leaf, prefer a local builder plus `build_on_anchor(...)`.\n"
             )
 
     if soft_layout_issues:
@@ -1591,7 +1828,6 @@ def _build_opening_prompt(teaching_plan: Optional[Dict]) -> str:
         + "- The lesson roadmap must follow `opening.roadmap_style`.\n"
         + "- Every roadmap style must explain how THIS lesson will proceed.\n"
         + "- Do NOT write empty slogans or generic motivation lines.\n"
-        + "- Do NOT default to a fixed numbered outline like `我们将看懂三件事` unless the roadmap style is explicitly `classic_outline`.\n"
     )
 
 
@@ -1656,6 +1892,7 @@ def _build_output_language_prompt(output_language: str) -> str:
             "- If the teaching plan or request contains English teaching text, translate its meaning into Chinese before putting it on screen.\n"
             "- Only formulas, variable names, standard math symbols, units, file names, and truly necessary abbreviations may remain non-Chinese.\n"
             "- If an abbreviation is important, prefer translated Chinese plus the abbreviation in parentheses.\n"
+            "- Avoid stock roadmap slogans such as \"我们将看懂三件事\".\n"
         )
 
     return (
@@ -1666,6 +1903,58 @@ def _build_output_language_prompt(output_language: str) -> str:
         "- Only formulas, variable names, standard math symbols, units, file names, and truly necessary abbreviations may remain non-English.\n"
         "- If a translated term benefits from an abbreviation, write the English term first and keep the abbreviation short.\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tool-based repair (patch-first)
+# ---------------------------------------------------------------------------
+
+SCENE_PACK_TOOL_FILENAME = "scene_pack.py"
+
+_TOOL_FEW_SHOT_REPAIR = """\
+## Few-shot examples
+1) SyntaxError at line N: read_file with start_line=N-3, end_line=N+3, apply_patch the smallest fix, finish_repair(fallback_required=false).
+2) LaTeX in plain text helper: search_file for the snippet, apply_patch to split into get_math + natural language, finish_repair(fallback_required=false).
+3) code_eval: read_file around cited line, apply_patch minimal structural fix, finish_repair(fallback_required=false).
+4) If stuck after several patches: finish_repair(fallback_required=true).
+"""
+
+
+def _build_system_tool_repair_for_file(target_file: str) -> str:
+    sf = target_file
+    return (
+        _CLAUDE_REVIEW_NOTICE
+        + f"""You are an expert Manim debugger. You MUST use tools to repair `{sf}`.
+
+Do NOT paste the entire Python file in chat. The writable scene file is `{sf}` under the run directory; tools enforce path safety.
+
+## Mandatory workflow
+1) read_file(path="{sf}") — use start_line/end_line when the error cites line numbers.
+2) search_file(path="{sf}", pattern=...) — locate strings or symbols (set use_regex=true only when needed).
+3) apply_patch(path="{sf}", old_text=..., new_text=...) — old_text must match EXACTLY once in the file.
+4) When done, call finish_repair(fallback_required=false, summary="...")
+If the problem needs a whole-file rewrite, call finish_repair(fallback_required=true).
+
+## Shared rules
+"""
+        + _COMMON_RUNTIME_SAFETY_RULES
+        + "\n\n"
+        + _SCENE_PACK_CONTRACT
+        + "\n\n"
+        + _PAGE_BLOCK_LAYOUT_CONTRACT
+        + "\n\n"
+        + _TITLE_PROTOCOL
+        + "\n\n"
+        + _GEOMETRY_ANCHOR_PROTOCOL
+        + "\n\n"
+        + _REVEAL_NARRATION_PROTOCOL
+        + "\n\n"
+        + _TOOL_FEW_SHOT_REPAIR
+    )
+
+
+def _build_system_tool_repair() -> str:
+    return _build_system_tool_repair_for_file(SCENE_PACK_TOOL_FILENAME)
 
 
 # ---------------------------------------------------------------------------
@@ -1695,8 +1984,19 @@ class CodeGenAgent:
                     base_url=base_url,
                 ),
             )
+        self._last_tool_fix_meta: Dict[str, Any] = {}
 
-    def _call(self, system: str, user_content: list, max_retries: int = 3) -> str:
+    def get_last_tool_fix_meta(self) -> Dict[str, Any]:
+        return dict(self._last_tool_fix_meta)
+
+    def _call(
+        self,
+        system: str,
+        user_content: list,
+        max_retries: int = 3,
+        *,
+        on_delta: LLMDeltaCallback | None = None,
+    ) -> str:
         import time as _time
         for attempt in range(max_retries):
             try:
@@ -1704,6 +2004,7 @@ class CodeGenAgent:
                     system,
                     user_content,
                     max_retries=1,
+                    on_delta=on_delta,
                 )
                 if text.strip():
                     return text.strip()
@@ -1717,12 +2018,170 @@ class CodeGenAgent:
                 else:
                     raise
 
+    def fix_with_tools(
+        self,
+        *,
+        run_dir: Path,
+        code: str,
+        output_language: str,
+        repair_kind: str,
+        error_context: str,
+        code_eval_report: Optional[Dict] = None,
+    ) -> Optional[str]:
+        """Patch-first repair via read/search/apply_patch under run_dir. None => use full-file fix."""
+        ms = get_manim_settings()
+        if not getattr(ms, "tool_fix_enabled", False):
+            return None
+        if not getattr(ms, "tool_fix_run_dir_only", True):
+            return None
+
+        run_dir = run_dir.resolve()
+        scene_file = SCENE_PACK_TOOL_FILENAME
+        target = run_dir / scene_file
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(code, encoding="utf-8")
+
+        return self._tool_fix_existing_file(
+            run_dir=run_dir,
+            target_file=scene_file,
+            output_language=output_language,
+            repair_kind=repair_kind,
+            error_context=error_context,
+            code_eval_report=code_eval_report,
+        )
+
+    def _tool_fix_existing_file(
+        self,
+        *,
+        run_dir: Path,
+        target_file: str,
+        output_language: str,
+        repair_kind: str,
+        error_context: str,
+        code_eval_report: Optional[Dict] = None,
+    ) -> Optional[str]:
+        ms = get_manim_settings()
+        if not getattr(ms, "tool_fix_enabled", False):
+            return None
+        if not getattr(ms, "tool_fix_run_dir_only", True):
+            return None
+
+        run_dir = run_dir.resolve()
+        target = run_dir / target_file
+        if not target.exists():
+            return None
+
+        runtime = ManimToolRuntime(run_dir)
+        patch_count = 0
+        meta: Dict[str, Any] = {
+            "stopped_reason": "not_started",
+            "fallback_required": False,
+            "finish_summary": "",
+            "tool_rounds": 0,
+            "tool_calls": 0,
+        }
+        max_patches = max(1, int(getattr(ms, "tool_fix_max_patches", 12)))
+        max_patch_bytes = max(1024, int(getattr(ms, "tool_fix_max_patch_bytes", 256_000)))
+
+        def dispatch(name: str, args: Dict[str, Any]) -> ToolResult:
+            nonlocal patch_count
+            requested_path = str(args.get("path", ""))
+            if name in {"read_file", "search_file", "apply_patch"} and requested_path != target_file:
+                return ToolResult(
+                    False,
+                    f"tool access is restricted to `{target_file}` during scene-file repair",
+                    {"path": requested_path, "allowed_path": target_file},
+                )
+            if name == "apply_patch":
+                if patch_count >= max_patches:
+                    return ToolResult(
+                        False,
+                        "max_patch_budget_exceeded",
+                        {"max": max_patches},
+                    )
+                r = runtime.apply_patch(
+                    str(args.get("path", "")),
+                    str(args.get("old_text", "")),
+                    str(args.get("new_text", "")),
+                    max_patch_bytes=int(args.get("max_patch_bytes", max_patch_bytes)),
+                )
+                if r.ok:
+                    patch_count += 1
+                return r
+            return runtime.dispatch(name, args)
+
+        tools = build_openai_tool_schemas(max_patch_bytes)
+        system = _build_system_tool_repair_for_file(target_file)
+        user_parts = [
+            _build_output_language_prompt(output_language),
+            f"## Repair kind\n{repair_kind}",
+            "## Error / context\n```\n" + (error_context[-8000:] if error_context else "") + "\n```",
+        ]
+        if code_eval_report is not None:
+            user_parts.append(
+                "## Pre-render code_eval report\n```json\n"
+                + json.dumps(code_eval_report, ensure_ascii=False, indent=2)[:12000]
+                + "\n```"
+            )
+        user_parts.append(
+            f"## Scene file\nThe full code is on disk at `{target_file}` (relative to run_dir). "
+            "Edit it only via tools."
+        )
+        content: list = [{"type": "input_text", "text": "\n\n".join(user_parts)}]
+
+        try:
+            text, meta = self.client.generate_with_tool_loop(
+                system,
+                content,
+                tools=tools,
+                dispatch=dispatch,
+                max_iterations=max(1, int(getattr(ms, "tool_fix_max_iterations", 8))),
+            )
+        except Exception as exc:
+            meta.update(
+                {
+                    "stopped_reason": "tool_loop_exception",
+                    "fallback_required": True,
+                    "finish_summary": str(exc),
+                }
+            )
+            self._last_tool_fix_meta = dict(meta)
+            return None
+
+        inferred_stopped_reason = meta.get("stopped_reason")
+        if not inferred_stopped_reason and "fallback_required" in meta:
+            inferred_stopped_reason = "finish_repair"
+        meta = {
+            "stopped_reason": str(inferred_stopped_reason or "unknown"),
+            "fallback_required": bool(meta.get("fallback_required", False)),
+            "finish_summary": str(meta.get("finish_summary", meta.get("summary", ""))),
+            "tool_rounds": int(meta.get("tool_rounds", 0) or 0),
+            "tool_calls": int(meta.get("tool_calls", 0) or 0),
+        }
+        self._last_tool_fix_meta = dict(meta)
+        if meta.get("fallback_required"):
+            return None
+
+        if target.exists():
+            out = target.read_text(encoding="utf-8")
+            if out.strip():
+                return out
+
+        raw_text = (text or "").strip()
+        if raw_text:
+            extracted = _extract_code(raw_text)
+            if extracted.strip():
+                return extracted
+        return None
+
     def generate(
         self,
         request_text: str,
         image_path: Optional[Path] = None,
         teaching_plan: Optional[Dict] = None,
         output_language: str = "en",
+        *,
+        on_delta: LLMDeltaCallback | None = None,
     ) -> str:
         """Generate Manim code from a student request (text, optionally image)."""
         prompt_parts = [_build_output_language_prompt(output_language)]
@@ -1731,13 +2190,13 @@ class CodeGenAgent:
             prompt_parts.append(
                 "## Teaching plan\n" + json.dumps(teaching_plan, ensure_ascii=False, indent=2)
             )
+            prompt_parts.append(build_manim_skill_prompt(teaching_plan))
             prompt_parts.append(
                 "## Required teaching-plan execution\n"
-                "Turn the plan into actual teaching behavior. The opening must cash out the hook, teaching_promise, and opening plan. "
-                "Use `opening.style` to decide how the lesson starts, use `opening.hook_line` as the opening beat, and realize the lesson roadmap through `opening.roadmap_style` rather than a fixed template. "
-                "All roadmap styles must describe how this lesson will proceed; do not write empty slogans. "
-                "For each section, reflect teacher_move, answer student_question, include the concrete_example or visual_strategy, "
-                "and end with key_takeaway or check_for_understanding. Use the listed misconceptions to design at least one explicit "
+                "Turn the teaching plan into concrete teaching behavior. "
+                "For each section, reflect `teacher_move`, answer the section's `student_question`, "
+                "include the concrete example or visual strategy when provided, and end with `key_takeaway` "
+                "or `check_for_understanding`. Use listed misconceptions to create at least one explicit "
                 "'you may think X, but actually Y' correction moment. Use transitions so the lesson feels continuous rather than segmented."
             )
             opening_prompt = _build_opening_prompt(teaching_plan)
@@ -1747,29 +2206,14 @@ class CodeGenAgent:
             theme_prompt = _build_selected_theme_prompt(teaching_plan)
             if theme_prompt:
                 prompt_parts.append(theme_prompt)
-        prompt_parts.append(
-            "## Required output structure\n"
-            + _SCENE_PACK_OUTPUT_SUMMARY
-        )
+        prompt_parts.append("## Output structure\nFollow the Scene Pack contract exactly.")
         prompt_parts.append(
             "## Implementation priority\n"
-            "Plan each section as one or more stable pages. Compose each page before its first reveal. "
-            "Each page must have exactly one fitted body root named body1, body2, body3, and so on. "
-            "Use blocks as the page layout units, place those blocks explicitly inside that page's bodyN, and arrange leaf objects inside each block. "
-            "Each page must choose exactly one page-title style: either a long top title via `self.make_page_title(...)` / `self.fit_to_top_band(...)`, or a title chip via `self.show_page_title_chip(...)`. "
-            "Never use both title styles on the same page. "
-            "If a page uses the long top title style, show it explicitly in that page's first reveal beat and keep it visible until that page ends. "
-            "Do not place the page title inside bodyN. "
-            "Call `self.fit_body(bodyN, ...)` exactly once for that page's bodyN. Keep each page visually stable after it appears. "
-            + _ANCHOR_LIFECYCLE_HARD_RULES.replace("\n", " ")
-            + " "
-            "Use `next_to(...)` only for symbolic labels or non-text geometric overlays; all sentence-like teaching text must be real body blocks. "
-            "Respect font floors: titles >= 28, body sentence text >= 20, secondary explanatory text >= 18, formulas >= 24, symbolic labels >= 16. "
-            "If a layout would force text below those floors, reallocate space or split the page instead of shrinking further. "
-            "If a new persistent element would change the page structure, start a new page instead of repacking the current one. "
-            "Use teacher-like sequencing, self-drawn vector diagrams, and varied layouts chosen by content. "
-            "Reserve the bottom band for subtitles only, never show the short badge and the long title at the same time, "
-            "give sections informative titles rather than vague labels, and only use arrows/lines when they can be cleanly anchored to nearby objects."
+            "Plan each section as one or more stable pages and compose each page before its first reveal. "
+            "Use blocks as the teaching layout units, and choose layouts based on the content instead of defaulting to one repeated template. "
+            "Keep each page visually stable after it appears, and if the explanation needs a new persistent structure, move to a new page instead of repacking the old one. "
+            "Use teacher-like sequencing, self-drawn vector diagrams when helpful, and informative section titles rather than vague slogans. "
+            "Prioritize clean visual focus, readable density, and clear explanation flow over trying to fit everything onto one crowded screen."
         )
         content: list = [{"type": "input_text", "text": "\n\n".join(prompt_parts)}]
         if image_path and image_path.exists():
@@ -1777,8 +2221,35 @@ class CodeGenAgent:
                 "type": "input_image",
                 "image_url": _image_to_data_url(image_path),
             })
-        raw = self._call(_SYSTEM_GENERATE, content)
-        return _extract_code(raw)
+        streamed_raw = ""
+
+        def _codegen_stream_bridge(delta: str) -> None:
+            nonlocal streamed_raw
+            if not delta:
+                return
+            streamed_raw += delta
+            if on_delta is not None:
+                on_delta(delta)
+
+            sanitized = sanitize_streaming_code(streamed_raw)
+            restart_detected = sanitized != streamed_raw
+            if not restart_detected:
+                return
+            try:
+                spec = parse_scene_pack(sanitized)
+            except Exception:
+                return
+            if spec.manifest:
+                raise StreamTerminated()
+
+        raw = self._call(_SYSTEM_GENERATE, content, on_delta=_codegen_stream_bridge)
+        extracted = _extract_code(raw)
+        sanitized = sanitize_streaming_code(extracted)
+        try:
+            spec = parse_scene_pack(sanitized)
+        except Exception:
+            return extracted
+        return sanitized if spec.manifest else extracted
 
     def fix(self, code: str, error_log: str, output_language: str = "en") -> str:
         """Fix code that failed to render, given the error output."""
@@ -1786,6 +2257,8 @@ class CodeGenAgent:
             "type": "input_text",
             "text": (
                 _build_output_language_prompt(output_language)
+                + "\n\n"
+                + build_manim_skill_prompt()
                 + "\n\n"
                 f"## Original code\n```python\n{code}\n```\n\n"
                 f"## Render error\n```\n{error_log[-3000:]}\n```"
@@ -1805,6 +2278,8 @@ class CodeGenAgent:
             "type": "input_text",
             "text": (
                 _build_output_language_prompt(output_language)
+                + "\n\n"
+                + build_manim_skill_prompt()
                 + "\n\n"
                 + f"## Original code\n```python\n{code}\n```\n\n"
                 + "## Pre-render code_eval report\n```json\n"
@@ -1834,6 +2309,8 @@ class CodeGenAgent:
             "text": (
                 _build_output_language_prompt(output_language)
                 + "\n\n"
+                + build_manim_skill_prompt()
+                + "\n\n"
                 + f"## Target segment id\n{segment_id}\n\n"
                 + f"## Target method name\n{method_name}\n\n"
                 + f"## Scene manifest\n```python\n{manifest_source}\n```\n\n"
@@ -1859,6 +2336,56 @@ class CodeGenAgent:
             )
         if not updated_method_code:
             raise ValueError("Segment fix response did not include `updated_method_code`.")
+        return updated_method_code
+
+    def fix_segment_method_from_validation(
+        self,
+        *,
+        segment_id: str,
+        method_name: str,
+        manifest_source: str,
+        wrapper_scene_source: str,
+        section_method_source: str,
+        helper_method_sources: List[str],
+        validation_report: Dict,
+        output_language: str = "en",
+    ) -> str:
+        """Repair one section method from validation diagnostics and return the replacement def block."""
+        helpers_block = "\n\n".join(helper_method_sources).strip()
+        content: list = [{
+            "type": "input_text",
+            "text": (
+                _build_output_language_prompt(output_language)
+                + "\n\n"
+                + build_manim_skill_prompt()
+                + "\n\n"
+                + f"## Target segment id\n{segment_id}\n\n"
+                + f"## Target method name\n{method_name}\n\n"
+                + f"## Scene manifest\n```python\n{manifest_source}\n```\n\n"
+                + f"## Wrapper scene\n```python\n{wrapper_scene_source}\n```\n\n"
+                + f"## Target section method\n```python\n{section_method_source}\n```\n\n"
+                + (
+                    "## Read-only shared helper methods\n```python\n"
+                    + helpers_block
+                    + "\n```\n\n"
+                    if helpers_block
+                    else ""
+                )
+                + "## Validation report\n```json\n"
+                + json.dumps(validation_report, ensure_ascii=False, indent=2)
+                + "\n```"
+            ),
+        }]
+        raw = self._call(_SYSTEM_SEGMENT_VALIDATION_FIX, content)
+        payload = _extract_json_object(raw)
+        returned_name = str(payload.get("method_name", "")).strip()
+        updated_method_code = str(payload.get("updated_method_code", "")).strip()
+        if returned_name != method_name:
+            raise ValueError(
+                f"Validation fix returned method `{returned_name}`, expected `{method_name}`."
+            )
+        if not updated_method_code:
+            raise ValueError("Validation fix response did not include `updated_method_code`.")
         return updated_method_code
 
     def narrate(self, code: str, request_text: str, output_language: str = "en") -> List[str]:
@@ -1928,6 +2455,7 @@ class CodeGenAgent:
                 "## Teaching plan to preserve\n"
                 + json.dumps(teaching_plan, ensure_ascii=False, indent=2)
             )
+            prompt_parts.append(build_manim_skill_prompt(teaching_plan))
             opening_prompt = _build_opening_prompt(teaching_plan)
             if opening_prompt:
                 prompt_parts.append(opening_prompt)
@@ -1952,4 +2480,3 @@ class CodeGenAgent:
                     })
         raw = self._call(_SYSTEM_IMPROVE, content)
         return _extract_code(raw)
-

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from colortest.ai4learning_theme import THEMES, get_theme
+from plugins.manim.colortest.ai4learning_theme import THEMES, get_theme
 
 
 FALLBACK_THEME_ID = "soft_glass_white"

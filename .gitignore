@@ -12,6 +12,20 @@
 !/eval_pipeline/**
 !/icon/
 !/icon/**
+!/mcp_server/
+!/mcp_server/**
+!/remotion_renderer/
+!/remotion_renderer/**
+!/manim_mcp_http.py
+!/manim_mcp_runtime.py
+!/prompt_contract.py
+!/runtime_config.py
+
+# Re-ignore generated and vendored content under remotion renderer
+remotion_renderer/node_modules/
+remotion_renderer/.cache/
+remotion_renderer/.remotion/
+remotion_renderer/public/runtime/
 
 # Python caches and build artifacts
 __pycache__/

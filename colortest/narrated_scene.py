@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -10,10 +9,9 @@ from pathlib import Path
 import numpy as np
 
 from manim import *
-from agent_pipeline.tts import (
-    SCENE_TTS_RATE,
-    TTS_RATE_ENV,
-    TTS_VOICE_ENV,
+from plugins.manim.agent_pipeline.tts import (
+    get_scene_tts_rate,
+    get_scene_tts_voice,
     scene_tts_global_cache_path,
     scene_tts_round_cache_path,
 )
@@ -79,10 +77,10 @@ class NarratedScene(Scene):
         return scene_tts_round_cache_path(text)
 
     def _tts_global_cache_path(self, text: str) -> Path | None:
-        voice = os.environ.get(TTS_VOICE_ENV, "").strip()
+        voice = get_scene_tts_voice()
         if not voice:
             return None
-        rate = os.environ.get(TTS_RATE_ENV, SCENE_TTS_RATE).strip() or SCENE_TTS_RATE
+        rate = get_scene_tts_rate()
         return scene_tts_global_cache_path(text, voice, rate)
 
     def speak(self, text: str) -> float:
@@ -241,7 +239,15 @@ class NarratedScene(Scene):
             sync_fn(binding)
 
     def bind_to_block(self, mob, block, *, live=True):
-        """Bind a dependent mobject to a parent block's future scale/shift lifecycle."""
+        """
+        Low-level compatibility helper: bind an existing dependent mobject to a
+        parent block's future scale/shift lifecycle.
+
+        Prefer `build_on_anchor(...)` as the default public path for newly
+        generated persistent geometry leaves. Use `bind_to_block(...)` mainly
+        when repairing or adapting an already-created object that only needs to
+        inherit the parent block's transform lifecycle.
+        """
         if mob is None or block is None:
             return mob
 
@@ -312,10 +318,14 @@ class NarratedScene(Scene):
         **builder_kwargs,
     ):
         """
-        Keep an existing dependent mobject synchronized to live anchors by
-        rebuilding it from a builder callback.
+        Low-level repair helper: keep an existing dependent mobject
+        synchronized to anchors by rebuilding it from a builder callback.
 
         `builder` may be a callable or the name of a scene helper method.
+        Prefer `build_on_anchor(...)` for normal generation, where the object
+        should be created from anchor semantics from the start. Use
+        `bind_to_anchor(...)` mainly when the dependent mobject already exists
+        and now needs an explicit anchor lifecycle.
         Use `live=True` when the object must continue following moving anchors
         during visible animation. Use `live=False` when the object only needs
         to resync on explicit lifecycle events such as `fit_body(...)`.
@@ -348,10 +358,16 @@ class NarratedScene(Scene):
 
     def build_on_anchor(self, builder, *builder_args, live=False, **builder_kwargs):
         """
-        Build dependent geometry from anchors and keep it synchronized.
+        Default public path: build dependent geometry from anchors and keep it
+        synchronized.
 
         Example:
             secant = self.build_on_anchor("secant_segment_on_axes", axes, 2.9, 3.1)
+
+        Use this for persistent geometry leaves that should not merely float as
+        detached `Line` / `Dot` / `axes.plot(...)` objects. The builder should
+        consume the current on-screen anchor(s) and return only the dependent
+        geometry for that anchor state.
 
         By default this registers a non-live anchor binding, which is intended
         for layout stability after `fit_body(...)` / `fit_to_top_band(...)`.

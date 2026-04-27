@@ -71,8 +71,8 @@ Review the Python code ONLY against these three rules:
 - Report an `error` when there is strong code evidence that anchor-dependent
   non-text geometry will be left behind, detached from the fitted block, or
   rebuilt from a stale/pre-fit anchor state without being structurally included
-  in the fitted block or explicitly synchronized with `bind_to_block(...)`,
-  `build_on_anchor(...)`, or `bind_to_anchor(...)`.
+  in the fitted block or created through a local builder plus
+  `build_on_anchor(...)`.
 - Strong signals for anchor-dependent non-text geometry include code built from:
   - `axes.c2p(...)`, `coords_to_point(...)`, `n2p(...)`
   - `get_center()`, `get_corner(...)`, `get_edge_center(...)`, `get_top()`,
@@ -83,28 +83,32 @@ Review the Python code ONLY against these three rules:
 - Treat these as accepted lifecycle patterns:
   1. the dependent geometry is a structural child of the fitted block before
      `fit_body(...)`
-  2. it is created after the fitted parent reaches final position and then
-     explicitly synchronized with `bind_to_block(...)`, `build_on_anchor(...)`,
-     or `bind_to_anchor(...)`
+  2. it is created through `build_on_anchor(...)`, preferably from a small
+     local semantic builder that consumes the fitted on-screen anchor
   3. it is morphed in place from an already fitted object identity
 - Also treat these as generally safe and do NOT flag them:
   - geometry built after `fit_body(...)` from the same already-fitted on-screen
-    anchor instance and then explicitly bound
+    anchor instance and then created through `build_on_anchor(...)`
   - `Transform(...)` or `transform_in_place(...)` targets that are temporary and
     clearly used only to morph an already visible object
   - `transform_in_place(...)` used to replace the appearance of an already
     fitted on-screen object while keeping the same layout slot
   - tuple-unpack placeholders such as `_`
   - helper return values that are unpacked but only some items are persistent,
-    when the actually persistent items are correctly bound or structurally owned
+    when the actually persistent items are created through `build_on_anchor(...)`
+    or are structurally owned
 - Report this rule when the code strongly suggests patterns like:
   - create secant/tangent/dot/arrow/rectangle from an anchor before `fit_body`
-    but do not include it in the fitted block and do not bind it before the fit
+    but do not include it in the fitted block and do not rebuild it through
+    `build_on_anchor(...)`
   - after `fit_body(...)`, rebuild geometry from a stale pre-fit anchor copy or
     from a second detached helper-built layout state, then show or transform it
     as if it belonged to the fitted block
   - create a persistent dependent overlay after `fit_body(...)` and never add
-    it to the fitted structure and never bind it
+    it to the fitted structure and never rebuild it through `build_on_anchor(...)`
+- Keep `bind_to_block(...)` and `bind_to_anchor(...)` as compatibility signals
+  for older code, but do not treat them as the preferred generation pattern
+  when proposing or judging the intended fix direction.
 - Do NOT flag mere temporary transform targets, tuple-unpack placeholders such
   as `_`, or objects that are clearly transient and not persistent page content.
 - Be conservative. If lifecycle intent is ambiguous, do not flag it.
@@ -230,7 +234,7 @@ class CodeEvalAgent:
         self,
         api_key: str | LLMConfig,
         base_url: str = "https://api2.tabcode.cc/openai",
-        model: str = "gpt-5.4",
+        model: str = "gpt-4o",
     ):
         if isinstance(api_key, LLMConfig):
             llm_config = api_key

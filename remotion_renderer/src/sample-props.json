@@ -1,0 +1,45 @@
+{
+  "meta": {
+    "request": "Explain why a tangent line approximates a curve locally.",
+    "lessonGoal": "Why a tangent is a good local approximation",
+    "delivery": "hybrid-remotion-mvp"
+  },
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "theme": {
+    "visualTone": "modern classroom explainer",
+    "accent": "#7C3AED",
+    "accent2": "#22D3EE",
+    "background": "#0F172A",
+    "panelBackground": "rgba(15, 23, 42, 0.72)",
+    "fontFamily": "Inter, Arial, sans-serif"
+  },
+  "captions": [],
+  "segments": [
+    {
+      "id": "intro_card",
+      "type": "title_card",
+      "durationInFrames": 90,
+      "title": "Tangent lines, visually",
+      "body": "A hybrid package can make the lesson feel cleaner and more modern.",
+      "bullets": [
+        "Start with a clear promise",
+        "Let Manim handle the math",
+        "Use Remotion for polish"
+      ]
+    },
+    {
+      "id": "summary_card",
+      "type": "summary_card",
+      "durationInFrames": 120,
+      "title": "MVP summary",
+      "body": "This sample render proves the Remotion wrapper is wired in.",
+      "bullets": [
+        "Intro card works",
+        "Outro card works",
+        "Core video drops in later"
+      ]
+    }
+  ]
+}
