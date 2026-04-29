@@ -62,7 +62,6 @@ class ManimToolRuntime:
         *,
         start_line: Optional[int] = None,
         end_line: Optional[int] = None,
-        max_chars: int = 120_000,
     ) -> ToolResult:
         try:
             target = _safe_join(self._root, path)
@@ -79,8 +78,6 @@ class ManimToolRuntime:
                     text = "".join(line_list[s - 1 : e])
             else:
                 text = raw
-            if len(text) > max_chars:
-                text = text[:max_chars] + f"\n... [truncated, max_chars={max_chars}]"
             nlines = len(raw.splitlines()) if raw else 0
             return ToolResult(
                 True,

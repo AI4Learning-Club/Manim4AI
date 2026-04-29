@@ -11,7 +11,7 @@ from .llm import LLMClient, LLMConfig
 _SYSTEM_CODE_EVAL = """\
 You are a strict pre-render code evaluator for AI4Learning Manim scenes.
 
-Review the Python code ONLY against these three rules:
+Review the Python code ONLY against these four rules:
 
 1. `body_membership_post_fit`
 - After `self.fit_body(bodyN, ...)`, any newly created persistent sentence-like
@@ -113,8 +113,33 @@ Review the Python code ONLY against these three rules:
   as `_`, or objects that are clearly transient and not persistent page content.
 - Be conservative. If lifecycle intent is ambiguous, do not flag it.
 
+4. `block_overlap_risk`
+- Review page-level body composition for high-confidence overlap or crowding
+  risks that are visible from the code before rendering.
+- Report an `error` when code strongly indicates one of these patterns:
+  - two or more sentence-like text/panel blocks are attached with `next_to(...)`
+    to the same anchor and same side with tiny spacing
+  - a note, takeaway, prompt, formula explanation, or paragraph-like object is
+    created after `fit_body(...)` and then positioned by `next_to(...)`,
+    `move_to(...)`, `to_edge(...)`, `to_corner(...)`, or `align_to(...)`
+  - page-level blocks use extremely small `arrange(..., buff=...)` spacing
+    to squeeze text/diagram/formula regions together
+  - content is placed manually into the subtitle band or near the bottom edge
+    with absolute coordinates such as `move_to(DOWN * ...)`
+  - long text is placed inside a dense shape or graphic instead of a separate
+    body block/panel
+- Report a `warning` only for mild symbolic-label crowding where the label is
+  still probably readable.
+- Do NOT report this rule for intentional internal graph overlays such as a
+  curve inside axes, dots on a graph, a label inside a large clean panel, or
+  staged temporary transform targets.
+- Good fixes include increasing body-block spacing, folding loose text into
+  the preplanned `bodyN`, choosing different anchor sides for local labels,
+  rebuilding as separate body blocks, or splitting the teaching beat into a
+  new page.
+
 Important evaluation discipline:
-- Focus ONLY on these three rules.
+- Focus ONLY on these four rules.
 - Prefer precision over recall. Missing a weak or ambiguous issue is better than
   inventing a shaky one.
 - Do NOT invent issues just because you would prefer a different layout.
@@ -135,9 +160,10 @@ Review procedure:
    - persistent teaching text
    - symbolic local labels
    - persistent anchor-dependent non-text geometry
-3. For each candidate object, determine whether the code shows a safe ownership
-   or synchronization pattern.
-4. Report only high-confidence violations of the three rules above.
+   - page-level body blocks and late-positioned loose objects
+3. For each candidate object, determine whether the code shows a safe ownership,
+   synchronization, and non-overlapping layout pattern.
+4. Report only high-confidence violations of the four rules above.
 
 Output schema:
 {
@@ -145,7 +171,7 @@ Output schema:
   "summary": "short summary",
   "issues": [
     {
-      "rule_id": "body_membership_post_fit | symbolic_label_overlap_risk | non_text_anchor_lifecycle",
+      "rule_id": "body_membership_post_fit | symbolic_label_overlap_risk | non_text_anchor_lifecycle | block_overlap_risk",
       "severity": "error | warning",
       "body_name": "bodyN or empty string",
       "object_name": "variable name or empty string",
@@ -193,6 +219,7 @@ def _normalize_issue(issue: Dict[str, Any]) -> Dict[str, Any]:
         "body_membership_post_fit",
         "symbolic_label_overlap_risk",
         "non_text_anchor_lifecycle",
+        "block_overlap_risk",
         "non_text_anchor_binding",
         "dependent_overlay_anchor_binding",
     }:

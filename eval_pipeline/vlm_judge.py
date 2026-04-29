@@ -24,10 +24,20 @@ from typing import Dict, List, Optional  # noqa: F811 鈥?Optional used for vide
 from .config import VLMConfig
 from .cv_features import SegmentFeatures
 from .utils import make_openai_client
+from plugins.manim.agent_pipeline.llm import effective_manim_stage_timeout_sec
 from plugins.manim.runtime_config import get_manim_settings
 
 
 VLM_SEGMENT_MAX_WORKERS = max(1, get_manim_settings().eval_vlm_segment_workers)
+SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+
+
+def _vlm_http_timeout(vlm_cfg: VLMConfig) -> float:
+    eval_llm = get_manim_settings().llm.eval
+    return effective_manim_stage_timeout_sec(
+        reasoning_effort=vlm_cfg.reasoning_effort,
+        timeout_sec_override=eval_llm.timeout_sec,
+    )
 
 
 def _require_api_key(vlm_cfg: VLMConfig, *, context: str) -> str:
@@ -38,6 +48,38 @@ def _require_api_key(vlm_cfg: VLMConfig, *, context: str) -> str:
         f"No API key provided for {context}. "
         "Configure settings.toml at [manim.llm.eval].api_key or pass --api-key."
     )
+
+
+def _normalize_reasoning_effort(reasoning_effort: str | None) -> str | None:
+    normalized = (reasoning_effort or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized in SUPPORTED_REASONING_EFFORTS:
+        return normalized
+    return None
+
+
+def _apply_responses_fallbacks(request_kwargs: Dict[str, Any], error_message: str) -> bool:
+    retry = False
+    lowered = error_message.lower()
+
+    if "Unsupported parameter" in error_message and "service_tier" in error_message:
+        retry = request_kwargs.pop("service_tier", None) is not None or retry
+
+    if "Unsupported parameter" in error_message and "reasoning" in error_message:
+        retry = request_kwargs.pop("reasoning", None) is not None or retry
+
+    reasoning = request_kwargs.get("reasoning")
+    if (
+        isinstance(reasoning, dict)
+        and reasoning.get("effort") == "xhigh"
+        and "xhigh" in lowered
+        and ("unsupported" in lowered or "invalid" in lowered)
+    ):
+        request_kwargs["reasoning"] = {"effort": "high"}
+        retry = True
+
+    return retry
 
 
 # =====================================================================
@@ -130,6 +172,16 @@ Check EVERY keyframe for overlap / occlusion / rendering issues:
 - Elements extending beyond the visible canvas (truncated / cut off)
 - Garbled text, duplicated formula fragments, broken LaTeX
 
+For each overlap issue, also classify the visible failure so the repair agent
+can act locally:
+- `overlap_kind`:
+  `text_text`, `text_shape`, `text_graph`, `formula_formula`,
+  `subtitle_collision`, `canvas_truncation`, `garbled_render`, or `other`
+- `repair_action`:
+  `increase_spacing`, `separate_body_blocks`, `split_page`,
+  `move_out_of_subtitle_band`, `anchor_label_elsewhere`,
+  `shorten_or_reflow_text`, `remove_dense_shape_text`, or `rerender_fix`
+
 2. anchor_binding_review
 Check EVERY keyframe for anchor-binding mistakes: annotations that do not
 actually point to, cover, or stay attached to the thing they claim to reference.
@@ -158,6 +210,8 @@ Return JSON only with exactly this shape:
       {
         "frame_index": <int>,
         "description": "<what's wrong>",
+        "overlap_kind": "text_text | text_shape | text_graph | formula_formula | subtitle_collision | canvas_truncation | garbled_render | other",
+        "repair_action": "increase_spacing | separate_body_blocks | split_page | move_out_of_subtitle_band | anchor_label_elsewhere | shorten_or_reflow_text | remove_dense_shape_text | rerender_fix",
         "severity": "minor" | "moderate" | "severe"
       }
     ],
@@ -258,6 +312,26 @@ def _normalize_overlap_issues(raw_issues: Any) -> List[Dict[str, Any]]:
         return issues
 
     allowed_severity = {"minor", "moderate", "severe"}
+    allowed_overlap_kind = {
+        "text_text",
+        "text_shape",
+        "text_graph",
+        "formula_formula",
+        "subtitle_collision",
+        "canvas_truncation",
+        "garbled_render",
+        "other",
+    }
+    allowed_repair_action = {
+        "increase_spacing",
+        "separate_body_blocks",
+        "split_page",
+        "move_out_of_subtitle_band",
+        "anchor_label_elsewhere",
+        "shorten_or_reflow_text",
+        "remove_dense_shape_text",
+        "rerender_fix",
+    }
     for item in raw_issues:
         if not isinstance(item, dict):
             continue
@@ -267,6 +341,12 @@ def _normalize_overlap_issues(raw_issues: Any) -> List[Dict[str, Any]]:
         severity = str(item.get("severity", "moderate")).strip().lower()
         if severity not in allowed_severity:
             severity = "moderate"
+        overlap_kind = str(item.get("overlap_kind", "other")).strip().lower()
+        if overlap_kind not in allowed_overlap_kind:
+            overlap_kind = "other"
+        repair_action = str(item.get("repair_action", "")).strip().lower()
+        if repair_action not in allowed_repair_action:
+            repair_action = _default_overlap_repair_action(overlap_kind)
         try:
             frame_index = int(item.get("frame_index", -1))
         except (TypeError, ValueError):
@@ -275,10 +355,25 @@ def _normalize_overlap_issues(raw_issues: Any) -> List[Dict[str, Any]]:
             {
                 "frame_index": frame_index,
                 "description": description,
+                "overlap_kind": overlap_kind,
+                "repair_action": repair_action,
                 "severity": severity,
             }
         )
     return issues
+
+
+def _default_overlap_repair_action(overlap_kind: str) -> str:
+    return {
+        "text_text": "increase_spacing",
+        "text_shape": "separate_body_blocks",
+        "text_graph": "separate_body_blocks",
+        "formula_formula": "split_page",
+        "subtitle_collision": "move_out_of_subtitle_band",
+        "canvas_truncation": "shorten_or_reflow_text",
+        "garbled_render": "rerender_fix",
+        "other": "separate_body_blocks",
+    }.get(overlap_kind, "separate_body_blocks")
 
 
 def _normalize_anchor_binding_issues(raw_issues: Any) -> List[Dict[str, Any]]:
@@ -337,7 +432,7 @@ def review_whole_video_visual_keyframes(
 
     api_key = _require_api_key(vlm_cfg, context="whole-video visual review")
 
-    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=120.0)
+    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=_vlm_http_timeout(vlm_cfg))
 
     content: list = [{"type": "input_text", "text": WHOLE_VIDEO_VISUAL_REVIEW_PROMPT}]
     content.append({
@@ -577,7 +672,7 @@ def review_segments(
             client = make_openai_client(
                 api_key=api_key,
                 base_url=vlm_cfg.base_url,
-                timeout=120.0,
+                timeout=_vlm_http_timeout(vlm_cfg),
             )
             client_local.client = client
         return client
@@ -716,7 +811,7 @@ def review_av_alignment(
 
     api_key = _require_api_key(vlm_cfg, context="AV alignment review")
 
-    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=180.0)
+    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=_vlm_http_timeout(vlm_cfg))
 
     # Build content 鈥?prefer video (MLLM can hear audio)
     content: list = [{"type": "input_text", "text": AV_ALIGNMENT_PROMPT}]
@@ -889,7 +984,7 @@ def review_task_correctness(
 
     api_key = _require_api_key(vlm_cfg, context="task correctness review")
 
-    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=180.0)
+    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=_vlm_http_timeout(vlm_cfg))
 
     # Build teaching plan summary for prompt
     plan_text = ""
@@ -978,23 +1073,23 @@ def _call_vlm(client, vlm_cfg: VLMConfig, content: list) -> str:
     stream_kwargs = {
         "model": vlm_cfg.model,
         "input": [{"role": "user", "content": content}],
-        "max_output_tokens": vlm_cfg.max_tokens,
-        # Official Responses API parameter; some gateways may not support it.
-        "service_tier": "priority",
     }
-    try:
-        with client.responses.stream(**stream_kwargs) as stream:
-            return stream.get_final_response().output_text.strip()
-    except Exception as exc:
-        message = str(exc)
-        if "Unsupported parameter" in message and "service_tier" in message:
-            try:
-                stream_kwargs.pop("service_tier", None)
-                with client.responses.stream(**stream_kwargs) as stream:
-                    return stream.get_final_response().output_text.strip()
-            except Exception as retry_exc:
-                return f"API_ERROR: {retry_exc}"
-        return f"API_ERROR: {exc}"
+    if (vlm_cfg.provider or "").strip().lower() == "openai":
+        stream_kwargs["service_tier"] = "priority"
+    reasoning_effort = _normalize_reasoning_effort(vlm_cfg.reasoning_effort)
+    if reasoning_effort is not None:
+        stream_kwargs["reasoning"] = {"effort": reasoning_effort}
+
+    last_error: Exception | None = None
+    for _ in range(3):
+        try:
+            with client.responses.stream(**stream_kwargs) as stream:
+                return stream.get_final_response().output_text.strip()
+        except Exception as exc:
+            last_error = exc
+            if not _apply_responses_fallbacks(stream_kwargs, str(exc)):
+                return f"API_ERROR: {exc}"
+    return f"API_ERROR: {last_error}"
 
 
 # =====================================================================
@@ -1035,7 +1130,7 @@ def review_visual_coverage(
 
     api_key = _require_api_key(vlm_cfg, context="visual coverage review")
 
-    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=180.0)
+    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=_vlm_http_timeout(vlm_cfg))
 
     # Build plan summary
     plan_text = "Teaching Plan Sections:\n"
@@ -1142,7 +1237,7 @@ def review_semantic_coherence(
 
     api_key = _require_api_key(vlm_cfg, context="semantic coherence review")
 
-    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=180.0)
+    client = make_openai_client(api_key=api_key, base_url=vlm_cfg.base_url, timeout=_vlm_http_timeout(vlm_cfg))
 
     content: list = [{"type": "input_text", "text": SEMANTIC_COHERENCE_PROMPT}]
 

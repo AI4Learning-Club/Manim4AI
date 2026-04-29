@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 from plugins.manim.runtime_config import get_manim_settings
 
 from .agent_skills import build_manim_skill_prompt
-from .llm import LLMClient, LLMConfig, LLMDeltaCallback, StreamTerminated
+from .llm import LLMClient, LLMConfig, LLMDeltaCallback, LLMEventCallback, StreamTerminated
 from .output_language import normalize_output_language, output_language_name
 from .scene_pack import parse_scene_pack
 from .streaming_scene_pack import sanitize_streaming_code
@@ -428,6 +428,18 @@ PAGE / BODY AUTHORING CONTRACT:
   `left_col`, `right_col`, `graph_block`, `formula_block`, or `note_block`.
 - Inner sub-blocks may be arranged locally, but they must NOT be fitted
   independently.
+- Direct children of `bodyN` are layout blocks. They must have visible spacing
+  between their bounding boxes after arrangement.
+- For generated page-level blocks, use `arrange(..., buff>=0.14)` as a hard
+  minimum. A smaller buff is allowed only for tiny symbolic labels inside a
+  dedicated graph/diagram block, never for paragraph text, formulas, panels,
+  or body columns.
+- Do NOT attach multiple text/panel objects to the same side of the same anchor
+  with repeated `next_to(..., same_side, buff=...)`. Build a small arranged
+  label group, choose different anchor sides, or move the text into a body
+  block.
+- Do NOT place sentence-like text inside dense shapes or graph regions. Put
+  the shape/diagram in one block and the explanation in a separate nearby block.
 - Call `self.fit_body(bodyN, ...)` exactly once per page, and only on that
   page's unique `bodyN`.
 - Do NOT define or use secondary fitted body helpers for page sub-blocks.
@@ -468,6 +480,10 @@ PAGE / BODY AUTHORING CONTRACT:
   upper half is crowded. Expand downward or split into the next page.
 - After a page starts, do NOT refit or reposition the whole page. If a new
   persistent element would change the page structure, start a new page instead.
+- `self.fit_body(bodyN, ...)` aggressively separates overlapping top-level
+  body blocks by default. Treat this as a final guardrail, not as permission
+  to write crowded layouts. If a page only works because this guardrail moves
+  blocks apart, simplify the page or split it.
 
 Correct / incorrect examples:
 
@@ -689,9 +705,31 @@ sentences from this prompt verbatim.
 
 Before writing any code, plan a multi-step teaching flow:
 
-STEP 1 - OPENING HOOK (5-10 seconds):
+STEP 1 - OPENING READ-IN + HOOK (5-10 seconds):
   What is the problem?  Why should the student care?
   The opening must feel lesson-specific, not like a reusable stock intro.
+  If the request is a concrete exercise, proof, calculation, geometry problem,
+  or image-based problem, the first spoken beat MUST read
+  `problem_intake.restatement` in concise student-friendly language. Keep it to
+  1-2 short sentences.
+  If the request is a concrete exercise, proof, calculation, geometry problem,
+  or image-based problem, the first visual beat MUST be a problem-intake beat:
+  briefly restate or analyze the problem in student-friendly language, separate
+  givens from the target, and mark the key information before the solution
+  begins. Use a concise problem card or reconstructed题面 card; do not copy a
+  long prompt verbatim if only selected conditions are needed.
+  For multi-part problems, the compact reconstructed题面 card must cover every
+  sub-question before structural explanation begins.
+  Animate the marking sequentially with theme-safe circles/ellipses, outline
+  rectangles, underlines, arrows, braces, color highlights, or small callout
+  labels. Mark the givens, the target question, and the important variable or
+  diagram relation before revealing derivation steps.
+  Only after the concise read-in and marking setup should the next narration
+  beat cash out `opening.hook_line`.
+  If the restatement already embeds that question naturally, keep the hook as
+  the second beat or merge it cleanly, but never let the hook replace the read-in.
+  Do NOT open with meta commentary, strategy slogans, or lines such as
+  “先别急着算” before the concise read-in.
   Every lesson still needs a roadmap, but the roadmap must match THIS lesson
   rather than falling back to a stock outline.
   Valid roadmap styles include:
@@ -749,6 +787,9 @@ FINAL STEP - CONCLUSION (5-8 seconds):
 
 TEACHER-LIKE DELIVERY RULES:
 - Open with the student's confusion, not the formal definition.
+- For problem-solving videos, open by reading the problem like a teacher:
+  "题目给了什么？要我们求什么？哪几个词或图形关系最关键？" Then visually mark
+  those items before the first algebraic or geometric move.
 - Before any abstract formula, first give the student a visible or causal picture.
 - At least twice in the video, let the narration ask the student to predict,
     compare, or notice something before giving the answer.
@@ -933,7 +974,7 @@ VECTOR DIAGRAM RULES:
     into the explanation panel.
 
 AVAILABLE LAYOUT HELPERS (already defined on AI4LearningBaseScene):
-- `self.fit_body(body, max_width=12, max_height=None, center=None)`
+- `self.fit_body(body, max_width=12, max_height=None, center=None, resolve_overlaps=True)`
 - `self.make_page_title("Title", font_size=34, max_width=11.4)`
 - `self.show_page_title_chip("Title")`
 - `self.fit_to_top_band(group, max_width=11.8, max_height=None, center=None)`
@@ -1306,6 +1347,10 @@ Repair discipline:
 - For drifting or detached geometry leaves, prefer a local builder plus
   `self.build_on_anchor(...)` instead of patching with ad-hoc shifts or adding
   another detached object.
+- For overlap validation issues, rebuild the affected page block instead of
+  nudging elements by eye: increase page-level `arrange` buffers to at least
+  0.14, fold loose text into the preplanned `bodyN`, group repeated same-side
+  labels, and split the page when readable font floors would otherwise fail.
 - Do NOT return the whole file.
 
 Output JSON ONLY:
@@ -1344,7 +1389,7 @@ You MUST follow these layout contracts while fixing:
     + _GEOMETRY_ANCHOR_PROTOCOL
     + """
 
-Focus only on these three code-eval categories:
+Focus only on these four code-eval categories:
 - `body_membership_post_fit`:
   move late persistent sentence-like objects or panels into the correct `bodyN`
   BEFORE the page's `self.fit_body(bodyN, ...)`.
@@ -1358,6 +1403,11 @@ Focus only on these three code-eval categories:
   For replacement / transform targets, give the target a FULL anchor position.
   Do not rely on only one-axis placement such as a bare `align_to(..., LEFT)`
   or `match_x(...)` when the other axis is not clearly fixed.
+- `block_overlap_risk`:
+  rebuild the affected page-level body composition so direct body children have
+  enough spacing, loose text is folded into `bodyN`, repeated same-side labels
+  are grouped or moved to different sides, and dense content is split across
+  pages when spacing would otherwise violate font floors.
 
 Repair discipline:
 - Make the smallest defensible change that removes the flagged issue.
@@ -1369,6 +1419,9 @@ Repair discipline:
 - For `non_text_anchor_lifecycle`, prefer rewriting detached geometry leaves as
   a local builder plus `self.build_on_anchor(...)` instead of introducing a new
   detached pre-fit object.
+- For `block_overlap_risk`, do not patch with arbitrary `.shift(...)` nudges.
+  Rebuild the local block with `Group(...).arrange(..., buff>=0.14)`, then call
+  one `self.fit_body(bodyN, ...)`; if it still feels crowded, split the page.
 - Keep all changes inside the existing segment methods unless a broken Scene Pack
   reference forces a minimal consistency repair.
 
@@ -1750,9 +1803,18 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
             severity = str(issue.get("severity", "high")).strip()
             tr = str(issue.get("time_range", "")).strip()
             conf = issue.get("confidence", issue.get("vlm_confidence"))
+            overlap_kind = str(issue.get("overlap_kind", "")).strip()
+            repair_action = str(issue.get("repair_action", "")).strip()
+            metadata = ""
+            if overlap_kind or repair_action:
+                metadata = (
+                    f"  -> Overlap kind: {overlap_kind or 'unspecified'}; "
+                    f"repair action: {repair_action or 'rebuild affected local block'}.\n"
+                )
             lines.append(
                 f"- HARD BUG ({severity}, confidence={conf}): {desc}\n"
                 f"  -> Time range: {tr}\n"
+                f"{metadata}"
                 "  -> FIX: repair this concrete bug locally. Rebuild only the affected block/page if necessary, while preserving the overall teaching flow. "
                 "If the bug is a drifting geometry leaf, prefer a local builder plus `build_on_anchor(...)`.\n"
             )
@@ -1764,9 +1826,18 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
             severity = str(issue.get("severity", "medium")).strip()
             tr = str(issue.get("time_range", "")).strip()
             conf = issue.get("confidence", issue.get("vlm_confidence"))
+            overlap_kind = str(issue.get("overlap_kind", "")).strip()
+            repair_action = str(issue.get("repair_action", "")).strip()
+            metadata = ""
+            if overlap_kind or repair_action:
+                metadata = (
+                    f"  -> Overlap kind: {overlap_kind or 'unspecified'}; "
+                    f"repair action: {repair_action or 'local spacing polish'}.\n"
+                )
             lines.append(
                 f"- SOFT NOTE ({severity}, confidence={conf}): {desc}\n"
                 f"  -> Time range: {tr}\n"
+                f"{metadata}"
                 "  -> FIX: apply only local polish such as spacing, alignment, shortening text slightly, or repositioning arrows/labels.\n"
                 "  -> Do NOT split pages, repack the whole layout, or rewrite the lesson structure because of this note.\n"
             )
@@ -1818,16 +1889,60 @@ def _build_opening_prompt(teaching_plan: Optional[Dict]) -> str:
         "hook_line": hook_line,
         "roadmap_style": roadmap_style,
     }
+    problem_intake = teaching_plan.get("problem_intake")
+    is_problem_solving = isinstance(problem_intake, dict) and bool(problem_intake.get("is_problem_solving"))
 
-    return (
+    prompt = (
         "## Opening plan for this lesson\n"
         + json.dumps(opening_summary, ensure_ascii=False, indent=2)
         + "\n\nThis opening plan is already fixed for the lesson.\n"
         + "- The opening must follow `opening.style`.\n"
-        + "- The first spoken or visual beat should cash out `opening.hook_line`.\n"
         + "- The lesson roadmap must follow `opening.roadmap_style`.\n"
         + "- Every roadmap style must explain how THIS lesson will proceed.\n"
         + "- Do NOT write empty slogans or generic motivation lines.\n"
+    )
+    if is_problem_solving:
+        prompt += (
+            "- Because this is a problem-solving lesson, `opening.hook_line` belongs AFTER the concise read-in and opening marking beat.\n"
+            "- Treat `opening.hook_line` as the second narration question beat unless the restatement already contains it.\n"
+            "- Do NOT lead with a meta strategy slogan or hook before the concise read-in.\n"
+        )
+    else:
+        prompt += "- The first spoken or visual beat should cash out `opening.hook_line`.\n"
+    return prompt
+
+
+def _build_problem_intake_prompt(teaching_plan: Optional[Dict]) -> str:
+    if not teaching_plan:
+        return ""
+
+    problem_intake = teaching_plan.get("problem_intake")
+    if not isinstance(problem_intake, dict):
+        return ""
+
+    summary = {
+        "is_problem_solving": problem_intake.get("is_problem_solving"),
+        "restatement": problem_intake.get("restatement"),
+        "givens": problem_intake.get("givens"),
+        "target": problem_intake.get("target"),
+        "key_terms": problem_intake.get("key_terms"),
+        "visual_marking_plan": problem_intake.get("visual_marking_plan"),
+    }
+
+    return (
+        "## Problem-intake plan for this lesson\n"
+        + json.dumps(summary, ensure_ascii=False, indent=2)
+        + "\n\nUse this problem-intake plan to shape the opening.\n"
+        + "- If `is_problem_solving` is true, the first `speak_with_subtitle(...)` beat in `opening_page()` must read `problem_intake.restatement` in 1-2 concise student-language sentences.\n"
+        + "- If `is_problem_solving` is true, do NOT lead with strategy commentary, generic motivation, or `opening.hook_line` before that read-in.\n"
+        + "- If `is_problem_solving` is true, show a compact problem card or reconstructed题面 card before solving.\n"
+        + "- If `is_problem_solving` is true and the problem has multiple sub-questions, the compact reconstructed题面 card must cover each sub-question before structural explanation begins.\n"
+        + "- If `is_problem_solving` is true, visually mark givens, target, key terms, variables, or diagram relations before the first derivation.\n"
+        + "- If `is_problem_solving` is true, the opening order is: concise restatement -> visual marking -> `opening.hook_line` -> roadmap/structure.\n"
+        + "- If `is_problem_solving` is false, use this only as a short topic-intake: restate the learner's central question and highlight key terms without inventing a fake exercise.\n"
+        + "- Use sequential circles/ellipses, outline boxes, underlines, arrows, braces, color highlights, or callout labels.\n"
+        + "- Keep markings attached to the exact text, formula part, or diagram relation they explain; do not place decorative floating marks.\n"
+        + "- If the original problem is long, display only the essential clauses and clearly label them as 已知 / 要求 / 关键关系.\n"
     )
 
 
@@ -1996,16 +2111,26 @@ class CodeGenAgent:
         max_retries: int = 3,
         *,
         on_delta: LLMDeltaCallback | None = None,
+        on_event: LLMEventCallback | None = None,
     ) -> str:
         import time as _time
         for attempt in range(max_retries):
             try:
-                text = self.client.generate_text(
-                    system,
-                    user_content,
-                    max_retries=1,
-                    on_delta=on_delta,
-                )
+                if on_event is None:
+                    text = self.client.generate_text(
+                        system,
+                        user_content,
+                        max_retries=1,
+                        on_delta=on_delta,
+                    )
+                else:
+                    text = self.client.generate_text(
+                        system,
+                        user_content,
+                        max_retries=1,
+                        on_delta=on_delta,
+                        on_event=on_event,
+                    )
                 if text.strip():
                     return text.strip()
                 raise TimeoutError("Empty response from API")
@@ -2182,6 +2307,7 @@ class CodeGenAgent:
         output_language: str = "en",
         *,
         on_delta: LLMDeltaCallback | None = None,
+        on_event: LLMEventCallback | None = None,
     ) -> str:
         """Generate Manim code from a student request (text, optionally image)."""
         prompt_parts = [_build_output_language_prompt(output_language)]
@@ -2194,6 +2320,9 @@ class CodeGenAgent:
             prompt_parts.append(
                 "## Required teaching-plan execution\n"
                 "Turn the teaching plan into concrete teaching behavior. "
+                "If `problem_intake.is_problem_solving` is true, make the first narration beat the concise `problem_intake.restatement`, then convert it into the opening visual-marking beat before solving. "
+                "After that opening read-in + marking sequence, let `opening.hook_line` become the next question beat unless the restatement already contains it. "
+                "If it is false, use it only as a short topic-intake beat. "
                 "For each section, reflect `teacher_move`, answer the section's `student_question`, "
                 "include the concrete example or visual strategy when provided, and end with `key_takeaway` "
                 "or `check_for_understanding`. Use listed misconceptions to create at least one explicit "
@@ -2202,6 +2331,9 @@ class CodeGenAgent:
             opening_prompt = _build_opening_prompt(teaching_plan)
             if opening_prompt:
                 prompt_parts.append(opening_prompt)
+            problem_intake_prompt = _build_problem_intake_prompt(teaching_plan)
+            if problem_intake_prompt:
+                prompt_parts.append(problem_intake_prompt)
             prompt_parts.append(_build_local_asset_prompt(teaching_plan))
             theme_prompt = _build_selected_theme_prompt(teaching_plan)
             if theme_prompt:
@@ -2242,7 +2374,12 @@ class CodeGenAgent:
             if spec.manifest:
                 raise StreamTerminated()
 
-        raw = self._call(_SYSTEM_GENERATE, content, on_delta=_codegen_stream_bridge)
+        raw = self._call(
+            _SYSTEM_GENERATE,
+            content,
+            on_delta=_codegen_stream_bridge,
+            on_event=on_event,
+        )
         extracted = _extract_code(raw)
         sanitized = sanitize_streaming_code(extracted)
         try:

@@ -154,7 +154,7 @@ class VLMConfig:
     api_key: Optional[str] = None           # will be filled at runtime / CLI
     base_url: Optional[str] = "https://api2.tabcode.cc/openai"  # custom endpoint
     temperature: float = 0.0
-    max_tokens: int = 1024
+    reasoning_effort: str = "high"
     max_segments: int = 0                   # 0 = no limit
     include_cv_fail: bool = True            # also send cv_fail to VLM
     keyframes_per_segment: int = 3          # start / mid / end

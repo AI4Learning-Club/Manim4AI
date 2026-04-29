@@ -28,7 +28,10 @@ def _build_render_schema() -> dict[str, Any]:
         "properties": {
             "request": {
                 "type": "string",
-                "description": "Teaching request describing what animation to generate and explain.",
+                "description": (
+                    "Teaching request describing what animation to generate and explain. "
+                    "For problem-solving videos, include that the video should first restate/analyze the problem and visually mark key givens, target, variables, or diagram relations."
+                ),
             },
             "language": {
                 "type": "string",
@@ -146,6 +149,7 @@ def build_tool_definitions() -> list[Tool]:
             name="render_teaching_video",
             description=(
                 "Generate a narrated teaching animation video with Manim. "
+                "For concrete problem-solving, the video should begin by restating/analyzing the problem and marking key information before solving. "
                 "When stream_mode=true, it only creates an async job and returns job_id plus authenticated preview metadata for later polling. "
                 "Do not treat preview_url/video_url/delivery_url as a finished public link in the assistant's natural-language reply."
             ),

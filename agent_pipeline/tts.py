@@ -20,6 +20,7 @@ from typing import List, Optional
 
 from .output_language import normalize_output_language
 from plugins.manim.runtime_config import get_manim_settings, get_manim_tts_global_cache_dir
+from service.tts_account_pool import acquire_doubao_tts_account, doubao_tts_resource_cache_key
 
 
 _MANIM_SETTINGS = get_manim_settings()
@@ -53,27 +54,14 @@ def _edge_tts_semaphore() -> threading.Semaphore:
     return _edge_tts_sem
 
 
-_doubao_tts_sem: threading.Semaphore | None = None
-_doubao_tts_sem_cap: int = -1
-
-
-def _doubao_tts_semaphore() -> threading.Semaphore:
-    global _doubao_tts_sem, _doubao_tts_sem_cap
-    cap = max(1, get_manim_settings().doubao_tts_max_concurrency)
-    if _doubao_tts_sem is None or cap != _doubao_tts_sem_cap:
-        _doubao_tts_sem = threading.Semaphore(cap)
-        _doubao_tts_sem_cap = cap
-    return _doubao_tts_sem
-
-
 def _effective_voice_for_cache(voice: str) -> str:
     ms = get_manim_settings()
     if ms.tts_provider != "doubao":
         return voice
     v = (voice or "").strip()
     if v.startswith("zh") or v == VOICE_ZH or "zh-" in v.lower():
-        return f"doubao:{ms.doubao_tts_speaker_zh}|{ms.doubao_tts_resource_id}"
-    return f"doubao:{ms.doubao_tts_speaker_en}|{ms.doubao_tts_resource_id}"
+        return f"doubao:{ms.doubao_tts_speaker_zh}|{doubao_tts_resource_cache_key()}"
+    return f"doubao:{ms.doubao_tts_speaker_en}|{doubao_tts_resource_cache_key()}"
 
 
 def doubao_speaker_for_edge_voice(voice: str, text: str) -> str:
@@ -402,7 +390,7 @@ def generate_audio(
         speaker = doubao_speaker_for_edge_voice(voice, text)
         for attempt in range(_DOUBAO_TTS_ATTEMPTS):
             try:
-                with _doubao_tts_semaphore():
+                with acquire_doubao_tts_account() as account:
                     fd, tmp_name = tempfile.mkstemp(
                         suffix=".mp3",
                         prefix=".tts_doubao_",
@@ -414,9 +402,9 @@ def generate_audio(
                         synthesize_doubao_mp3(
                             text,
                             tmp_path,
-                            app_id=str(ms.doubao_tts_app_id).strip(),
-                            access_token=str(ms.doubao_tts_access_token).strip(),
-                            resource_id=str(ms.doubao_tts_resource_id).strip(),
+                            app_id=account.app_id,
+                            access_token=account.access_token,
+                            resource_id=account.resource_id,
                             speaker=speaker,
                             audio_format=str(ms.doubao_tts_format or "mp3").strip(),
                             sample_rate=int(ms.doubao_tts_sample_rate),

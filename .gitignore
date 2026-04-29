@@ -20,6 +20,8 @@
 !/manim_mcp_runtime.py
 !/prompt_contract.py
 !/runtime_config.py
+!/tests/
+!/tests/**
 
 # Re-ignore generated and vendored content under remotion renderer
 remotion_renderer/node_modules/

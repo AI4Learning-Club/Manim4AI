@@ -77,6 +77,7 @@ DEFAULT_VLM_SETTINGS = MANIM_SETTINGS.llm.eval
 DEFAULT_API_KEY = DEFAULT_VLM_SETTINGS.api_key
 DEFAULT_BASE_URL = DEFAULT_VLM_SETTINGS.base_url
 DEFAULT_MODEL = DEFAULT_VLM_SETTINGS.model
+DEFAULT_REASONING_EFFORT = DEFAULT_VLM_SETTINGS.reasoning_effort
 VLM_STAGE_MAX_WORKERS = max(1, MANIM_SETTINGS.eval_vlm_stage_workers)
 
 
@@ -111,6 +112,12 @@ def build_parser() -> argparse.ArgumentParser:
     vlm.add_argument("--api-key", type=str, default=DEFAULT_API_KEY, help="OpenAI-compatible API key (default: settings.toml [manim.llm.eval].api_key)")
     vlm.add_argument("--base-url", type=str, default=DEFAULT_BASE_URL, help="Custom API base URL (default: settings.toml [manim.llm.eval].base_url)")
     vlm.add_argument("--model", type=str, default=DEFAULT_MODEL, help="VLM model name (default: settings.toml [manim.llm.eval].model)")
+    vlm.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default=DEFAULT_REASONING_EFFORT,
+        help="Responses API reasoning.effort for VLM review (default: settings.toml [manim.llm.eval].reasoning_effort)",
+    )
     vlm.add_argument("--max-vlm-segments", type=int, default=0, help="Max segments to send to VLM (0=all)")
     vlm.add_argument(
         "--enable-direct-video-vlm",
@@ -186,6 +193,7 @@ def build_config(args: argparse.Namespace) -> PipelineConfig:
         model=args.model,
         api_key=args.api_key,
         base_url=args.base_url,
+        reasoning_effort=args.reasoning_effort,
         max_segments=args.max_vlm_segments,
         include_cv_fail=True,
         enable_direct_video=args.enable_direct_video_vlm,

@@ -11,6 +11,7 @@ Flow:
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import logging
 import os
@@ -247,6 +248,29 @@ def _write_json_debug_impl(path: Path, payload: dict[str, Any]) -> None:
         return
 
 
+def _call_with_optional_on_event(
+    fn: Callable[..., Any],
+    /,
+    *args: Any,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    **kwargs: Any,
+) -> Any:
+    if on_event is None:
+        return fn(*args, **kwargs)
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        kwargs["on_event"] = on_event
+        return fn(*args, **kwargs)
+    parameters = signature.parameters
+    if "on_event" in parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        kwargs["on_event"] = on_event
+    return fn(*args, **kwargs)
+
+
 class CliDebugSink:
     EVENT_PREFIX = "A4L_MANIM_EVENT\t"
 
@@ -268,6 +292,7 @@ class CliDebugSink:
         self._current_delta_type: str | None = None
         self._line_open = False
         self._opened_preview_versions: set[int] = set()
+        self._last_status_by_stage: dict[str, str] = {}
 
     def __call__(self, payload: dict[str, Any]) -> None:
         self.emit(payload)
@@ -276,7 +301,7 @@ class CliDebugSink:
         event_type = str(payload.get("type") or "").strip().lower()
         if not event_type:
             return
-        if event_type in {"analysis_delta", "code_delta"}:
+        if event_type in {"analysis_delta", "code_delta", "llm_reasoning_summary_delta"}:
             self._emit_delta(event_type, str(payload.get("delta") or ""))
             # Per-chunk A4L_MANIM_EVENT lines interleave with streamed text and ruin readability;
             # emit them only when integrators need machine-parseable deltas (--debug-machine-verbose).
@@ -305,13 +330,81 @@ class CliDebugSink:
             return
         if self._current_delta_type != event_type:
             self._ensure_newline()
-            label = "AI analysis" if event_type == "analysis_delta" else "AI code"
+            if event_type == "analysis_delta":
+                label = "AI analysis"
+            elif event_type == "code_delta":
+                label = "AI code"
+            else:
+                label = "AI reasoning summary"
             self._write(f"[debug] {label}:\n")
             self._current_delta_type = event_type
         self._write(delta)
 
     def _emit_human_event(self, event_type: str, payload: dict[str, Any]) -> None:
         self._ensure_newline()
+        if event_type == "llm_request_started":
+            self._write(
+                "[debug] AI request started: "
+                f"stage={payload.get('stage')} model={payload.get('provider')}/{payload.get('model')} "
+                f"reasoning={payload.get('reasoning_effort')} attempt={payload.get('attempt')} "
+                f"input_chars={payload.get('input_text_chars')} images={payload.get('input_image_count')} "
+                f"endpoint={payload.get('endpoint')} "
+                f"service_tier={payload.get('service_tier_requested')} "
+                f"reasoning_summary={payload.get('reasoning_summary_requested')}\n"
+            )
+            return
+        if event_type == "llm_stream_status":
+            stage = str(payload.get("stage") or "unknown")
+            status = str(payload.get("status") or payload.get("event") or "unknown")
+            if self._last_status_by_stage.get(stage) == status:
+                return
+            self._last_status_by_stage[stage] = status
+            self._write(f"[debug] AI {stage} status: {status}\n")
+            return
+        if event_type == "llm_reasoning_started":
+            self._write(f"[debug] AI {payload.get('stage')} reasoning started\n")
+            return
+        if event_type == "llm_reasoning_progress":
+            self._write(
+                f"[debug] AI {payload.get('stage')} reasoning in progress "
+                f"(chars={payload.get('char_count')})\n"
+            )
+            return
+        if event_type == "llm_reasoning_completed":
+            self._write(
+                f"[debug] AI {payload.get('stage')} reasoning completed "
+                f"(chars={payload.get('char_count')})\n"
+            )
+            return
+        if event_type == "llm_output_started":
+            self._write(f"[debug] AI {payload.get('stage')} started emitting output\n")
+            return
+        if event_type == "llm_request_retry":
+            self._write(
+                "[debug] AI request retry: "
+                f"stage={payload.get('stage')} attempt={payload.get('attempt')} "
+                f"next={payload.get('next_attempt')} removed={payload.get('removed_keys') or []} "
+                f"changed={payload.get('changed_keys') or []} error={payload.get('error')}\n"
+            )
+            return
+        if event_type == "llm_request_failed":
+            self._write(
+                f"[debug] AI request failed: stage={payload.get('stage')} "
+                f"attempt={payload.get('attempt')} error={payload.get('error')}\n"
+            )
+            return
+        if event_type == "llm_request_completed":
+            self._write(
+                "[debug] AI request completed: "
+                f"stage={payload.get('stage')} attempt={payload.get('attempt')} "
+                f"output_chars={payload.get('output_chars')} "
+                f"reasoning_chars={payload.get('reasoning_chars')} "
+                f"reasoning_summary_chars={payload.get('reasoning_summary_chars')} "
+                f"service_tier_requested={payload.get('service_tier_requested')} "
+                f"service_tier_effective={payload.get('service_tier_effective')} "
+                f"reasoning_summary={payload.get('reasoning_summary_requested')}\n"
+            )
+            return
         if event_type == "section_render_completed":
             scene_name = payload.get("scene_name") or payload.get("segment_id") or "unknown"
             self._write(
@@ -1326,10 +1419,14 @@ def run_pipeline(
             )
             if analysis_delta_bridge is not None:
                 analysis_delta_bridge(delta)
-        teaching_plan: Dict[str, Any] = planner.plan(
+        def _analysis_llm_event(payload: dict[str, Any]) -> None:
+            _emit_debug_observation(debug_callback, payload)
+        teaching_plan: Dict[str, Any] = _call_with_optional_on_event(
+            planner.plan,
             request_text,
             image_path,
             on_delta=_analysis_delta_and_persist,
+            on_event=_analysis_llm_event,
         )
         stage_times["planning"] = time.time() - stage_started_at
         _log(f"Teaching planner: {len(teaching_plan.get('sections', []))} section(s) ready")
@@ -1823,12 +1920,17 @@ def run_pipeline(
                         f"{report.segment.segment_id} - {exc}"
                     )
 
-        code = agent.generate(
+        def _code_llm_event(payload: dict[str, Any]) -> None:
+            _emit_debug_observation(debug_callback, payload)
+
+        code = _call_with_optional_on_event(
+            agent.generate,
             request_text,
             image_path,
             teaching_plan=manim_teaching_plan,
             output_language=output_language,
             on_delta=_code_delta_bridge,
+            on_event=_code_llm_event,
         )
         expected_segment_count: int | None = None
         sanitized_code = sanitize_streaming_code(code)

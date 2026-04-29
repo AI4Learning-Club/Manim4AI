@@ -15,8 +15,12 @@ _SECTION_METHOD_RE = re.compile(r"^(opening_page|closing_page|section_[a-z0-9_]+
 _PLAIN_TEXT_HELPERS = {
     "get_text",
     "get_secondary_text",
+    "get_muted_text",
+    "get_warning_text",
+    "get_success_text",
     "make_page_title",
     "show_page_title_chip",
+    "Text",
 }
 _MATH_HELPERS = {
     "get_math",
@@ -90,6 +94,17 @@ _GEOMETRY_CONSTRUCTOR_NAMES = {
     "Rectangle",
     "SurroundingRectangle",
 }
+_POST_FIT_POSITIONING_CALLS = {
+    "next_to",
+    "move_to",
+    "to_edge",
+    "to_corner",
+    "align_to",
+    "shift",
+}
+_BODY_LAYOUT_CALLS = {"arrange", "next_to"}
+_TINY_BUFF_ERROR = 0.08
+_TINY_BUFF_WARNING = 0.14
 
 
 @dataclass
@@ -305,6 +320,7 @@ def _lint_page(method_name: str, page: _PageState) -> list[ValidationIssue]:
     issues.extend(_lint_page_geometry_layout_mixing(method_name, page))
     issues.extend(_lint_page_follower_measurement_risk(method_name, page))
     issues.extend(_lint_page_latex_text_risk(method_name, page))
+    issues.extend(_lint_page_block_overlap_risk(method_name, page))
     return issues
 
 
@@ -533,11 +549,183 @@ def _lint_page_latex_text_risk(method_name: str, page: _PageState) -> list[Valid
     return issues
 
 
+def _lint_page_block_overlap_risk(method_name: str, page: _PageState) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    page_label = f"{method_name}:page_{page.index}"
+    first_fit_line = min((call.lineno for call in page.fit_body_calls), default=None)
+    text_assignments = _plain_text_assignments(page)
+
+    if first_fit_line is not None:
+        for call in _iter_stmt_calls(page):
+            if getattr(call, "lineno", 0) <= first_fit_line:
+                continue
+            attr_name = _call_attr_name(call)
+            if attr_name not in _POST_FIT_POSITIONING_CALLS:
+                continue
+            receiver = _call_receiver_name(call)
+            if not receiver:
+                continue
+            text_value = text_assignments.get(receiver, "")
+            if not _looks_like_sentence_block(receiver, text_value):
+                continue
+            issues.append(
+                ValidationIssue(
+                    tool="lint_error",
+                    severity="error",
+                    category="post_fit_loose_text_overlap_risk",
+                    message="Sentence-like teaching text is positioned after fit_body(...), making overlap likely.",
+                    evidence=f"line {call.lineno}: {ast.unparse(call)}",
+                    fix_hint=(
+                        "Create this text/panel before fit_body(...) and include it inside the page's bodyN, "
+                        "or move the teaching beat to a fresh page."
+                    ),
+                    line=call.lineno,
+                    symbol=f"{page_label}:{receiver}",
+                )
+            )
+
+    for call in _iter_stmt_calls(page):
+        attr_name = _call_attr_name(call)
+        if attr_name not in _BODY_LAYOUT_CALLS:
+            continue
+        buff = _keyword_number(call, "buff")
+        if buff is None:
+            continue
+        if buff >= _TINY_BUFF_WARNING:
+            continue
+        receiver = _call_receiver_name(call)
+        severity = "error" if buff < _TINY_BUFF_ERROR else "warning"
+        if attr_name == "next_to" and receiver:
+            text_value = text_assignments.get(receiver, "")
+            if not _looks_like_sentence_block(receiver, text_value):
+                severity = "warning"
+        issues.append(
+            ValidationIssue(
+                tool="lint_error",
+                severity=severity,
+                category="tiny_layout_buff_overlap_risk",
+                message="Layout spacing is too tight for generated teaching visuals.",
+                evidence=f"line {call.lineno}: {ast.unparse(call)}",
+                fix_hint=(
+                    "Increase buff to at least 0.14 for body/layout blocks. If that no longer fits, split the page "
+                    "instead of shrinking below readable font floors."
+                ),
+                line=call.lineno,
+                symbol=f"{page_label}:{receiver or attr_name}",
+            )
+        )
+
+    placements: dict[tuple[str, str], list[ast.Call]] = {}
+    for call in _iter_stmt_calls(page):
+        if _call_attr_name(call) != "next_to":
+            continue
+        receiver = _call_receiver_name(call)
+        if not receiver:
+            continue
+        anchor = ast.unparse(call.args[0]) if call.args else ""
+        side = ast.unparse(call.args[1]) if len(call.args) > 1 else ""
+        if not anchor or not side:
+            continue
+        placements.setdefault((anchor, side), []).append(call)
+
+    for (anchor, side), calls in placements.items():
+        if len(calls) < 2:
+            continue
+        crowded_calls = []
+        for call in calls:
+            buff = _keyword_number(call, "buff")
+            if buff is not None and buff < 0.18:
+                crowded_calls.append(call)
+        if len(crowded_calls) < 2:
+            continue
+        receivers = [_call_receiver_name(call) or "" for call in crowded_calls]
+        issues.append(
+            ValidationIssue(
+                tool="lint_error",
+                severity="error",
+                category="same_anchor_side_label_stack_overlap_risk",
+                message="Multiple objects are attached to the same anchor side with small spacing.",
+                evidence=(
+                    f"anchor={anchor}, side={side}, "
+                    f"lines={[call.lineno for call in crowded_calls]}, receivers={receivers}"
+                ),
+                fix_hint=(
+                    "Choose different anchor sides, build a small arranged label group, or move the explanatory text "
+                    "into a body block instead of stacking next_to(...) calls on the same side."
+                ),
+                line=crowded_calls[1].lineno,
+                symbol=page_label,
+            )
+        )
+
+    return issues
+
+
 def _iter_stmt_calls(page: _PageState) -> Iterable[ast.Call]:
     for stmt in page.statements:
         for node in ast.walk(stmt):
             if isinstance(node, ast.Call):
                 yield node
+
+
+def _plain_text_assignments(page: _PageState) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for name, stmt in page.assignments.items():
+        value = _assigned_value(stmt)
+        call = value if isinstance(value, ast.Call) else None
+        if call is None:
+            continue
+        if _call_attr_name(call) not in _PLAIN_TEXT_HELPERS:
+            continue
+        text = _literal_str(call.args[0]) if call.args else ""
+        result[name] = text
+    return result
+
+
+def _looks_like_sentence_block(name: str, text: str = "") -> bool:
+    raw = str(text or "").strip()
+    if raw and _looks_like_symbolic_label(raw):
+        return False
+    lowered = str(name or "").lower()
+    if _looks_like_layout_block_name(lowered):
+        return True
+    if len(raw) >= 10:
+        return True
+    if any(mark in raw for mark in (" ", "，", "。", "：", "；", ",", ".", ":", ";", "?", "？", "!", "！")):
+        return True
+    return False
+
+
+def _looks_like_symbolic_label(text: str) -> bool:
+    cleaned = re.sub(r"\s+", "", str(text or ""))
+    if not cleaned:
+        return False
+    if len(cleaned) <= 3 and re.fullmatch(r"[A-Za-zΑ-ωα-ω0-9πθΔ_{}^+-]+", cleaned):
+        return True
+    return False
+
+
+def _call_receiver_name(call: ast.Call) -> str | None:
+    func = call.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return func.value.id
+    return None
+
+
+def _keyword_number(call: ast.Call, name: str) -> float | None:
+    for keyword in call.keywords:
+        if keyword.arg == name:
+            return _literal_number(keyword.value)
+    return None
+
+
+def _literal_number(node: ast.AST) -> float | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return float(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        value = _literal_number(node.operand)
+        return -value if value is not None else None
+    return None
 
 
 def _is_clear_scene_stmt(stmt: ast.stmt) -> bool:

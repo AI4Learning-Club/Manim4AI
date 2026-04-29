@@ -343,6 +343,59 @@ def _collect_anchor_binding_issues(
     return issues
 
 
+def _collect_overlap_review_issues(
+    overlap_review: Optional[OverlapReviewVerdict],
+) -> List[Dict]:
+    if not overlap_review:
+        return []
+
+    issues: List[Dict] = []
+    severity_map = {
+        "minor": ("soft_layout_note", "low", 0.65),
+        "moderate": ("hard_bug", "medium", 0.82),
+        "severe": ("hard_bug", "high", 0.94),
+    }
+
+    for idx, raw_issue in enumerate(overlap_review.issues, start=1):
+        description = str(raw_issue.get("description", "")).strip()
+        if not description:
+            continue
+        raw_severity = str(raw_issue.get("severity", "moderate")).strip().lower()
+        taxonomy, severity, confidence = severity_map.get(
+            raw_severity, ("hard_bug", "medium", 0.82)
+        )
+        try:
+            frame_index = int(raw_issue.get("frame_index", -1))
+        except (TypeError, ValueError):
+            frame_index = -1
+        overlap_kind = str(raw_issue.get("overlap_kind", "other")).strip() or "other"
+        repair_action = str(raw_issue.get("repair_action", "separate_body_blocks")).strip() or "separate_body_blocks"
+        frame_label = f"keyframe_{frame_index:02d}" if frame_index >= 0 else f"keyframe_{idx:02d}"
+        issues.append(
+            {
+                "issue_id": f"overlap_review_issue_{idx:02d}",
+                "segment_id": "__whole_video__",
+                "time_range": frame_label,
+                "cv_label": "overlap_review",
+                "cv_score": round(overlap_review.overlap_ratio, 3),
+                "cv_reason": overlap_review.reason,
+                "taxonomy": taxonomy,
+                "severity": severity,
+                "description": f"[{overlap_kind}] {description}",
+                "confidence": confidence,
+                "source": "vlm",
+                "overlap_kind": overlap_kind,
+                "repair_action": repair_action,
+                "frame_index": frame_index,
+                "vlm_verdict": "FAIL" if taxonomy == "hard_bug" else "PASS",
+                "vlm_confidence": confidence,
+                "vlm_reason": overlap_review.reason,
+            }
+        )
+
+    return issues
+
+
 # =====================================================================
 # Main fusion – builds paper Table 1 report
 # =====================================================================
@@ -753,7 +806,11 @@ def compute_report(
     ]
 
     # Issues
-    report.issues = _collect_issues(segments, verdicts) + _collect_anchor_binding_issues(anchor_binding_review)
+    report.issues = (
+        _collect_issues(segments, verdicts)
+        + _collect_overlap_review_issues(overlap_review)
+        + _collect_anchor_binding_issues(anchor_binding_review)
+    )
 
     diagnostics: Dict[str, Any] = {}
     if task_correctness and task_correctness.raw_response:

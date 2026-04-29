@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .llm import LLMClient, LLMConfig, LLMDeltaCallback
+from .llm import LLMClient, LLMConfig, LLMDeltaCallback, LLMEventCallback, StreamTerminated
 
 
 OPENING_STYLES = {
@@ -35,8 +35,10 @@ _SYSTEM_PLAN = """\
 You are a master teacher designing a short educational animation lesson.
 
 Your job is NOT to write Manim code yet. Your job is to plan the teaching.
-The final video should feel like a skilled teacher guiding a student from
-confusion to understanding, instead of dumping concepts directly.
+Return teaching decisions only. Do NOT write Manim code, detailed derivations,
+tentative calculations, storyboard-level proof details, or self-correcting
+drafts. The final video should feel like a skilled teacher guiding a student
+from confusion to understanding, instead of dumping concepts directly.
 
 Think like an excellent classroom teacher, not like a textbook outline writer.
 Your plan must tell the next agent HOW the teacher will lead the student:
@@ -46,11 +48,29 @@ Your plan must tell the next agent HOW the teacher will lead the student:
 - what visual moment should make the student say "哦，原来是这样",
 - and how to transition naturally from one step to the next.
 
-Return ONLY a JSON object with this structure:
+Output contract:
+- Start output immediately with `{`.
+- The first emitted non-whitespace character must be `{`.
+- Return EXACTLY ONE top-level JSON object.
+- After the matching final `}` of the top-level object, stop immediately.
+- Do not emit markdown fences, commentary, prefaces, suffixes, or a second draft.
+- Never emit markdown fences, commentary, prefaces, suffixes, scratch work,
+  second drafts, self-corrections, or concatenated JSON objects.
+- Resolve uncertainty internally before output; never show exploratory drafts.
+
+Return EXACTLY ONE top-level JSON object with this field order and structure:
 {
   "lesson_goal": "...",
   "student_profile": "...",
   "teaching_promise": "...",
+  "problem_intake": {
+    "is_problem_solving": true,
+    "restatement": "...",
+    "givens": ["...", "..."],
+    "target": "...",
+    "key_terms": ["...", "..."],
+    "visual_marking_plan": "..."
+  },
   "hook": "...",
   "opening": {
     "style": "question_first|misconception_first|visual_first|result_first|task_first|roadmap_first",
@@ -92,21 +112,60 @@ Return ONLY a JSON object with this structure:
   }
 }
 
+Field semantics:
+- `problem_intake.restatement` is the first spoken read-in for a problem-solving
+  lesson. It must be 1-2 concise spoken sentences in student language.
+- `problem_intake.restatement` is NOT a long prompt copy, a meta summary, a
+  derivation preview, or a strategy slogan.
+- `hook` and `opening.hook_line` come AFTER the student has heard the concise
+  read-in and seen the opening marking setup.
+
 Rules:
+- JSON string fields must contain final teaching decisions only. Do not include
+  visible brainstorming phrases such as "这还不够直接", "换一种", "最终采用",
+  "更标准的整理解法", or "课堂中直接采用".
 - Use Chinese for all natural-language fields.
 - Make 4-6 sections.
+- Keep fields short and execution-ready. Prefer 1-2 sentences per string field.
+- Do NOT include detailed derivations, tentative数值猜测, competing proof paths,
+  or self-correction narrative inside plan fields.
 - Every lesson must include an `opening` object.
+- Every lesson must include a `problem_intake` object. Set
+  `problem_intake.is_problem_solving` to true for concrete exercises, proofs,
+  calculations, geometry questions, or image-based problem statements. Set it
+  to false for pure concept explanations.
+- For problem-solving requests, use `problem_intake` to restate the problem,
+  separate givens from the target, list key terms/variables/diagram relations,
+  and specify how the first scene should visually mark the important information
+  before solving. For pure concept lessons, use it only to name the learner's
+  central question and key terms; do not invent a fake exercise.
+- For multi-part problems, `problem_intake.restatement` must briefly cover every
+  sub-question plus the overall objective in 1-2 spoken sentences, and the
+  first scene must use one compact reconstructed题面 card that covers the
+  sub-questions before formal analysis begins.
 - `opening.style` must be exactly one of:
   `question_first`, `misconception_first`, `visual_first`,
   `result_first`, `task_first`, `roadmap_first`.
 - `opening.roadmap_style` must be exactly one of:
   `task_line`, `question_chain`, `visual_tags`, `two_step`,
   `result_path`, `classic_outline`.
+- For problem-solving lessons, the opening order is fixed:
+  1. concise spoken题目复述 via `problem_intake.restatement`
+  2. visual marking of 已知 / 要求 / 关键关系 on a compact题面 card
+  3. hook question via `opening.hook_line`
+  4. roadmap
+- Do NOT invert this order. Do NOT lead with meta commentary such as
+  “先别急着算” or a strategy slogan before the concise read-in.
 - Every lesson still needs a roadmap, but the roadmap must explain how THIS
   lesson will proceed. It must not be empty motivation or vague slogans.
 - Do NOT default to a numbered "我们将看懂三件事" outline.
   `classic_outline` is only one roadmap style, not the default.
 - The first section must motivate the problem and establish a concrete path into the lesson.
+- For a concrete exercise, proof, calculation, geometry problem, or image-based
+  problem, the first section must be a "题面导入" beat: restate/analyze the
+  problem in student language, identify 已知条件 / 目标问题 / 关键变量或图形关系,
+  and plan sequential circles, boxes, underlines, arrows, or color highlights on
+  the key information before any derivation starts.
 - Do NOT write generic section titles like "定义", "性质", "应用" unless they are made specific.
 - Each section must have a clear teacher intention, not just a concept label.
 - Each section must include a real teacher move, such as: 提问, 对比, 预测, 纠错, 拆解, 回扣, 总结.
@@ -115,7 +174,12 @@ Rules:
 - At least 2 sections should include a student-facing prediction or check question.
 - At least 1 misconception should be corrected inside the main lesson, not only listed abstractly.
 - `visual_strategy` and `board_plan` must be specific enough that a code generator can turn them into a clean scene.
-- Keep the lesson progression natural: hook -> intuition -> mechanism -> conclusion -> transfer.
+- When the lesson starts from a problem statement, the first section's
+  `visual_strategy` and `board_plan` must explicitly say what will be circled,
+  boxed, underlined, arrow-labeled, or color-highlighted on the problem text,
+  diagram, formula, or reconstructed题面 card.
+- Keep the lesson progression natural. For problem-solving lessons use:
+  read-in -> marking -> hook -> intuition -> mechanism -> conclusion -> transfer.
 - Keep every field concise but specific. Avoid empty slogans like "帮助学生理解".
 """
 
@@ -157,6 +221,65 @@ def _extract_json_object(text: str) -> Dict:
     raise ValueError("Failed to parse teaching plan JSON from model output")
 
 
+class _FirstJsonObjectStreamGuard:
+    """Forward only the first complete top-level JSON object from a stream."""
+
+    def __init__(self, downstream: LLMDeltaCallback | None = None) -> None:
+        self.downstream = downstream
+        self.accepted_text: str | None = None
+        self._buffer: List[str] = []
+        self._started = False
+        self._completed = False
+        self._depth = 0
+        self._in_string = False
+        self._escaped = False
+
+    def __call__(self, delta: str) -> None:
+        if self._completed:
+            raise StreamTerminated(text_override=self.accepted_text)
+        if not delta:
+            return
+
+        accepted_delta: List[str] = []
+        for char in delta:
+            if self._completed:
+                break
+            if not self._started:
+                if char == "{":
+                    self._started = True
+                    self._depth = 1
+                    self._buffer.append(char)
+                    accepted_delta.append(char)
+                continue
+
+            self._buffer.append(char)
+            accepted_delta.append(char)
+            if self._in_string:
+                if self._escaped:
+                    self._escaped = False
+                elif char == "\\":
+                    self._escaped = True
+                elif char == '"':
+                    self._in_string = False
+                continue
+
+            if char == '"':
+                self._in_string = True
+            elif char == "{":
+                self._depth += 1
+            elif char == "}":
+                self._depth -= 1
+                if self._depth == 0:
+                    self._completed = True
+                    self.accepted_text = "".join(self._buffer)
+                    break
+
+        if accepted_delta and self.downstream is not None:
+            self.downstream("".join(accepted_delta))
+        if self._completed:
+            raise StreamTerminated(text_override=self.accepted_text)
+
+
 def _text(value: Any, default: str = "") -> str:
     if isinstance(value, str):
         value = value.strip()
@@ -173,6 +296,15 @@ def _enum_choice(value: Any, choices: set[str], default: str) -> str:
     return default
 
 
+def _string_list(value: Any, *, max_items: int = 6) -> List[str]:
+    if isinstance(value, list):
+        items = [_text(item) for item in value]
+    else:
+        text = _text(value)
+        items = [text] if text else []
+    return [item for item in items if item][:max_items]
+
+
 def _normalize_opening(opening: Any, hook_fallback: str) -> Dict[str, str]:
     opening = opening if isinstance(opening, dict) else {}
     hook_line = _text(
@@ -186,6 +318,37 @@ def _normalize_opening(opening: Any, hook_fallback: str) -> Dict[str, str]:
             opening.get("roadmap_style"),
             ROADMAP_STYLES,
             "task_line",
+        ),
+    }
+
+
+def _normalize_problem_intake(problem_intake: Any) -> Dict[str, Any]:
+    problem_intake = problem_intake if isinstance(problem_intake, dict) else {}
+    givens = _string_list(problem_intake.get("givens"))
+    key_terms = _string_list(problem_intake.get("key_terms"))
+    raw_is_problem_solving = problem_intake.get("is_problem_solving")
+    is_problem_solving = raw_is_problem_solving if isinstance(raw_is_problem_solving, bool) else False
+    return {
+        "is_problem_solving": is_problem_solving,
+        "restatement": _text(
+            problem_intake.get("restatement"),
+            "先用1到2句学生能听懂的话把题目和总任务读清楚，再进入正式分析。",
+        ),
+        "givens": givens or ["题目给出的已知条件和限制" if is_problem_solving else "学生已经知道或容易误解的前提"],
+        "target": _text(
+            problem_intake.get("target"),
+            "明确这道题最终要求什么。" if is_problem_solving else "明确这段讲解要解决的核心疑问。",
+        ),
+        "key_terms": key_terms or (
+            ["关键条件", "目标问题", "核心变量或图形关系"]
+            if is_problem_solving
+            else ["核心概念", "易混点", "观察入口"]
+        ),
+        "visual_marking_plan": _text(
+            problem_intake.get("visual_marking_plan"),
+            "开场先呈现简洁题面卡，依次用圆圈、描边框、下划线、箭头或颜色高亮标出已知条件、目标问题和关键变量，再进入 hook 和正式解答。"
+            if is_problem_solving
+            else "开场先呈现一个简洁主题卡，标出本节最关键的概念词和易混点，再进入解释。",
         ),
     }
 
@@ -266,6 +429,7 @@ def _normalize_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
             plan.get("teaching_promise"),
             "这节短课会先把画面感建立起来，再把结论讲透。",
         ),
+        "problem_intake": _normalize_problem_intake(plan.get("problem_intake")),
         "hook": _text(plan.get("hook"), opening["hook_line"]),
         "opening": opening,
         "big_idea": _text(plan.get("big_idea"), "把现象、图像和结论连成一条因果线。"),
@@ -300,17 +464,17 @@ def _normalize_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
     if not normalized["sections"]:
         normalized["sections"] = [{
             "id": "section_1",
-            "title": "问题导入",
-            "teacher_goal": "先抓住学生真正的疑问，再给出这节课的推进路径。",
-            "teacher_move": "用一个贴近学生困惑的问题开场。",
+            "title": "题面导入",
+            "teacher_goal": "先用精炼读题把任务讲清楚，再圈出解题入口，最后抛出推进问题。",
+            "teacher_move": "先用1到2句复述题目，再逐个标出已知条件、目标和关键变量，随后提出 hook 问题。",
             "student_question": "这到底在讲什么，为什么会这样？",
             "why_this_step_now": "学生先得知道自己为什么要继续看下去。",
-            "expected_student_reaction": "愿意跟着老师继续往下看。",
-            "concrete_example": "从最直观的现象或生活画面切入。",
-            "visual_strategy": "用一个简单画面建立问题情境。",
-            "board_plan": "先摆出问题，再给出这节课的观察路径。",
-            "narration_goal": "像老师在黑板前先把任务交代清楚。",
-            "key_takeaway": "先抓住问题，再进入理解过程。",
+            "expected_student_reaction": "先看清题目给了什么、问什么，再愿意跟着老师继续往下看。",
+            "concrete_example": "从题面中的关键条件、目标问题或图形关系切入。",
+            "visual_strategy": "先呈现简洁题面卡，再用圆圈、描边框、下划线、箭头或颜色高亮依次标出重点信息，之后才进入 hook 和路线说明。",
+            "board_plan": "左侧或上方放题面卡，旁边整理“已知 / 要求 / 关键关系”，标注完成后再进入 hook 与解题路径。",
+            "narration_goal": "像老师在黑板前先用1到2句读清题意、再划重点，最后提出为什么这样解。",
+            "key_takeaway": "先读懂题目和解题入口，再进入正式推理。",
             "check_for_understanding": "你现在最想先弄懂哪一步？",
             "transition": "接下来把这个问题拆开看。",
         }]
@@ -348,6 +512,7 @@ class TeachingPlannerAgent:
         image_path: Optional[Path] = None,
         *,
         on_delta: LLMDeltaCallback | None = None,
+        on_event: LLMEventCallback | None = None,
     ) -> Dict:
         content = [{"type": "input_text", "text": request_text}]
         if image_path and image_path.exists():
@@ -358,12 +523,27 @@ class TeachingPlannerAgent:
 
         for attempt in range(3):
             try:
-                text = self.client.generate_text(
-                    _SYSTEM_PLAN,
-                    content,
-                    max_retries=1,
-                    on_delta=on_delta,
-                )
+                json_stream_guard = _FirstJsonObjectStreamGuard(on_delta)
+                try:
+                    if on_event is None:
+                        text = self.client.generate_text(
+                            _SYSTEM_PLAN,
+                            content,
+                            max_retries=1,
+                            on_delta=json_stream_guard,
+                        )
+                    else:
+                        text = self.client.generate_text(
+                            _SYSTEM_PLAN,
+                            content,
+                            max_retries=1,
+                            on_delta=json_stream_guard,
+                            on_event=on_event,
+                        )
+                except StreamTerminated as exc:
+                    text = exc.text_override or json_stream_guard.accepted_text or ""
+                if json_stream_guard.accepted_text:
+                    text = json_stream_guard.accepted_text
                 return _normalize_plan(_extract_json_object(text))
             except Exception:
                 if attempt == 2:

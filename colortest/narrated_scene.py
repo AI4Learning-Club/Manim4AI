@@ -34,6 +34,8 @@ class NarratedScene(Scene):
     CONTENT_SIDE_LIMIT = 6.1
     SUBTITLE_TRANSITION_TIME = 0.18
     SUBTITLE_TEXT_COLOR = "#EDF5FF"
+    BODY_OVERLAP_MIN_GAP = 0.14
+    BODY_OVERLAP_RELAX_PASSES = 4
 
     def setup(self):
         self._page_title_mob = None
@@ -145,6 +147,8 @@ class NarratedScene(Scene):
         max_width: float,
         max_height: float | None = None,
         center=None,
+        resolve_overlaps: bool = False,
+        overlap_min_gap: float | None = None,
     ):
         """Scale a block for a fixed vertical band, then place and clamp it."""
         if max_height is None:
@@ -158,9 +162,102 @@ class NarratedScene(Scene):
         if center is not None:
             group.move_to(center)
         fitted = self._clamp_vertical_band(group, top_limit=band_top, bottom_limit=band_bottom)
+        if resolve_overlaps:
+            self._relax_top_level_body_overlaps(
+                fitted,
+                min_gap=self.BODY_OVERLAP_MIN_GAP if overlap_min_gap is None else overlap_min_gap,
+            )
+            if fitted.width > max_width:
+                fitted.scale_to_fit_width(max_width)
+            if fitted.height > max_height:
+                fitted.scale_to_fit_height(max_height)
+            fitted = self._clamp_vertical_band(
+                fitted,
+                top_limit=band_top,
+                bottom_limit=band_bottom,
+            )
         self.sync_bound_blocks()
         self.sync_bound_anchors()
         return fitted
+
+    @staticmethod
+    def _bbox_edges(mob):
+        return (
+            float(mob.get_left()[0]),
+            float(mob.get_right()[0]),
+            float(mob.get_bottom()[1]),
+            float(mob.get_top()[1]),
+        )
+
+    @staticmethod
+    def _bbox_area(edges) -> float:
+        left, right, bottom, top = edges
+        return max(0.0, right - left) * max(0.0, top - bottom)
+
+    @staticmethod
+    def _intersection_size(a_edges, b_edges) -> tuple[float, float]:
+        a_left, a_right, a_bottom, a_top = a_edges
+        b_left, b_right, b_bottom, b_top = b_edges
+        return (
+            min(a_right, b_right) - max(a_left, b_left),
+            min(a_top, b_top) - max(a_bottom, b_bottom),
+        )
+
+    @staticmethod
+    def _mostly_contains_smaller(a_edges, b_edges, *, threshold: float = 0.82) -> bool:
+        overlap_w, overlap_h = NarratedScene._intersection_size(a_edges, b_edges)
+        if overlap_w <= 0 or overlap_h <= 0:
+            return False
+        intersection = overlap_w * overlap_h
+        smaller = min(
+            NarratedScene._bbox_area(a_edges),
+            NarratedScene._bbox_area(b_edges),
+        )
+        if smaller <= 1e-6:
+            return False
+        return intersection / smaller >= threshold
+
+    def _relax_top_level_body_overlaps(self, body, *, min_gap: float | None = None):
+        """
+        Aggressively separate direct body children after fitting.
+
+        This is intentionally limited to top-level body children. Nested
+        graph/panel internals may contain legitimate overlays, while direct
+        body siblings are expected to be page layout blocks.
+        """
+        min_gap = self.BODY_OVERLAP_MIN_GAP if min_gap is None else max(0.0, float(min_gap))
+        children = [child for child in getattr(body, "submobjects", []) if child is not None]
+        if len(children) < 2:
+            return body
+
+        for _ in range(max(1, int(self.BODY_OVERLAP_RELAX_PASSES))):
+            moved = False
+            for idx, first in enumerate(children):
+                for second in children[idx + 1:]:
+                    first_edges = self._bbox_edges(first)
+                    second_edges = self._bbox_edges(second)
+                    if self._mostly_contains_smaller(first_edges, second_edges):
+                        continue
+
+                    overlap_w, overlap_h = self._intersection_size(first_edges, second_edges)
+                    overlap_w += min_gap
+                    overlap_h += min_gap
+                    if overlap_w <= 0 or overlap_h <= 0:
+                        continue
+
+                    delta = np.array(second.get_center()) - np.array(first.get_center())
+                    if overlap_w <= overlap_h:
+                        direction = RIGHT if delta[0] >= 0 else LEFT
+                        shift = direction * (overlap_w / 2)
+                    else:
+                        direction = UP if delta[1] >= 0 else DOWN
+                        shift = direction * (overlap_h / 2)
+                    first.shift(-shift)
+                    second.shift(shift)
+                    moved = True
+            if not moved:
+                break
+        return body
 
     @staticmethod
     def _binding_scale_factor(binding):
@@ -417,7 +514,16 @@ class NarratedScene(Scene):
             center=center,
         )
 
-    def fit_body(self, body, max_width: float = 12.0, max_height: float | None = None, center=None):
+    def fit_body(
+        self,
+        body,
+        max_width: float = 12.0,
+        max_height: float | None = None,
+        center=None,
+        *,
+        resolve_overlaps: bool = True,
+        overlap_min_gap: float | None = None,
+    ):
         """Preferred helper: fit a page's single body root into the body band."""
         if center is None:
             center = self.body_band_center()
@@ -428,6 +534,8 @@ class NarratedScene(Scene):
             max_width=max_width,
             max_height=max_height,
             center=center,
+            resolve_overlaps=resolve_overlaps,
+            overlap_min_gap=overlap_min_gap,
         )
 
     def _prepare_in_place_target(
