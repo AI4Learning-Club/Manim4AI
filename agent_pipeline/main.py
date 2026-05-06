@@ -46,6 +46,7 @@ from .renderer import (
     SegmentRenderResult,
     _concat_segment_videos,
     _write_round_render_log,
+    build_incremental_hls_preview,
     build_incremental_preview_video,
     prepare_segment_tts_assets,
     render_streaming_scene_pack_segment_with_repair,
@@ -848,18 +849,29 @@ def _maybe_build_incremental_preview(
             "updated": False,
             "preview_path": None,
             "preview_sections": contiguous_prefix_len,
+            "delivery_type": "hls" if str(MANIM_SETTINGS.delivery.mode).strip().lower() == "hls_cos_cdn" else "mp4",
             "error": "",
         }
 
     preview_dir = output_dir / "preview"
-    preview_dir.mkdir(parents=True, exist_ok=True)
     next_version = preview_version + 1
-    preview_path = preview_dir / f"preview_v{next_version:02d}.mp4"
     ordered_results = [
         completed_results_by_order[order]
         for order in sorted(completed_results_by_order)
     ]
-    preview_sections, error = build_incremental_preview_video(ordered_results, preview_path)
+    delivery_type = "mp4"
+    if str(MANIM_SETTINGS.delivery.mode).strip().lower() == "hls_cos_cdn":
+        delivery_type = "hls"
+        preview_sections, preview_path, error = build_incremental_hls_preview(
+            ordered_results,
+            output_dir / "hls",
+            preview_version=next_version,
+            target_segment_seconds=MANIM_SETTINGS.delivery.hls_segment_seconds,
+        )
+    else:
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        preview_path = preview_dir / f"preview_v{next_version:02d}.mp4"
+        preview_sections, error = build_incremental_preview_video(ordered_results, preview_path)
     if error:
         return {
             "published_preview_prefix_len": published_preview_prefix_len,
@@ -867,6 +879,7 @@ def _maybe_build_incremental_preview(
             "updated": False,
             "preview_path": None,
             "preview_sections": preview_sections,
+            "delivery_type": delivery_type,
             "error": error,
         }
 
@@ -876,6 +889,7 @@ def _maybe_build_incremental_preview(
         "updated": True,
         "preview_path": preview_path,
         "preview_sections": preview_sections,
+        "delivery_type": delivery_type,
         "error": "",
     }
 

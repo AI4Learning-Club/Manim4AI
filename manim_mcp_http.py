@@ -31,6 +31,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Create a fresh Streamable HTTP transport for each request.",
     )
+    parser.add_argument(
+        "--allow-non-loopback",
+        action="store_true",
+        help="Allow binding auxiliary HTTP routes on a non-loopback host for trusted internal deployments.",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable Starlette debug mode.")
     return parser
 
@@ -48,6 +53,14 @@ def main() -> None:
     run_streamable_http_server(
         runtime.server,
         managed_video_dir=get_managed_videos_dir(),
+        submit_job=lambda payload: runtime.renderer.submit_render_video(
+            request=str(payload.get("request") or ""),
+            language=str(payload.get("language") or ""),
+            render_backend=str(payload.get("render_backend") or "manim"),
+            quality=str(payload.get("quality") or "default"),
+            conversation_id=str(payload.get("conversation_id") or ""),
+            idempotency_key=str(payload.get("idempotency_key") or ""),
+        ),
         get_job_status=lambda job_id: runtime.renderer.get_job_status(job_id=job_id),
         get_job_events=lambda job_id, after_index: runtime.renderer.get_job_events(job_id=job_id, after_index=after_index),
         host=args.host,
@@ -57,6 +70,7 @@ def main() -> None:
         stateless=args.stateless,
         debug=args.debug,
         log_level=args.log_level,
+        allow_non_loopback_host=args.allow_non_loopback,
     )
 
 

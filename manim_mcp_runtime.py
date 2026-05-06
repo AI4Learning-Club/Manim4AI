@@ -20,7 +20,9 @@ from interface.plugins.manim import (
     ManimStreamEventType,
     make_manim_stream_event,
 )
+from plugins.manim.agent_pipeline.renderer import build_hls_video_file
 from plugins.manim.agent_pipeline.main import run_pipeline
+from plugins.manim.delivery import HlsPublishInput, TencentCosCdnPublisher
 from plugins.manim.mcp_server import create_server
 from plugins.manim.runtime_config import get_manim_runs_dir
 
@@ -29,6 +31,12 @@ _logger = get_mcp_logger("manim_http")
 _job_semaphore: threading.BoundedSemaphore | None = None
 _job_semaphore_cap: int = -1
 _shared_renderer_runtime: "ManimRenderRuntime | None" = None
+_TERMINAL_JOB_STATUSES = {"ok", "error"}
+_RESTART_INTERRUPTED_ERROR_CODE = "job_interrupted_by_restart"
+_RESTART_INTERRUPTED_MESSAGE = (
+    "Manim render job was interrupted by backend restart. "
+    "Start a new render job to regenerate the final video."
+)
 
 
 def _job_slot_semaphore() -> threading.BoundedSemaphore:
@@ -113,6 +121,7 @@ def _write_managed_video_metadata(
     *,
     conversation_id: str,
     run_key: str,
+    job_id: str = "",
     preview_version: int | None = None,
     final_version: int | None = None,
     is_final: bool,
@@ -122,6 +131,8 @@ def _write_managed_video_metadata(
     payload = {
         "conversation_id": conversation_id or "",
         "run_key": run_key,
+        "job_id": job_id or "",
+        "delivery_type": "mp4",
         "preview_version": preview_version,
         "final_version": final_version,
         "is_final": is_final,
@@ -138,6 +149,7 @@ def _publish_managed_artifacts(
     *,
     conversation_id: str,
     run_key: str,
+    job_id: str = "",
     preview_version: int | None = None,
     final_version: int | None = None,
     is_final: bool,
@@ -147,6 +159,7 @@ def _publish_managed_artifacts(
         managed_path,
         conversation_id=conversation_id,
         run_key=run_key,
+        job_id=job_id,
         preview_version=preview_version,
         final_version=final_version,
         is_final=is_final,
@@ -171,12 +184,139 @@ def _versioned_video_url(file_name: str, preview_version: int | None = None) -> 
     return f"{base_url}?v={preview_version}"
 
 
+def _coerce_preview_version(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float) and value.is_integer():
+        coerced = int(value)
+        return coerced if coerced > 0 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        coerced = int(value.strip())
+        return coerced if coerced > 0 else None
+    return None
+
+
+def _playback_url_from_payload(payload: dict[str, Any]) -> str:
+    for key in ("playback_url", "manifest_url", "video_url", "preview_url", "delivery_url"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _looks_like_hls_url(value: str) -> bool:
+    return value.split("?", 1)[0].split("#", 1)[0].lower().endswith(".m3u8")
+
+
+def _video_version_from_payload(
+    payload: dict[str, Any],
+    *,
+    event_type: str = "",
+    fallback_is_final: bool | None = None,
+) -> dict[str, Any] | None:
+    version = _coerce_preview_version(payload.get("preview_version"))
+    video_url = _playback_url_from_payload(payload)
+    if not version or not video_url:
+        return None
+    raw_is_final = payload.get("is_final")
+    is_final = (
+        bool(raw_is_final)
+        if isinstance(raw_is_final, bool)
+        else fallback_is_final
+        if fallback_is_final is not None
+        else event_type == "preview_video_finalized"
+    )
+    manifest_url = payload.get("manifest_url")
+    playback_url = payload.get("playback_url")
+    file_name = payload.get("file_name")
+    preview_file_name = payload.get("preview_file_name")
+    manifest_key = payload.get("manifest_key")
+    return {
+        "version": version,
+        "kind": "final" if is_final else "preview",
+        "is_final": is_final,
+        "delivery_type": str(payload.get("delivery_type") or ("hls" if _looks_like_hls_url(video_url) else "mp4")),
+        "video_url": video_url,
+        "playback_url": playback_url.strip() if isinstance(playback_url, str) and playback_url.strip() else video_url,
+        "manifest_url": manifest_url.strip() if isinstance(manifest_url, str) and manifest_url.strip() else None,
+        "manifest_key": manifest_key.strip() if isinstance(manifest_key, str) and manifest_key.strip() else None,
+        "file_name": file_name.strip() if isinstance(file_name, str) and file_name.strip() else None,
+        "preview_file_name": preview_file_name.strip()
+        if isinstance(preview_file_name, str) and preview_file_name.strip()
+        else None,
+    }
+
+
+def _collect_video_versions_from_events(
+    events: list[dict[str, Any]],
+    result: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    by_key: dict[tuple[int, bool], dict[str, Any]] = {}
+
+    def add(payload: dict[str, Any] | None, *, event_type: str = "", fallback_is_final: bool | None = None) -> None:
+        if not isinstance(payload, dict):
+            return
+        version = _video_version_from_payload(payload, event_type=event_type, fallback_is_final=fallback_is_final)
+        if not version:
+            return
+        key = (int(version["version"]), bool(version["is_final"]))
+        by_key[key] = version
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type not in {"preview_video_updated", "preview_video_finalized", "job_status"}:
+            continue
+        extra = event.get("extra")
+        result_payload = event.get("result")
+        add(extra if isinstance(extra, dict) else None, event_type=event_type)
+        add(
+            result_payload if isinstance(result_payload, dict) else None,
+            event_type=event_type,
+            fallback_is_final=event_type == "job_status" and event.get("status") == "ok",
+        )
+    add(result, fallback_is_final=True)
+
+    return [
+        by_key[key]
+        for key in sorted(
+            by_key,
+            key=lambda item: (item[0], 1 if item[1] else 0),
+        )
+    ]
+
+
+def _manim_delivery_mode() -> str:
+    return str(settings.manim.delivery.mode or "local_mp4").strip().lower() or "local_mp4"
+
+
+def _is_hls_cos_delivery_enabled() -> bool:
+    return _manim_delivery_mode() == "hls_cos_cdn"
+
+
 def _latest_incremental_preview_path(run_dir: Path) -> tuple[Path | None, int]:
     preview_dir = Path(run_dir) / "round1" / "preview"
     if not preview_dir.exists():
         return None, 0
     candidates = sorted(
         (item for item in preview_dir.glob("preview_v*.mp4") if item.is_file()),
+        key=lambda item: (_preview_version_from_path(item), item.name),
+    )
+    if not candidates:
+        return None, 0
+    latest = candidates[-1]
+    return latest, _preview_version_from_path(latest)
+
+
+def _latest_incremental_hls_manifest_path(run_dir: Path) -> tuple[Path | None, int]:
+    manifest_dir = Path(run_dir) / "round1" / "hls" / "manifests"
+    if not manifest_dir.exists():
+        return None, 0
+    candidates = sorted(
+        (item for item in manifest_dir.glob("preview_v*.m3u8") if item.is_file()),
         key=lambda item: (_preview_version_from_path(item), item.name),
     )
     if not candidates:
@@ -195,6 +335,10 @@ def get_managed_runs_dir() -> Path:
 
 def get_managed_videos_dir() -> Path:
     return _managed_data_root() / "videos"
+
+
+def get_managed_jobs_dir() -> Path:
+    return _managed_data_root() / "jobs"
 
 
 def _probe_duration_seconds(video_path: Path) -> float | None:
@@ -279,10 +423,13 @@ class RenderJobState:
     status: str
     message: str
     conversation_id: str = ""
+    idempotency_key: str = ""
     render_backend: str = "manim"
     quality: str = "default"
     run_key: str = ""
     preview_file_name: str = ""
+    delivery_type: str = "mp4"
+    manifest_url: str = ""
     preview_version: int | None = None
     preview_ready: bool = False
     result: dict[str, Any] | None = None
@@ -292,19 +439,70 @@ class RenderJobState:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "RenderJobState":
+        job_id = str(payload.get("job_id") or "").strip()
+        if not job_id:
+            raise ValueError("job_id is required")
+
+        events = payload.get("events")
+        if not isinstance(events, list):
+            events = []
+
+        result = payload.get("result")
+        if result is not None and not isinstance(result, dict):
+            result = None
+
+        preview_version = payload.get("preview_version")
+        if preview_version is not None:
+            try:
+                preview_version = int(preview_version)
+            except (TypeError, ValueError):
+                preview_version = None
+
+        return cls(
+            job_id=job_id,
+            status=str(payload.get("status") or "error"),
+            message=str(payload.get("message") or ""),
+            conversation_id=str(payload.get("conversation_id") or ""),
+            idempotency_key=str(payload.get("idempotency_key") or ""),
+            render_backend=str(payload.get("render_backend") or "manim"),
+            quality=str(payload.get("quality") or "default"),
+            run_key=str(payload.get("run_key") or ""),
+            preview_file_name=str(payload.get("preview_file_name") or ""),
+            delivery_type=str(payload.get("delivery_type") or "mp4"),
+            manifest_url=str(payload.get("manifest_url") or ""),
+            preview_version=preview_version,
+            preview_ready=bool(payload.get("preview_ready")),
+            result=result,
+            error=str(payload.get("error") or "") or None,
+            error_code=str(payload.get("error_code") or "") or None,
+            events=[dict(event) for event in events if isinstance(event, dict)],
+            created_at=float(payload.get("created_at") or time.time()),
+            updated_at=float(payload.get("updated_at") or time.time()),
+        )
+
     def to_payload(self) -> dict[str, Any]:
+        versions = _collect_video_versions_from_events(self.events, self.result)
         payload: dict[str, Any] = {
             "status": self.status,
             "job_id": self.job_id,
             "message": self.message,
             "conversation_id": self.conversation_id or None,
+            "idempotency_key": self.idempotency_key or None,
             "render_backend": self.render_backend,
             "quality": self.quality,
             "run_key": self.run_key or None,
             "preview_file_name": self.preview_file_name or None,
+            "delivery_type": self.delivery_type,
+            "manifest_url": self.manifest_url or None,
             "preview_version": self.preview_version,
             "preview_ready": self.preview_ready,
+            "video_versions": versions,
             "preview_url": (
+                self.manifest_url
+                if self.delivery_type == "hls" and self.manifest_url and self.preview_ready
+                else
                 _versioned_video_url(self.preview_file_name, self.preview_version)
                 if self.preview_file_name and self.preview_ready
                 else None
@@ -317,8 +515,34 @@ class RenderJobState:
         if self.error_code:
             payload["error_code"] = self.error_code
         if self.result is not None:
-            payload["result"] = _sanitize_public_payload(self.result)
+            result_payload = dict(self.result)
+            if versions and "video_versions" not in result_payload:
+                result_payload["video_versions"] = versions
+            payload["result"] = _sanitize_public_payload(result_payload)
         return payload
+
+    def to_snapshot(self) -> dict[str, Any]:
+        payload = self.to_payload()
+        payload["events"] = [_sanitize_public_payload(dict(event)) for event in self.events]
+        return payload
+
+    def mark_interrupted_after_restart(self) -> None:
+        self.status = "error"
+        self.message = _RESTART_INTERRUPTED_MESSAGE
+        self.error = _RESTART_INTERRUPTED_MESSAGE
+        self.error_code = _RESTART_INTERRUPTED_ERROR_CODE
+        self.updated_at = time.time()
+        self.events.append(
+            {
+                "type": "job_status",
+                "status": self.status,
+                "message": self.message,
+                "error": self.error,
+                "error_code": self.error_code,
+                "job_id": self.job_id,
+                "ts": self.updated_at,
+            }
+        )
 
 
 class ManimRenderRuntime:
@@ -326,8 +550,130 @@ class ManimRenderRuntime:
         configured_runs_dir = str(settings.manim.runs_output_dir or "").strip()
         self._runs_dir = Path(configured_runs_dir).resolve() if configured_runs_dir else get_manim_runs_dir().resolve()
         self._videos_dir = get_managed_videos_dir()
+        self._jobs_dir = get_managed_jobs_dir()
         self._jobs: dict[str, RenderJobState] = {}
         self._jobs_lock = threading.Lock()
+        self._hls_publisher: TencentCosCdnPublisher | None = None
+        self._load_job_snapshots()
+
+    def _get_hls_publisher(self) -> TencentCosCdnPublisher:
+        if self._hls_publisher is None:
+            self._hls_publisher = TencentCosCdnPublisher(
+                delivery=settings.manim.delivery,
+                cloud=settings.cloud,
+            )
+        return self._hls_publisher
+
+    def _job_snapshot_path(self, job_id: str) -> Path:
+        normalized = re.sub(r"[^A-Za-z0-9._-]", "_", str(job_id or "").strip())
+        if not normalized:
+            raise ValueError("job_id is required")
+        return self._jobs_dir / f"{normalized}.json"
+
+    def _persist_job_state_locked(self, state: RenderJobState) -> None:
+        try:
+            self._jobs_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_path = self._job_snapshot_path(state.job_id)
+            tmp_path = snapshot_path.with_name(f"{snapshot_path.name}.tmp")
+            tmp_path.write_text(
+                json.dumps(state.to_snapshot(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp_path.replace(snapshot_path)
+        except Exception:
+            _logger.exception("[Manim] failed to persist job snapshot: job_id=%s", state.job_id)
+
+    def _load_job_snapshots(self) -> None:
+        if not self._jobs_dir.exists():
+            self._load_job_snapshots_from_video_metadata()
+            return
+        loaded = 0
+        interrupted = 0
+        for snapshot_path in sorted(self._jobs_dir.glob("*.json")):
+            try:
+                payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    continue
+                state = RenderJobState.from_payload(payload)
+                if state.status not in _TERMINAL_JOB_STATUSES:
+                    state.mark_interrupted_after_restart()
+                    interrupted += 1
+                self._jobs[state.job_id] = state
+                self._persist_job_state_locked(state)
+                loaded += 1
+            except Exception:
+                _logger.warning("[Manim] skipped invalid job snapshot: %s", snapshot_path, exc_info=True)
+        if loaded:
+            _logger.info("[Manim] restored %s job snapshots from disk, interrupted=%s", loaded, interrupted)
+        self._load_job_snapshots_from_video_metadata()
+
+    def _load_job_snapshots_from_video_metadata(self) -> None:
+        if not self._videos_dir.exists():
+            return
+        recovered = 0
+        for metadata_path in sorted(self._videos_dir.glob("*.mp4.json")):
+            try:
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            job_id = str(payload.get("job_id") or "").strip()
+            if not job_id or job_id in self._jobs:
+                continue
+            file_name = metadata_path.name.removesuffix(".json")
+            video_path = self._videos_dir / file_name
+            if not video_path.exists() or not video_path.is_file():
+                continue
+            preview_version = payload.get("final_version") or payload.get("preview_version")
+            try:
+                preview_version = int(preview_version) if preview_version is not None else None
+            except (TypeError, ValueError):
+                preview_version = None
+            conversation_id = str(payload.get("conversation_id") or "").strip()
+            run_key = str(payload.get("run_key") or "").strip()
+            video_url = _versioned_video_url(file_name, preview_version)
+            state = RenderJobState(
+                job_id=job_id,
+                status="ok",
+                message="Manim render job completed.",
+                conversation_id=conversation_id,
+                run_key=run_key,
+                preview_file_name=file_name,
+                preview_version=preview_version,
+                preview_ready=True,
+                result={
+                    "status": "ok",
+                    "preview_type": "manim_video",
+                    "message": "Teaching video generated successfully.",
+                    "delivery_type": "mp4",
+                    "video_url": video_url,
+                    "file_name": file_name,
+                    "preview_url": video_url,
+                    "playback_url": video_url,
+                    "preview_file_name": file_name,
+                    "delivery_url": video_url,
+                    "delivery_file_name": file_name,
+                    "preview_version": preview_version,
+                    "preview_ready": True,
+                    "conversation_id": conversation_id or None,
+                },
+            )
+            state.events.append(
+                {
+                    "type": "job_status",
+                    "status": "ok",
+                    "message": state.message,
+                    "result": state.result,
+                    "job_id": job_id,
+                    "ts": state.updated_at,
+                }
+            )
+            self._jobs[job_id] = state
+            self._persist_job_state_locked(state)
+            recovered += 1
+        if recovered:
+            _logger.info("[Manim] recovered %s completed jobs from video metadata", recovered)
 
     def _append_job_event(self, job_id: str, payload: dict[str, Any]) -> None:
         with self._jobs_lock:
@@ -342,13 +688,26 @@ class ManimRenderRuntime:
                 state.preview_version = int(extra["preview_version"])
                 if state.preview_version > 0:
                     state.preview_ready = True
+            if isinstance(extra, dict):
+                if isinstance(extra.get("delivery_type"), str):
+                    state.delivery_type = str(extra["delivery_type"])
+                manifest_url = extra.get("manifest_url") or extra.get("playback_url")
+                if isinstance(manifest_url, str) and manifest_url.strip():
+                    state.manifest_url = manifest_url.strip()
             result = event.get("result")
             if isinstance(result, dict) and isinstance(result.get("preview_version"), int):
                 state.preview_version = int(result["preview_version"])
                 if state.preview_version > 0:
                     state.preview_ready = True
+            if isinstance(result, dict):
+                if isinstance(result.get("delivery_type"), str):
+                    state.delivery_type = str(result["delivery_type"])
+                manifest_url = result.get("manifest_url") or result.get("playback_url")
+                if isinstance(manifest_url, str) and manifest_url.strip():
+                    state.manifest_url = manifest_url.strip()
             state.events.append(event)
             state.updated_at = time.time()
+            self._persist_job_state_locked(state)
 
     def _acquire_job_slot(self) -> bool:
         """Acquire a concurrent render slot. Returns False only when wait policy is non-blocking."""
@@ -379,12 +738,26 @@ class ManimRenderRuntime:
             if message is not None:
                 state.message = message
             if result is not None:
-                state.result = _sanitize_public_payload(result)
+                sanitized_result = _sanitize_public_payload(result)
+                state.result = sanitized_result
+                if isinstance(sanitized_result, dict):
+                    if isinstance(sanitized_result.get("preview_version"), int):
+                        state.preview_version = int(sanitized_result["preview_version"])
+                        if state.preview_version > 0:
+                            state.preview_ready = True
+                    if isinstance(sanitized_result.get("preview_ready"), bool):
+                        state.preview_ready = bool(sanitized_result["preview_ready"])
+                    if isinstance(sanitized_result.get("delivery_type"), str):
+                        state.delivery_type = str(sanitized_result["delivery_type"])
+                    manifest_url = sanitized_result.get("manifest_url") or sanitized_result.get("playback_url")
+                    if isinstance(manifest_url, str) and manifest_url.strip():
+                        state.manifest_url = manifest_url.strip()
             if error is not None:
                 state.error = _sanitize_public_error(error)
             if error_code is not None:
                 state.error_code = error_code
             state.updated_at = time.time()
+            self._persist_job_state_locked(state)
             return state
 
     def _set_job_state_with_event(
@@ -423,6 +796,7 @@ class ManimRenderRuntime:
         self,
         *,
         conversation_id: str,
+        idempotency_key: str,
         render_backend: str,
         quality: str,
     ) -> RenderJobState:
@@ -433,13 +807,16 @@ class ManimRenderRuntime:
             status="queued",
             message="Manim render job queued. Video generation is still in progress.",
             conversation_id=conversation_id,
+            idempotency_key=idempotency_key,
             render_backend=render_backend,
             quality=quality,
             run_key=run_key,
             preview_file_name=preview_file_name,
+            delivery_type="hls" if _is_hls_cos_delivery_enabled() else "mp4",
         )
         with self._jobs_lock:
             self._jobs[state.job_id] = state
+            self._persist_job_state_locked(state)
         self._append_job_event(
             state.job_id,
             {
@@ -447,11 +824,36 @@ class ManimRenderRuntime:
                 "status": "queued",
                 "message": state.message,
                 "preview_file_name": state.preview_file_name,
+                "delivery_type": state.delivery_type,
                 "preview_ready": False,
                 "preview_url": None,
             },
         )
         return state
+
+    def _find_active_job_by_idempotency_key(self, idempotency_key: str) -> RenderJobState | None:
+        normalized = str(idempotency_key or "").strip()
+        if not normalized:
+            return None
+        with self._jobs_lock:
+            for state in self._jobs.values():
+                if state.idempotency_key != normalized:
+                    continue
+                if state.status in _TERMINAL_JOB_STATUSES:
+                    continue
+                return state
+        return None
+
+    @staticmethod
+    def _build_submit_response_from_state(state: RenderJobState) -> dict[str, Any]:
+        payload = state.to_payload()
+        payload["preview_type"] = None
+        payload["run_key"] = state.run_key
+        payload["preview_file_name"] = state.preview_file_name
+        payload["idempotency_key"] = state.idempotency_key or None
+        if state.status in {"queued", "running"}:
+            payload["message"] = "Manim render job accepted. Video generation is still in progress."
+        return payload
 
     def _execute_render_video(
         self,
@@ -463,6 +865,7 @@ class ManimRenderRuntime:
         conversation_id: str = "",
         run_key: str = "",
         managed_name: str = "",
+        job_id: str = "",
         event_callback: Any = None,
     ) -> dict[str, Any]:
         request_text = str(request or "").strip()
@@ -487,21 +890,77 @@ class ManimRenderRuntime:
         latest_preview_version = 0
         run_id_hint = run_dir.name
 
+        def _hls_event_extra(published: Any) -> dict[str, Any]:
+            return {
+                "delivery_type": "hls",
+                "manifest_url": published.manifest_url,
+                "playback_url": published.manifest_url,
+                "preview_url": published.manifest_url,
+                "video_url": published.manifest_url,
+                "manifest_key": published.manifest_key,
+                "manifest_file_name": Path(str(published.manifest_key)).name,
+                "preview_version": published.preview_version,
+                "preview_ready": True,
+                "preview_sections": published.preview_sections,
+                "is_final": published.is_final,
+            }
+
+        def _publish_hls_manifest(
+            *,
+            manifest_path: Path,
+            hls_root: Path,
+            preview_version: int,
+            preview_sections: int,
+            is_final: bool,
+        ) -> Any:
+            return self._get_hls_publisher().publish_hls(
+                HlsPublishInput(
+                    hls_root=hls_root,
+                    manifest_path=manifest_path,
+                    preview_version=preview_version,
+                    preview_sections=preview_sections,
+                    is_final=is_final,
+                    run_key=resolved_run_key,
+                )
+            )
+
         def _maybe_publish_latest_preview() -> int:
             nonlocal latest_preview_version
-            preview_path, preview_version = _latest_incremental_preview_path(run_dir)
+            if _is_hls_cos_delivery_enabled():
+                preview_path, preview_version = _latest_incremental_hls_manifest_path(run_dir)
+            else:
+                preview_path, preview_version = _latest_incremental_preview_path(run_dir)
             if preview_path is None or preview_version <= latest_preview_version:
                 return latest_preview_version
-            _publish_managed_artifacts(
-                preview_path,
-                managed_path,
-                conversation_id=conversation_id,
-                run_key=resolved_run_key,
-                preview_version=preview_version,
-                final_version=None,
-                is_final=False,
-            )
-            latest_preview_version = preview_version
+            if _is_hls_cos_delivery_enabled():
+                published = _publish_hls_manifest(
+                    manifest_path=preview_path,
+                    hls_root=Path(run_dir) / "round1" / "hls",
+                    preview_version=preview_version,
+                    preview_sections=preview_version,
+                    is_final=False,
+                )
+                extra = _hls_event_extra(published)
+            else:
+                _publish_managed_artifacts(
+                    preview_path,
+                    managed_path,
+                    conversation_id=conversation_id,
+                    run_key=resolved_run_key,
+                    job_id=job_id,
+                    preview_version=preview_version,
+                    final_version=None,
+                    is_final=False,
+                )
+                extra = {
+                    "delivery_type": "mp4",
+                    "preview_url": _versioned_video_url(resolved_managed_name, preview_version),
+                    "preview_file_name": resolved_managed_name,
+                    "preview_version": preview_version,
+                    "preview_ready": True,
+                    "preview_sections": preview_version,
+                    "is_final": False,
+                }
             if event_callback is not None:
                 event_callback(
                     make_manim_stream_event(
@@ -509,16 +968,10 @@ class ManimRenderRuntime:
                         stage=ManimStreamEventStage.DELIVERY,
                         message=f"Preview video updated: v{preview_version}",
                         run_id=run_id_hint,
-                        extra={
-                            "preview_url": _versioned_video_url(resolved_managed_name, preview_version),
-                            "preview_file_name": resolved_managed_name,
-                            "preview_version": preview_version,
-                            "preview_ready": True,
-                            "preview_sections": preview_version,
-                            "is_final": False,
-                        },
+                        extra=extra,
                     )
                 )
+            latest_preview_version = preview_version
             return latest_preview_version
 
         _logger.info(
@@ -556,6 +1009,11 @@ class ManimRenderRuntime:
                 try:
                     _maybe_publish_latest_preview()
                 except Exception:
+                    _logger.exception(
+                        "[Manim] failed to publish latest preview: run=%s job_id=%s",
+                        run_dir.name,
+                        job_id or "",
+                    )
                     return
 
             summary = run_pipeline(
@@ -580,16 +1038,51 @@ class ManimRenderRuntime:
             raise RuntimeError(f"Final video is missing: {source_path}")
 
         final_preview_version = (latest_preview_version or 0) + 1
-        _publish_managed_artifacts(
-            source_path,
-            managed_path,
-            conversation_id=conversation_id,
-            run_key=resolved_run_key,
-            preview_version=latest_preview_version or None,
-            final_version=final_preview_version,
-            is_final=True,
-        )
-        final_video_url = _versioned_video_url(resolved_managed_name, final_preview_version)
+        delivery_type = "mp4"
+        final_manifest_key = ""
+        final_video_url: str
+        if _is_hls_cos_delivery_enabled():
+            final_manifest_path, hls_error = build_hls_video_file(
+                source_path,
+                run_dir / "final_hls",
+                manifest_name=f"final_v{final_preview_version:02d}.m3u8",
+                target_segment_seconds=settings.manim.delivery.hls_segment_seconds,
+            )
+            if hls_error or final_manifest_path is None:
+                raise RuntimeError(hls_error or "Failed to package final HLS output.")
+            published_final = _publish_hls_manifest(
+                manifest_path=final_manifest_path,
+                hls_root=run_dir / "final_hls",
+                preview_version=final_preview_version,
+                preview_sections=latest_preview_version or final_preview_version,
+                is_final=True,
+            )
+            delivery_type = "hls"
+            final_manifest_key = str(published_final.manifest_key)
+            final_video_url = published_final.manifest_url
+            final_event_extra = _hls_event_extra(published_final)
+        else:
+            _publish_managed_artifacts(
+                source_path,
+                managed_path,
+                conversation_id=conversation_id,
+                run_key=resolved_run_key,
+                job_id=job_id,
+                preview_version=latest_preview_version or None,
+                final_version=final_preview_version,
+                is_final=True,
+            )
+            final_video_url = _versioned_video_url(resolved_managed_name, final_preview_version)
+            final_event_extra = {
+                "delivery_type": "mp4",
+                "preview_url": final_video_url,
+                "preview_file_name": resolved_managed_name,
+                "video_url": final_video_url,
+                "file_name": resolved_managed_name,
+                "preview_version": final_preview_version,
+                "preview_ready": True,
+                "is_final": True,
+            }
         if event_callback is not None:
             event_callback(
                 make_manim_stream_event(
@@ -598,34 +1091,31 @@ class ManimRenderRuntime:
                     message="Preview video finalized",
                     run_id=run_id_hint,
                     progress=100,
-                    extra={
-                        "preview_url": final_video_url,
-                        "preview_file_name": resolved_managed_name,
-                        "video_url": final_video_url,
-                        "file_name": resolved_managed_name,
-                        "preview_version": final_preview_version,
-                        "preview_ready": True,
-                        "is_final": True,
-                    },
+                    extra=final_event_extra,
                 )
             )
 
-        duration_seconds = _probe_duration_seconds(managed_path)
+        duration_seconds = _probe_duration_seconds(source_path)
         _logger.info(
-            "[Manim] 生成完成: file=%s duration=%s",
-            resolved_managed_name,
+            "[Manim] 生成完成: delivery=%s target=%s duration=%s",
+            delivery_type,
+            final_manifest_key or resolved_managed_name,
             duration_seconds,
         )
         return {
             "status": "ok",
             "preview_type": "manim_video",
             "message": "Teaching video generated successfully.",
+            "delivery_type": delivery_type,
             "video_url": final_video_url,
-            "file_name": resolved_managed_name,
+            "file_name": resolved_managed_name if delivery_type == "mp4" else None,
             "preview_url": final_video_url,
-            "preview_file_name": resolved_managed_name,
+            "playback_url": final_video_url,
+            "manifest_url": final_video_url if delivery_type == "hls" else None,
+            "manifest_key": final_manifest_key or None,
+            "preview_file_name": resolved_managed_name if delivery_type == "mp4" else None,
             "delivery_url": final_video_url,
-            "delivery_file_name": resolved_managed_name,
+            "delivery_file_name": resolved_managed_name if delivery_type == "mp4" else None,
             "duration_seconds": duration_seconds,
             "preview_version": final_preview_version,
             "preview_ready": True,
@@ -665,6 +1155,7 @@ class ManimRenderRuntime:
                 conversation_id=conversation_id,
                 run_key=run_key,
                 managed_name=managed_name,
+                job_id=job_id,
                 event_callback=_job_event_callback,
             )
             self._set_job_state_with_event(
@@ -697,6 +1188,7 @@ class ManimRenderRuntime:
         render_backend: str = "manim",
         quality: str = "default",
         conversation_id: str = "",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         request_text = str(request or "").strip()
         if not request_text:
@@ -708,9 +1200,15 @@ class ManimRenderRuntime:
 
         quality_normalized = (quality or "default").strip().lower() or "default"
         _normalize_quality_flags(quality_normalized)
+        normalized_idempotency_key = str(idempotency_key or "").strip()
+
+        existing_state = self._find_active_job_by_idempotency_key(normalized_idempotency_key)
+        if existing_state is not None:
+            return self._build_submit_response_from_state(existing_state)
 
         state = self._create_job(
             conversation_id=str(conversation_id or "").strip(),
+            idempotency_key=normalized_idempotency_key,
             render_backend=backend,
             quality=quality_normalized,
         )
@@ -731,19 +1229,7 @@ class ManimRenderRuntime:
         )
         worker.start()
 
-        return {
-            "status": "queued",
-            "preview_type": None,
-            "message": "Manim render job accepted. Video generation is still in progress.",
-            "job_id": state.job_id,
-            "conversation_id": state.conversation_id or None,
-            "render_backend": state.render_backend,
-            "quality": state.quality,
-            "run_key": state.run_key,
-            "preview_file_name": state.preview_file_name,
-            "preview_ready": False,
-            "preview_url": None,
-        }
+        return self._build_submit_response_from_state(state)
 
     def get_job_status(self, *, job_id: str) -> dict[str, Any]:
         normalized = str(job_id or "").strip()
@@ -782,6 +1268,7 @@ class ManimRenderRuntime:
         render_backend: str = "manim",
         quality: str = "default",
         conversation_id: str = "",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         return self._execute_render_video(
             request=request,

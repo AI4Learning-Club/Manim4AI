@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -1590,6 +1591,228 @@ def build_incremental_preview_video(
     return len(prefix), _concat_segment_videos(prefix, output_path)
 
 
+def build_incremental_hls_preview(
+    segment_results: List[SegmentRenderResult],
+    hls_root: Path,
+    *,
+    preview_version: int,
+    target_segment_seconds: int = 6,
+) -> tuple[int, Path | None, str]:
+    prefix = _contiguous_prefix_segment_results(segment_results)
+    if not prefix:
+        return 0, None, "No contiguous rendered segment prefix is available for preview."
+    manifest_path, error = _build_hls_manifest_from_segment_results(
+        prefix,
+        hls_root,
+        manifest_name=f"preview_v{preview_version:02d}.m3u8",
+        target_segment_seconds=target_segment_seconds,
+    )
+    if error:
+        return len(prefix), None, error
+    return len(prefix), manifest_path, ""
+
+
+def build_hls_video_file(
+    video_path: Path,
+    hls_root: Path,
+    *,
+    manifest_name: str,
+    target_segment_seconds: int = 6,
+) -> tuple[Path | None, str]:
+    source = Path(video_path).resolve()
+    if not source.exists() or not source.is_file():
+        return None, f"Video file is missing for HLS packaging: {source}"
+    segment_dir = Path(hls_root) / "segments" / Path(manifest_name).stem
+    playlist_path, error = _package_video_as_hls(
+        source,
+        segment_dir,
+        segment_prefix=Path(manifest_name).stem,
+        target_segment_seconds=target_segment_seconds,
+    )
+    if error:
+        return None, error
+    manifest_path = Path(hls_root) / "manifests" / manifest_name
+    chunks, error = _read_hls_playlist_chunks(
+        playlist_path,
+        relative_base=manifest_path.parent,
+    )
+    if error:
+        return None, error
+    _write_combined_hls_manifest(
+        chunks,
+        manifest_path,
+        playlist_type="VOD",
+    )
+    return manifest_path, ""
+
+
+def _build_hls_manifest_from_segment_results(
+    segment_results: List[SegmentRenderResult],
+    hls_root: Path,
+    *,
+    manifest_name: str,
+    target_segment_seconds: int,
+) -> tuple[Path | None, str]:
+    chunks: list[tuple[float, str]] = []
+    manifest_path = Path(hls_root) / "manifests" / manifest_name
+    for segment in sorted(segment_results, key=lambda item: item.order):
+        if not segment.video_path:
+            return None, f"Missing video path for HLS segment: {segment.segment_id}"
+        source = Path(segment.video_path).resolve()
+        segment_dir = Path(hls_root) / "segments" / _hls_segment_dir_name(segment)
+        playlist_path, error = _package_video_as_hls(
+            source,
+            segment_dir,
+            segment_prefix=_hls_segment_dir_name(segment),
+            target_segment_seconds=target_segment_seconds,
+        )
+        if error:
+            return None, error
+        segment_chunks, error = _read_hls_playlist_chunks(
+            playlist_path,
+            relative_base=manifest_path.parent,
+        )
+        if error:
+            return None, error
+        chunks.extend(segment_chunks)
+    if not chunks:
+        return None, "No HLS media segments were produced."
+    _write_combined_hls_manifest(chunks, manifest_path, playlist_type="VOD")
+    return manifest_path, ""
+
+
+def _hls_segment_dir_name(segment: SegmentRenderResult) -> str:
+    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", str(segment.segment_id or "segment")).strip("_")
+    return f"{int(segment.order):02d}_{safe_id or 'segment'}"
+
+
+def _package_video_as_hls(
+    source_path: Path,
+    output_dir: Path,
+    *,
+    segment_prefix: str,
+    target_segment_seconds: int,
+) -> tuple[Path, str]:
+    playlist_path = output_dir / "index.m3u8"
+    if playlist_path.exists() and any(output_dir.glob("*.ts")):
+        return playlist_path, ""
+    if not source_path.exists() or not source_path.is_file():
+        return playlist_path, f"HLS source video is missing: {source_path}"
+    if not shutil.which("ffmpeg"):
+        return playlist_path, "ffmpeg not found, cannot package HLS output."
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for old_file in output_dir.glob("*"):
+        if old_file.is_file() and old_file.suffix.lower() in {".m3u8", ".ts"}:
+            old_file.unlink()
+    segment_template = output_dir / f"{segment_prefix}_%03d.ts"
+    base_cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(source_path),
+        "-map",
+        "0",
+        "-f",
+        "hls",
+        "-hls_time",
+        str(max(1, int(target_segment_seconds))),
+        "-hls_playlist_type",
+        "vod",
+        "-hls_segment_filename",
+        str(segment_template),
+    ]
+    copy_cmd = [*base_cmd, "-c", "copy", str(playlist_path)]
+    copy_result = subprocess.run(
+        copy_cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if copy_result.returncode == 0 and playlist_path.exists() and any(output_dir.glob("*.ts")):
+        return playlist_path, ""
+    reencode_cmd = [
+        *base_cmd,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        str(playlist_path),
+    ]
+    reencode_result = subprocess.run(
+        reencode_cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if reencode_result.returncode == 0 and playlist_path.exists() and any(output_dir.glob("*.ts")):
+        return playlist_path, ""
+    return playlist_path, (
+        "ffmpeg HLS packaging failed.\n\n"
+        f"copy stderr:\n{copy_result.stderr[-2000:]}\n\n"
+        f"reencode stderr:\n{reencode_result.stderr[-2000:]}"
+    )
+
+
+def _read_hls_playlist_chunks(
+    playlist_path: Path,
+    *,
+    relative_base: Path,
+) -> tuple[list[tuple[float, str]], str]:
+    chunks: list[tuple[float, str]] = []
+    pending_duration: float | None = None
+    for raw_line in playlist_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line.startswith("#EXTINF:"):
+            duration_text = line[len("#EXTINF:") :].split(",", 1)[0]
+            try:
+                pending_duration = float(duration_text)
+            except ValueError:
+                pending_duration = 0.0
+            continue
+        if not line or line.startswith("#"):
+            continue
+        media_path = (playlist_path.parent / line).resolve()
+        try:
+            relative_uri = media_path.relative_to(relative_base.resolve()).as_posix()
+        except ValueError:
+            relative_uri = os.path.relpath(media_path, relative_base.resolve()).replace(os.sep, "/")
+        chunks.append((max(0.01, float(pending_duration or 0.01)), relative_uri))
+        pending_duration = None
+    if not chunks:
+        return [], f"HLS playlist did not contain media chunks: {playlist_path}"
+    return chunks, ""
+
+
+def _write_combined_hls_manifest(
+    chunks: list[tuple[float, str]],
+    manifest_path: Path,
+    *,
+    playlist_type: str,
+) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    target_duration = max(1, int(math.ceil(max(duration for duration, _ in chunks))))
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        f"#EXT-X-TARGETDURATION:{target_duration}",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        f"#EXT-X-PLAYLIST-TYPE:{playlist_type}",
+    ]
+    for duration, uri in chunks:
+        lines.append(f"#EXTINF:{duration:.3f},")
+        lines.append(uri)
+    lines.append("#EXT-X-ENDLIST")
+    manifest_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _concat_segment_videos(
     segment_results: List[SegmentRenderResult],
     output_path: Path,
@@ -1757,6 +1980,8 @@ __all__ = [
     "SegmentTTSPreparationResult",
     "SegmentRenderResult",
     "RenderResult",
+    "build_hls_video_file",
+    "build_incremental_hls_preview",
     "build_incremental_preview_video",
     "prepare_segment_tts_assets",
     "render_streaming_scene_pack_segment",

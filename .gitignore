@@ -18,6 +18,7 @@
 !/remotion_renderer/**
 !/manim_mcp_http.py
 !/manim_mcp_runtime.py
+!/delivery.py
 !/prompt_contract.py
 !/runtime_config.py
 !/tests/

@@ -56,6 +56,10 @@ def _build_render_schema() -> dict[str, Any]:
                 "type": "boolean",
                 "description": "When true, only create an async render job and return job/status metadata immediately. This does not mean the final video is ready.",
             },
+            "idempotency_key": {
+                "type": "string",
+                "description": "Optional backend idempotency key for replay-safe async job submission.",
+            },
         },
         "required": ["request", "conversation_id"],
     }
@@ -76,7 +80,7 @@ def _build_job_status_schema() -> dict[str, Any]:
 
 
 def _normalize_render_payload(arguments: dict[str, Any]) -> dict[str, Any]:
-    allowed_keys = {"request", "language", "quality", "render_backend", "conversation_id", "stream_mode"}
+    allowed_keys = {"request", "language", "quality", "render_backend", "conversation_id", "stream_mode", "idempotency_key"}
     unexpected_keys = sorted(key for key in arguments if key not in allowed_keys)
     if unexpected_keys:
         raise ValueError(f"Unsupported render_teaching_video fields: {', '.join(unexpected_keys)}")
@@ -101,6 +105,7 @@ def _normalize_render_payload(arguments: dict[str, Any]) -> dict[str, Any]:
     if not conversation_id:
         raise ValueError("conversation_id is required")
     stream_mode = arguments.get("stream_mode") is True
+    idempotency_key = str(arguments.get("idempotency_key") or "").strip()
     return {
         "request": request,
         "language": language,
@@ -108,6 +113,7 @@ def _normalize_render_payload(arguments: dict[str, Any]) -> dict[str, Any]:
         "render_backend": render_backend,
         "conversation_id": conversation_id,
         "stream_mode": stream_mode,
+        "idempotency_key": idempotency_key,
     }
 
 
@@ -191,6 +197,7 @@ async def handle_tool_call(
                     quality=payload["quality"],
                     render_backend=payload["render_backend"],
                     conversation_id=payload["conversation_id"],
+                    idempotency_key=payload["idempotency_key"],
                 )
             else:
                 result = await asyncio.to_thread(
@@ -200,6 +207,7 @@ async def handle_tool_call(
                     quality=payload["quality"],
                     render_backend=payload["render_backend"],
                     conversation_id=payload["conversation_id"],
+                    idempotency_key=payload["idempotency_key"],
                 )
             _logger.info("[Manim][MCP] render_teaching_video 完成: status=%s", result.get("status"))
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]

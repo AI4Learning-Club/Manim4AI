@@ -100,13 +100,15 @@ configuration source for this plugin, especially:
 | `manim.tts.doubao.speech_rate` | 豆包基础语速，范围建议 `-50..100` |
 | `manim.tts.doubao.max_concurrency` | 豆包 TTS 单账号默认并发上限；账号未配置 `max_concurrency` 时使用该值，推荐按单账号 `10` 配置 |
 | `manim.tts.doubao.pool_acquire_timeout_seconds` | 可选账号池取槽超时；省略时所有账号槽位占满会排队等待 |
+| `manim.tts.doubao.pool_backend` | TTS 池租约后端：`file`（默认，同机多 worker）或 `redis`（多机共享池） |
 | `manim.tts.doubao.pool_state_path` | 跨 worker 租约状态文件；空值默认 `data/tts/doubao_pool_state.json` |
+| `manim.tts.doubao.pool_redis_key_prefix` | Redis 模式下的共享 key 前缀；空值默认 `${redis.key_prefix}:doubao_tts_pool` |
 | `manim.tts.doubao.pool_lease_ttl_seconds` | 租约过期时间；worker 崩溃后超过该时间会自动释放槽位 |
 | `manim.tts.doubao.pool_poll_interval_seconds` | 所有账号满载时等待下一次重试取槽的间隔 |
 | `manim.render.dual_process_pipeline_enabled` | `true` 时 TTS 与 segment 渲染分处两个子进程并各自用线程池；`false` 回退单进程预生成 + 线程池 |
 | `manim.tts.merge_narration_enabled` | `true` 时在运行目录下额外生成 `tts_merged/narration_merged.mp3`（ffmpeg 拼接分片，不替代 `speak` 缓存） |
 
-豆包账号池会按租约轮询账号，并对每个账号分别施加并发上限；总容量等于所有启用账号的 `max_concurrency` 之和。活动租约写入共享状态文件，并用 `fcntl` 文件锁保护租号/释放，因此同一机器上的多个 uvicorn worker 会看到同一个池子，而不是各自复制一份 10 并发。Manim 旁白与英语听力的豆包 TTS 都走同一个池子，因此多个账号可以共同承接高并发请求。
+豆包账号池会按租约轮询账号，并对每个账号分别施加并发上限；总容量等于所有启用账号的 `max_concurrency` 之和。`pool_backend=file` 时，活动租约写入共享状态文件，并用 `fcntl` 文件锁保护租号/释放，因此同一机器上的多个 uvicorn worker 会看到同一个池子，而不是各自复制一份 10 并发。`pool_backend=redis` 时，租约写入 Redis，可用于多台 Manim 实例共享同一个 TTS 池。Manim 旁白与英语听力的豆包 TTS 都走同一个池子，因此多个账号可以共同承接高并发请求。
 
 ## 工具化局部修复（可选）
 

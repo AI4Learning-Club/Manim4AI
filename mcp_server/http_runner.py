@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import uvicorn
 from mcp.server import Server
@@ -16,6 +16,8 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.types import Receive, Scope, Send
+
+_JOB_STREAM_SUPPRESSED_EVENT_TYPES = frozenset({"analysis_delta", "code_delta"})
 
 
 class StreamableHTTPASGIApp:
@@ -66,6 +68,13 @@ def _resolve_initial_after_index(request: Request) -> int:
     return _coerce_resume_index(last_event_id) + 1
 
 
+def _should_emit_job_stream_event(event: Any) -> bool:
+    if not isinstance(event, dict):
+        return True
+    event_type = str(event.get("type") or "").strip().lower()
+    return event_type not in _JOB_STREAM_SUPPRESSED_EVENT_TYPES
+
+
 def _is_loopback_host(host: str) -> bool:
     normalized = str(host or "").strip().lower()
     if normalized in {"localhost", "127.0.0.1", "::1"}:
@@ -80,6 +89,7 @@ def create_streamable_http_app(
     server: Server,
     *,
     managed_video_dir: Path,
+    submit_job: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     get_job_status: Callable[[str], dict[str, Any]] | None = None,
     get_job_events: Callable[[str, int], dict[str, Any]] | None = None,
     path: str = "/mcp",
@@ -114,6 +124,21 @@ def create_streamable_http_app(
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(payload, status_code=200)
 
+    async def submit_job_request(request: Request):
+        if submit_job is None:
+            return JSONResponse({"error": "job submission endpoint not configured"}, status_code=404)
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json body"}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "invalid json body"}, status_code=400)
+        try:
+            result = submit_job(payload)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(result, status_code=202)
+
     async def stream_job_events(request: Request):
         if get_job_events is None:
             return JSONResponse({"error": "job stream endpoint not configured"}, status_code=404)
@@ -133,6 +158,8 @@ def create_streamable_http_app(
                     return
 
                 for index, event in enumerate(batch["events"], start=next_index):
+                    if not _should_emit_job_stream_event(event):
+                        continue
                     payload = {
                         "type": "manim_job_event",
                         "job_id": job_id,
@@ -168,6 +195,7 @@ def create_streamable_http_app(
         routes=[
             Mount(mcp_path, app=streamable_http_app, name="mcp_streamable_http"),
             Route("/videos/{file_name:str}", endpoint=serve_video, methods=["GET"], name="manim_video"),
+            Route("/jobs", endpoint=submit_job_request, methods=["POST"], name="manim_job_submit"),
             Route("/jobs/{job_id:str}", endpoint=serve_job_status, methods=["GET"], name="manim_job_status"),
             Route("/jobs/{job_id:str}/stream", endpoint=stream_job_events, methods=["GET"], name="manim_job_stream"),
         ],
@@ -179,6 +207,7 @@ def run_streamable_http_server(
     server: Server,
     *,
     managed_video_dir: Path,
+    submit_job: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     get_job_status: Callable[[str], dict[str, Any]] | None = None,
     get_job_events: Callable[[str, int], dict[str, Any]] | None = None,
     host: str = "127.0.0.1",
@@ -188,8 +217,9 @@ def run_streamable_http_server(
     stateless: bool = False,
     debug: bool = False,
     log_level: str = "info",
+    allow_non_loopback_host: bool = False,
 ) -> None:
-    if not _is_loopback_host(host):
+    if not allow_non_loopback_host and not _is_loopback_host(host):
         raise RuntimeError(
             "Manim HTTP service must bind to a loopback host because auxiliary "
             "/videos and /jobs routes are authenticated by the main backend proxy."
@@ -197,6 +227,7 @@ def run_streamable_http_server(
     app = create_streamable_http_app(
         server,
         managed_video_dir=managed_video_dir,
+        submit_job=submit_job,
         get_job_status=get_job_status,
         get_job_events=get_job_events,
         path=path,
