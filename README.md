@@ -75,7 +75,7 @@ configuration source for this plugin, especially:
 - `[manim.llm.director]`
 - `[manim.llm.eval]`
 
-其中各个 `[manim.llm.*]` 段额外支持 `reasoning_effort`（思考强度），会直接映射到 OpenAI Responses API 的 `reasoning.effort`。当前后端默认把 Manim 生成与评估设为 `high`。
+其中各个 `[manim.llm.*]` 段额外支持 `reasoning_effort`（思考强度），会直接映射到 OpenAI Responses API 的 `reasoning.effort`。默认值为空字符串，表示不向 Responses API 发送 `reasoning` 参数；需要提高思考强度时再显式配置 `low`、`medium`、`high` 或 `xhigh`。
 
 如果环境里还没有 Manim CE 和 FFmpeg，需要另外安装。
 

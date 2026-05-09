@@ -105,7 +105,7 @@ class LLMConfig:
     base_url: str
     provider: str = "openai"
     timeout_sec: float = 180.0
-    reasoning_effort: str = "high"
+    reasoning_effort: str = ""
 
     def summary(self) -> dict[str, Any]:
         data = asdict(self)
