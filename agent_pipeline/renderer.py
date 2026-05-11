@@ -19,12 +19,14 @@ import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 from typing import Any, Callable, List, Optional
+
+from plugins.manim.runtime_config import get_manim_settings
 
 from .scene_pack import (
     SegmentSpec,
@@ -44,8 +46,6 @@ from .tts import (
     scene_tts_round_cache_path,
     voice_for_language,
 )
-from plugins.manim.runtime_config import get_manim_settings
-
 
 TTS_MAX_WORKERS = max(1, get_manim_settings().tts_workers)
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
@@ -66,6 +66,16 @@ def _render_event(
 ) -> None:
     if cb is not None:
         cb(payload)
+
+
+def _segment_tts_timeout_seconds(text_count: int) -> float:
+    # Bound total section TTS wait so one stuck provider/account lease cannot leave
+    # the whole Manim job at "running" forever.
+    configured_job_timeout = float(getattr(get_manim_settings(), "job_timeout_seconds", 1800) or 1800)
+    default_tts_timeout = min(300.0, max(30.0, 75.0 * max(1, int(text_count or 1))))
+    return max(0.01, min(configured_job_timeout, default_tts_timeout))
+
+
 def _resolved_manim_cli_config_path() -> Optional[Path]:
     raw = (get_manim_settings().manim_cli_config_file or "").strip()
     if not raw:
@@ -437,16 +447,43 @@ def prepare_segment_tts_assets(
         return (text, "generated")
 
     max_workers = max(1, min(get_manim_settings().tts_process_threads, len(unique_texts) or 1))
+    timeout_seconds = _segment_tts_timeout_seconds(len(unique_texts))
     if max_workers == 1 or len(unique_texts) <= 1:
-        results = [_prepare_one(text) for text in unique_texts]
+        results = []
+        for text in unique_texts:
+            executor = ThreadPoolExecutor(max_workers=1)
+            try:
+                future = executor.submit(_prepare_one, text)
+                done, _pending = wait([future], timeout=timeout_seconds, return_when=FIRST_COMPLETED)
+                if not done:
+                    future.cancel()
+                    results.append((text, "failed"))
+                    continue
+                results.append(future.result())
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
     else:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             future_map = {executor.submit(_prepare_one, text): idx for idx, text in enumerate(unique_texts)}
             ordered_results: list[tuple[int, tuple[str, str]]] = []
-            for future in as_completed(future_map):
-                ordered_results.append((future_map[future], future.result()))
+            deadline = time.monotonic() + timeout_seconds
+            pending: set[Future[tuple[str, str]]] = set(future_map)
+            while pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+                for future in done:
+                    ordered_results.append((future_map[future], future.result()))
+            for future in pending:
+                future.cancel()
+                idx = future_map[future]
+                ordered_results.append((idx, (unique_texts[idx], "failed")))
             ordered_results.sort(key=lambda item: item[0])
             results = [item[1] for item in ordered_results]
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     for text, status in results:
         if status == "reused_round":

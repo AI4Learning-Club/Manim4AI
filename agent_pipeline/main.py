@@ -810,6 +810,34 @@ def _build_section_only_render_result(
             f"[{segment.order:02d}:{segment.segment_id}] {segment.error_log or 'segment_render_failed'}"
             for segment in failed_segments
         )
+        successful_segments = [
+            segment
+            for segment in sorted(segment_results, key=lambda item: item.order)
+            if segment.success and segment.video_path is not None
+        ]
+        if successful_segments:
+            final_video = output_dir / "video.mp4"
+            concat_error = _concat_segment_videos(successful_segments, final_video)
+            if not concat_error:
+                fallback_note = (
+                    "Partial Manim video rendered because one or more sections failed. "
+                    "Failed sections:\n"
+                    f"{error_log}"
+                )
+                _write_round_render_log(
+                    output_dir,
+                    segment_results,
+                    final_video=final_video,
+                    final_error=fallback_note,
+                )
+                return RenderResult(
+                    success=True,
+                    video_path=final_video,
+                    error_log=fallback_note,
+                    scene_name="ScenePack",
+                    segments=segment_results,
+                )
+            error_log = f"{error_log}\n\nPartial video concat also failed:\n{concat_error}"
         _write_round_render_log(output_dir, segment_results, final_error=error_log)
         return RenderResult(success=False, error_log=error_log, scene_name="ScenePack", segments=segment_results)
 
@@ -1631,6 +1659,7 @@ def run_pipeline(
                 "history": [],
                 "last_error": None,
             },
+            "codegen_warnings": [],
         }
 
         _emit_stage_started(
@@ -2001,19 +2030,44 @@ def run_pipeline(
             ),
         }
         if codegen_failure_reason:
+            rendered_section_count = sum(
+                1
+                for state in streaming_states
+                if getattr(state, "status", "") == "done"
+                and getattr(getattr(state, "render_result", None), "success", False)
+            )
+            if rendered_section_count <= 0:
+                _emit_pipeline_event(
+                    event_callback,
+                    event_type=ManimStreamEventType.TASK_FAILED,
+                    stage=ManimStreamEventStage.CODEGEN,
+                    message=codegen_failure_message,
+                    run_id=run_id,
+                    extra={
+                        "reason": codegen_failure_reason,
+                        "partial_chars": len(code),
+                        "ready_sections": len(streaming_states),
+                    },
+                )
+                raise RuntimeError(f"{codegen_failure_reason}: {codegen_failure_message}")
+            warning = {
+                "reason": codegen_failure_reason,
+                "message": codegen_failure_message,
+                "partial_chars": len(code),
+                "ready_sections": len(streaming_states),
+                "rendered_sections": rendered_section_count,
+            }
+            summary["codegen_warnings"].append(warning)
+            expected_segment_count = len(streaming_states)
             _emit_pipeline_event(
                 event_callback,
-                event_type=ManimStreamEventType.TASK_FAILED,
+                event_type=ManimStreamEventType.STAGE_PROGRESS,
                 stage=ManimStreamEventStage.CODEGEN,
-                message=codegen_failure_message,
+                message="Manim code stream completed with a salvageable Scene Pack parse warning",
                 run_id=run_id,
-                extra={
-                    "reason": codegen_failure_reason,
-                    "partial_chars": len(code),
-                    "ready_sections": len(streaming_states),
-                },
+                progress=60,
+                extra=warning,
             )
-            raise RuntimeError(f"{codegen_failure_reason}: {codegen_failure_message}")
         pre_rendered_segment_ids = {
             state.task.segment_id
             for state in streaming_states

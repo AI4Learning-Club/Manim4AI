@@ -4,20 +4,37 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from openai import OpenAI
 
 from plugins.manim.agent_pipeline.tool_runtime import ToolResult
 from plugins.manim.runtime_config import get_manim_settings
-
+from service.llm_traffic_control import llm_traffic_controller
 
 DEFAULT_OPENAI_BASE_URL = "https://api2.tabcode.cc/openai"
 LLMDeltaCallback = Callable[[str], None]
 LLMEventCallback = Callable[[dict[str, Any]], None]
 SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 DEFAULT_REASONING_SUMMARY = "auto"
+_RESPONSES_TRANSIENT_RETRY_DELAYS_SEC = (2.0, 5.0)
+_RESPONSES_RETRYABLE_STATUS_CODES = {408, 409, 429}
+_RESPONSES_RETRYABLE_ERROR_MARKERS = (
+    "upstream request failed",
+    "upstream_error",
+    "internalservererror",
+    "internal server error",
+    "bad gateway",
+    "gateway timeout",
+    "service unavailable",
+    "temporarily unavailable",
+    "too many requests",
+    "rate limit",
+    "capacity limit",
+    "concurrency limit",
+)
 
 # HTTP/SSE client timeout (seconds) by Responses API reasoning.effort tier.
 _REASONING_TIMEOUT_SEC: dict[str, float] = {
@@ -68,7 +85,7 @@ _LIFECYCLE_EVENTS = {
 }
 
 
-class StreamTerminated(Exception):
+class StreamTerminated(Exception):  # noqa: N818
     """Signal that a streaming caller has enough text and wants to stop early."""
 
     def __init__(
@@ -104,8 +121,10 @@ class LLMConfig:
     api_key: str
     base_url: str
     provider: str = "openai"
+    provider_name: str = ""
+    traffic_provider: str = ""
     timeout_sec: float = 180.0
-    reasoning_effort: str = "high"
+    reasoning_effort: str = ""
 
     def summary(self) -> dict[str, Any]:
         data = asdict(self)
@@ -118,12 +137,19 @@ def _resolve_stage_config(stage: str) -> LLMConfig:
     stage_settings = getattr(manim_settings.llm, stage, None)
     if stage_settings is None:
         raise RuntimeError(f"Unknown Manim LLM stage: {stage}")
+    base_url = stage_settings.base_url or DEFAULT_OPENAI_BASE_URL
     return LLMConfig(
         stage=stage,
         provider=stage_settings.provider,
+        provider_name=_resolve_traffic_provider_name(
+            stage_settings.provider,
+            base_url,
+            traffic_provider=stage_settings.traffic_provider,
+        ),
+        traffic_provider=stage_settings.traffic_provider,
         model=stage_settings.model,
         api_key=stage_settings.api_key,
-        base_url=stage_settings.base_url or DEFAULT_OPENAI_BASE_URL,
+        base_url=base_url,
         timeout_sec=effective_manim_stage_timeout_sec(
             reasoning_effort=stage_settings.reasoning_effort,
             timeout_sec_override=stage_settings.timeout_sec,
@@ -143,7 +169,7 @@ def resolve_pipeline_llm_configs() -> dict[str, LLMConfig]:
 def validate_pipeline_llm_configs(
     configs: dict[str, LLMConfig],
     *,
-    required_stages: Optional[tuple[str, ...]] = None,
+    required_stages: tuple[str, ...] | None = None,
 ) -> None:
     check_stages = required_stages or ("analysis", "code")
     for stage in check_stages:
@@ -155,8 +181,8 @@ def validate_pipeline_llm_configs(
             )
 
 
-def _flatten_user_content_for_tools(user_content: List[Dict[str, Any]]) -> str:
-    parts: List[str] = []
+def _flatten_user_content_for_tools(user_content: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
     for item in user_content:
         if item.get("type") == "input_text":
             parts.append(str(item.get("text", "")))
@@ -170,6 +196,31 @@ def _provider_uses_openai_priority_tier(provider: str | None) -> bool:
     return (provider or "").strip().lower() == "openai"
 
 
+def _normalize_base_url(base_url: str | None) -> str:
+    return (base_url or "").strip().rstrip("/").lower()
+
+
+def _should_use_chat_completions(config: LLMConfig) -> bool:
+    provider = (config.provider or "").strip().lower()
+    base_url = _normalize_base_url(config.base_url)
+    if provider == "deepseek":
+        return True
+    return base_url.startswith("https://api.deepseek.com")
+
+
+def _resolve_traffic_provider_name(
+    provider: str | None,
+    base_url: str | None,
+    *,
+    traffic_provider: str | None = None,
+) -> str:
+    """Map Manim stage config to the shared provider limiter without changing API semantics."""
+    explicit = (traffic_provider or "").strip().lower()
+    if explicit:
+        return explicit
+    return llm_traffic_controller.resolve_provider_name_hint(provider, base_url)
+
+
 def _normalize_reasoning_effort(reasoning_effort: str | None) -> str | None:
     normalized = (reasoning_effort or "").strip().lower()
     if not normalized:
@@ -179,7 +230,7 @@ def _normalize_reasoning_effort(reasoning_effort: str | None) -> str | None:
     return None
 
 
-def _apply_responses_fallbacks(request_kwargs: Dict[str, Any], error_message: str) -> bool:
+def _apply_responses_fallbacks(request_kwargs: dict[str, Any], error_message: str) -> bool:
     retry = False
     lowered = error_message.lower()
 
@@ -204,19 +255,53 @@ def _apply_responses_fallbacks(request_kwargs: Dict[str, Any], error_message: st
     return retry
 
 
+def _is_retryable_responses_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code >= 500 or status_code in _RESPONSES_RETRYABLE_STATUS_CODES
+
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if isinstance(response_status, int):
+        return response_status >= 500 or response_status in _RESPONSES_RETRYABLE_STATUS_CODES
+
+    text_parts = [str(exc)]
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        text_parts.append(json.dumps(body, ensure_ascii=False))
+    message = getattr(exc, "message", None)
+    if isinstance(message, str):
+        text_parts.append(message)
+    text = " ".join(text_parts).lower()
+    return any(marker in text for marker in _RESPONSES_RETRYABLE_ERROR_MARKERS)
+
+
 class LLMClient:
     """Thin OpenAI wrapper shared by planner, asset selector, and codegen."""
 
     def __init__(self, config: LLMConfig):
         self.config = config
+        effective_timeout = (
+            llm_traffic_controller.extend_timeout(
+                config.provider_name,
+                base_timeout=config.timeout_sec,
+            )
+            or config.timeout_sec
+        )
+        default_headers = llm_traffic_controller.build_default_headers(config.provider_name)
+        client_kwargs: dict[str, Any] = {
+            "api_key": config.api_key,
+            "base_url": config.base_url,
+            "timeout": effective_timeout,
+        }
+        if default_headers:
+            client_kwargs["default_headers"] = default_headers
         self.client = OpenAI(
-            api_key=config.api_key,
-            base_url=config.base_url,
-            timeout=config.timeout_sec,
+            **client_kwargs,
         )
 
-    def _to_chat_messages(self, system: str, user_content: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        content: List[Dict[str, Any]] = []
+    def _to_chat_messages(self, system: str, user_content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        content: list[dict[str, Any]] = []
         if system.strip():
             content.append({"type": "text", "text": system})
 
@@ -234,7 +319,7 @@ class LLMClient:
     def _call_responses_api(
         self,
         system: str,
-        user_content: List[Dict[str, Any]],
+        user_content: list[dict[str, Any]],
         *,
         on_delta: LLMDeltaCallback | None = None,
         on_event: LLMEventCallback | None = None,
@@ -248,7 +333,7 @@ class LLMClient:
         if not content:
             content = [{"type": "input_text", "text": ""}]
 
-        stream_kwargs: Dict[str, Any] = {
+        stream_kwargs: dict[str, Any] = {
             "model": self.config.model,
             "instructions": instructions,
             "input": [{"role": "user", "content": content}],
@@ -291,120 +376,124 @@ class LLMClient:
                 },
             )
             try:
-                with self.client.responses.stream(**stream_kwargs) as stream:
-                    text = ""
-                    reasoning_active = False
-                    reasoning_chars = 0
-                    reasoning_summary_chars = 0
-                    next_reasoning_notice = 80
-                    output_started = False
-                    for event in stream:
-                        event_type = str(getattr(event, "type", "") or "")
-                        if event_type in _LIFECYCLE_EVENTS:
-                            _emit_llm_event(
-                                on_event,
-                                {
-                                    "type": "llm_stream_status",
-                                    "stage": self.config.stage,
-                                    "event": event_type,
-                                    "status": event_type.removeprefix("response."),
-                                    "attempt": attempt + 1,
-                                },
-                            )
-                        if event_type in _REASONING_DELTA_EVENTS:
-                            delta = str(getattr(event, "delta", "") or "")
-                            reasoning_chars += len(delta)
-                            if event_type == "response.reasoning_summary_text.delta" and delta:
-                                reasoning_summary_chars += len(delta)
+                with llm_traffic_controller.provider_scope_sync(
+                    self.config.provider_name,
+                    operation=f"manim.{self.config.stage}.responses_stream",
+                ):
+                    with self.client.responses.stream(**stream_kwargs) as stream:
+                        text = ""
+                        reasoning_active = False
+                        reasoning_chars = 0
+                        reasoning_summary_chars = 0
+                        next_reasoning_notice = 80
+                        output_started = False
+                        for event in stream:
+                            event_type = str(getattr(event, "type", "") or "")
+                            if event_type in _LIFECYCLE_EVENTS:
                                 _emit_llm_event(
                                     on_event,
                                     {
-                                        "type": "llm_reasoning_summary_delta",
-                                        "stage": self.config.stage,
-                                        "attempt": attempt + 1,
-                                        "delta": delta,
-                                        "char_count": reasoning_summary_chars,
-                                    },
-                                )
-                            if not reasoning_active:
-                                reasoning_active = True
-                                _emit_llm_event(
-                                    on_event,
-                                    {
-                                        "type": "llm_reasoning_started",
+                                        "type": "llm_stream_status",
                                         "stage": self.config.stage,
                                         "event": event_type,
+                                        "status": event_type.removeprefix("response."),
                                         "attempt": attempt + 1,
                                     },
                                 )
-                            if reasoning_chars >= next_reasoning_notice:
+                            if event_type in _REASONING_DELTA_EVENTS:
+                                delta = str(getattr(event, "delta", "") or "")
+                                reasoning_chars += len(delta)
+                                if event_type == "response.reasoning_summary_text.delta" and delta:
+                                    reasoning_summary_chars += len(delta)
+                                    _emit_llm_event(
+                                        on_event,
+                                        {
+                                            "type": "llm_reasoning_summary_delta",
+                                            "stage": self.config.stage,
+                                            "attempt": attempt + 1,
+                                            "delta": delta,
+                                            "char_count": reasoning_summary_chars,
+                                        },
+                                    )
+                                if not reasoning_active:
+                                    reasoning_active = True
+                                    _emit_llm_event(
+                                        on_event,
+                                        {
+                                            "type": "llm_reasoning_started",
+                                            "stage": self.config.stage,
+                                            "event": event_type,
+                                            "attempt": attempt + 1,
+                                        },
+                                    )
+                                if reasoning_chars >= next_reasoning_notice:
+                                    _emit_llm_event(
+                                        on_event,
+                                        {
+                                            "type": "llm_reasoning_progress",
+                                            "stage": self.config.stage,
+                                            "event": event_type,
+                                            "attempt": attempt + 1,
+                                            "char_count": reasoning_chars,
+                                        },
+                                    )
+                                    next_reasoning_notice += 80
+                                continue
+                            if event_type in _REASONING_DONE_EVENTS and reasoning_active:
+                                reasoning_active = False
                                 _emit_llm_event(
                                     on_event,
                                     {
-                                        "type": "llm_reasoning_progress",
+                                        "type": "llm_reasoning_completed",
                                         "stage": self.config.stage,
                                         "event": event_type,
                                         "attempt": attempt + 1,
                                         "char_count": reasoning_chars,
                                     },
                                 )
-                                next_reasoning_notice += 80
-                            continue
-                        if event_type in _REASONING_DONE_EVENTS and reasoning_active:
-                            reasoning_active = False
-                            _emit_llm_event(
-                                on_event,
-                                {
-                                    "type": "llm_reasoning_completed",
-                                    "stage": self.config.stage,
-                                    "event": event_type,
-                                    "attempt": attempt + 1,
-                                    "char_count": reasoning_chars,
-                                },
-                            )
-                            continue
-                        if event_type == "response.output_text.delta":
-                            delta = str(getattr(event, "delta", "") or "")
-                            if delta and not output_started:
-                                output_started = True
-                                _emit_llm_event(
-                                    on_event,
-                                    {
-                                        "type": "llm_output_started",
-                                        "stage": self.config.stage,
-                                        "attempt": attempt + 1,
-                                    },
-                                )
-                            text += delta
-                            if on_delta is not None and delta:
-                                try:
-                                    on_delta(delta)
-                                except StreamTerminated as exc:
-                                    return _apply_stream_termination(text, exc)
-                        elif event_type == "response.output_text.done" and not text:
-                            text = str(getattr(event, "text", "") or "")
+                                continue
+                            if event_type == "response.output_text.delta":
+                                delta = str(getattr(event, "delta", "") or "")
+                                if delta and not output_started:
+                                    output_started = True
+                                    _emit_llm_event(
+                                        on_event,
+                                        {
+                                            "type": "llm_output_started",
+                                            "stage": self.config.stage,
+                                            "attempt": attempt + 1,
+                                        },
+                                    )
+                                text += delta
+                                if on_delta is not None and delta:
+                                    try:
+                                        on_delta(delta)
+                                    except StreamTerminated as exc:
+                                        return _apply_stream_termination(text, exc)
+                            elif event_type == "response.output_text.done" and not text:
+                                text = str(getattr(event, "text", "") or "")
 
-                    final_response = stream.get_final_response()
-                    final_text = str(final_response.output_text or "").strip()
-                    effective_service_tier = str(
-                        getattr(final_response, "service_tier", "") or ""
-                    ).strip()
-                    resolved_text = text.strip() or final_text
-                    _emit_llm_event(
-                        on_event,
-                        {
-                            "type": "llm_request_completed",
-                            "stage": self.config.stage,
-                            "attempt": attempt + 1,
-                            "output_chars": len(resolved_text),
-                            "reasoning_chars": reasoning_chars,
-                            "reasoning_summary_chars": reasoning_summary_chars,
-                            "service_tier_requested": requested_service_tier or "unset",
-                            "service_tier_effective": effective_service_tier or "unknown",
-                            "reasoning_summary_requested": DEFAULT_REASONING_SUMMARY if reasoning_effort else "unset",
-                        },
-                    )
-                    return resolved_text
+                        final_response = stream.get_final_response()
+                        final_text = str(final_response.output_text or "").strip()
+                        effective_service_tier = str(
+                            getattr(final_response, "service_tier", "") or ""
+                        ).strip()
+                        resolved_text = text.strip() or final_text
+                        _emit_llm_event(
+                            on_event,
+                            {
+                                "type": "llm_request_completed",
+                                "stage": self.config.stage,
+                                "attempt": attempt + 1,
+                                "output_chars": len(resolved_text),
+                                "reasoning_chars": reasoning_chars,
+                                "reasoning_summary_chars": reasoning_summary_chars,
+                                "service_tier_requested": requested_service_tier or "unset",
+                                "service_tier_effective": effective_service_tier or "unknown",
+                                "reasoning_summary_requested": DEFAULT_REASONING_SUMMARY if reasoning_effort else "unset",
+                            },
+                        )
+                        return resolved_text
             except Exception as exc:
                 last_error = exc
                 before_fallback = dict(stream_kwargs)
@@ -429,6 +518,28 @@ class LLMClient:
                         },
                     )
                     continue
+                should_retry_transient = (
+                    attempt < len(_RESPONSES_TRANSIENT_RETRY_DELAYS_SEC)
+                    and _is_retryable_responses_error(exc)
+                )
+                if should_retry_transient:
+                    delay_seconds = _RESPONSES_TRANSIENT_RETRY_DELAYS_SEC[attempt]
+                    _emit_llm_event(
+                        on_event,
+                        {
+                            "type": "llm_request_retry",
+                            "stage": self.config.stage,
+                            "attempt": attempt + 1,
+                            "next_attempt": attempt + 2,
+                            "error": str(exc),
+                            "removed_keys": [],
+                            "changed_keys": [],
+                            "retry_kind": "transient_provider_error",
+                            "retry_in_seconds": delay_seconds,
+                        },
+                    )
+                    time.sleep(delay_seconds)
+                    continue
                 _emit_llm_event(
                     on_event,
                     {
@@ -446,23 +557,27 @@ class LLMClient:
     def _call_chat_completions_api(
         self,
         system: str,
-        user_content: List[Dict[str, Any]],
+        user_content: list[dict[str, Any]],
         *,
         on_delta: LLMDeltaCallback | None = None,
     ) -> str:
-        resp = self.client.chat.completions.create(
-            model=self.config.model,
-            messages=self._to_chat_messages(system, user_content),
-            stream=False,
-            timeout=self.config.timeout_sec,
-        )
+        with llm_traffic_controller.provider_scope_sync(
+            self.config.provider_name,
+            operation=f"manim.{self.config.stage}.chat_completion",
+        ):
+            resp = self.client.chat.completions.create(
+                model=self.config.model,
+                messages=self._to_chat_messages(system, user_content),
+                stream=False,
+                timeout=self.config.timeout_sec,
+            )
         message = resp.choices[0].message if resp.choices else None
         content = getattr(message, "content", "") if message else ""
         text = ""
         if isinstance(content, str):
             text = content.strip()
         elif isinstance(content, list):
-            parts: List[str] = []
+            parts: list[str] = []
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "text":
                     parts.append(str(item.get("text", "")))
@@ -479,11 +594,13 @@ class LLMClient:
     def _call_openai(
         self,
         system: str,
-        user_content: List[Dict[str, Any]],
+        user_content: list[dict[str, Any]],
         *,
         on_delta: LLMDeltaCallback | None = None,
         on_event: LLMEventCallback | None = None,
     ) -> str:
+        if _should_use_chat_completions(self.config):
+            return self._call_chat_completions_api(system, user_content, on_delta=on_delta)
         if on_event is None:
             return self._call_responses_api(system, user_content, on_delta=on_delta)
         return self._call_responses_api(system, user_content, on_delta=on_delta, on_event=on_event)
@@ -491,7 +608,7 @@ class LLMClient:
     def generate_text(
         self,
         system: str,
-        user_content: List[Dict[str, Any]],
+        user_content: list[dict[str, Any]],
         *,
         max_retries: int = 3,
         on_delta: LLMDeltaCallback | None = None,
@@ -515,19 +632,19 @@ class LLMClient:
     def generate_with_tool_loop(
         self,
         system: str,
-        user_content: List[Dict[str, Any]],
+        user_content: list[dict[str, Any]],
         *,
-        tools: List[Dict[str, Any]],
-        dispatch: Callable[[str, Dict[str, Any]], ToolResult],
+        tools: list[dict[str, Any]],
+        dispatch: Callable[[str, dict[str, Any]], ToolResult],
         max_iterations: int = 8,
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> tuple[str, dict[str, Any]]:
         """Chat Completions + tool_calls loop (read/search/patch). Responses API is not used."""
-        messages: List[Dict[str, Any]] = []
+        messages: list[dict[str, Any]] = []
         if (system or "").strip():
             messages.append({"role": "system", "content": system.strip()})
         messages.append({"role": "user", "content": _flatten_user_content_for_tools(user_content)})
 
-        meta: Dict[str, Any] = {
+        meta: dict[str, Any] = {
             "tool_rounds": 0,
             "tool_calls": 0,
             "fallback_required": False,
@@ -536,7 +653,7 @@ class LLMClient:
         }
 
         for _ in range(max(1, max_iterations)):
-            create_kwargs: Dict[str, Any] = {
+            create_kwargs: dict[str, Any] = {
                 "model": self.config.model,
                 "messages": messages,
                 "tools": tools,
@@ -544,13 +661,17 @@ class LLMClient:
                 "stream": False,
                 "timeout": self.config.timeout_sec,
             }
-            try:
-                resp = self.client.chat.completions.create(
-                    **create_kwargs,
-                    parallel_tool_calls=False,
-                )
-            except TypeError:
-                resp = self.client.chat.completions.create(**create_kwargs)
+            with llm_traffic_controller.provider_scope_sync(
+                self.config.provider_name,
+                operation=f"manim.{self.config.stage}.tool_loop",
+            ):
+                try:
+                    resp = self.client.chat.completions.create(
+                        **create_kwargs,
+                        parallel_tool_calls=False,
+                    )
+                except TypeError:
+                    resp = self.client.chat.completions.create(**create_kwargs)
             choice = resp.choices[0].message if resp.choices else None
             if not choice:
                 meta["stopped_reason"] = "empty_message"
@@ -570,7 +691,7 @@ class LLMClient:
             meta["tool_rounds"] += 1
             meta["tool_calls"] += len(tool_calls)
 
-            assistant_msg: Dict[str, Any] = {
+            assistant_msg: dict[str, Any] = {
                 "role": "assistant",
                 "content": choice.content,
                 "tool_calls": [

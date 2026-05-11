@@ -1,4 +1,5 @@
-﻿"""
+﻿# ruff: noqa: UP006, UP035, UP045
+"""
 Layer 2 鈥?VLM semantic judgment.
 
 Two VLM stages:
@@ -18,15 +19,15 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-from typing import Dict, List, Optional  # noqa: F811 鈥?Optional used for video_path
+from typing import Any, Dict, List, Optional  # noqa: F811 鈥?Optional used for video_path
+
+from plugins.manim.agent_pipeline.llm import effective_manim_stage_timeout_sec
+from plugins.manim.runtime_config import get_manim_settings
+from service.llm_traffic_control import llm_traffic_controller
 
 from .config import VLMConfig
 from .cv_features import SegmentFeatures
 from .utils import make_openai_client
-from plugins.manim.agent_pipeline.llm import effective_manim_stage_timeout_sec
-from plugins.manim.runtime_config import get_manim_settings
-
 
 VLM_SEGMENT_MAX_WORKERS = max(1, get_manim_settings().eval_vlm_segment_workers)
 SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
@@ -1081,10 +1082,22 @@ def _call_vlm(client, vlm_cfg: VLMConfig, content: list) -> str:
         stream_kwargs["reasoning"] = {"effort": reasoning_effort}
 
     last_error: Exception | None = None
+    provider_name = str(
+        getattr(vlm_cfg, "traffic_provider", "") or get_manim_settings().llm.eval.traffic_provider
+    ).strip().lower()
+    if not provider_name:
+        provider_name = llm_traffic_controller.resolve_provider_name_hint(
+            vlm_cfg.provider,
+            vlm_cfg.base_url,
+        )
     for _ in range(3):
         try:
-            with client.responses.stream(**stream_kwargs) as stream:
-                return stream.get_final_response().output_text.strip()
+            with llm_traffic_controller.provider_scope_sync(
+                provider_name,
+                operation="manim.eval.vlm.responses_stream",
+            ):
+                with client.responses.stream(**stream_kwargs) as stream:
+                    return stream.get_final_response().output_text.strip()
         except Exception as exc:
             last_error = exc
             if not _apply_responses_fallbacks(stream_kwargs, str(exc)):

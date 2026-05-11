@@ -75,7 +75,7 @@ configuration source for this plugin, especially:
 - `[manim.llm.director]`
 - `[manim.llm.eval]`
 
-其中各个 `[manim.llm.*]` 段额外支持 `reasoning_effort`（思考强度），会直接映射到 OpenAI Responses API 的 `reasoning.effort`。当前后端默认把 Manim 生成与评估设为 `high`。
+其中各个 `[manim.llm.*]` 段额外支持 `reasoning_effort`（思考强度），会直接映射到 OpenAI Responses API 的 `reasoning.effort`。如果某个 stage 接的是只支持 `chat/completions` 的 provider（例如 DeepSeek 官方平台），该 stage 会自动改走 `chat.completions.create(...)`；需要 `/responses` 或多模态能力的 `[manim.llm.eval]` 应继续使用支持 Responses 的 provider。
 
 如果环境里还没有 Manim CE 和 FFmpeg，需要另外安装。
 
@@ -84,7 +84,7 @@ configuration source for this plugin, especially:
 | 配置项 | 说明 |
 |--------|------|
 | `manim.render.max_concurrent_jobs` | MCP 同时执行的教学视频生成任务上限（进程内全局信号量） |
-| `manim.render.job_slot_wait_seconds` | 取槽策略：省略/`null` = 无限等待；`0` = 无空位立即失败；正数 = 最长等待秒数 |
+| `manim.render.job_slot_wait_seconds` | 历史兼容字段；Manim job 槽位满时现在始终保持 `queued` 并等待可用槽位，不因容量满取消任务 |
 | `manim.render.segment_render_workers` | Scene Pack 并行 segment 上限；默认建议有限上限（如 `2`），`0` = 与 manifest 长度一致 |
 | `manim.tts.process_threads` | 双进程流水线中，TTS 子进程内线程池大小 |
 | `manim.tts.edge.max_concurrency` | 同一进程内 edge-tts 并发上限（信号量，缓解 WebSocket 不稳定） |
