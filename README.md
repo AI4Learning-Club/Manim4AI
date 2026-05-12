@@ -75,7 +75,7 @@ configuration source for this plugin, especially:
 - `[manim.llm.director]`
 - `[manim.llm.eval]`
 
-其中各个 `[manim.llm.*]` 段额外支持 `reasoning_effort`（思考强度），会直接映射到 OpenAI Responses API 的 `reasoning.effort`。如果某个 stage 接的是只支持 `chat/completions` 的 provider（例如 DeepSeek 官方平台），该 stage 会自动改走 `chat.completions.create(...)`；需要 `/responses` 或多模态能力的 `[manim.llm.eval]` 应继续使用支持 Responses 的 provider。
+其中各个 `[manim.llm.*]` 段额外支持 `reasoning_effort`（思考强度），会直接映射到 OpenAI Responses API 的 `reasoning.effort`。默认值为空字符串，表示不向 Responses API 发送 `reasoning` 参数；需要提高思考强度时再显式配置 `low`、`medium`、`high` 或 `xhigh`。如果某个 stage 接的是只支持 `chat/completions` 的 provider（例如 DeepSeek 官方平台），该 stage 会自动改走 `chat.completions.create(...)`；需要 `/responses` 或多模态能力的 `[manim.llm.eval]` 应继续使用支持 Responses 的 provider。
 
 如果环境里还没有 Manim CE 和 FFmpeg，需要另外安装。
 
