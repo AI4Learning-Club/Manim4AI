@@ -1,0 +1,12 @@
+{
+  "category_id": "advanced_deep_dive_explainer",
+  "display_name": "进阶深挖讲解",
+  "style_axis": "advanced",
+  "template_id": "advanced_deep_dive_explainer_template_v1",
+  "status": "ready",
+  "template_file": "template.py",
+  "teaching_plan_file": "teaching_plan.json",
+  "metadata_file": "metadata.json",
+  "template_line_count": 184,
+  "section_count": 5
+}
