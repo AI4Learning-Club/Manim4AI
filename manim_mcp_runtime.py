@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -20,8 +22,8 @@ from interface.plugins.manim import (
     ManimStreamEventType,
     make_manim_stream_event,
 )
-from plugins.manim.agent_pipeline.renderer import build_hls_video_file
 from plugins.manim.agent_pipeline.main import run_pipeline
+from plugins.manim.agent_pipeline.renderer import build_hls_video_file
 from plugins.manim.delivery import HlsPublishInput, TencentCosCdnPublisher
 from plugins.manim.mcp_server import create_server
 from plugins.manim.runtime_config import get_manim_runs_dir
@@ -30,13 +32,65 @@ _logger = get_mcp_logger("manim_http")
 
 _job_semaphore: threading.BoundedSemaphore | None = None
 _job_semaphore_cap: int = -1
-_shared_renderer_runtime: "ManimRenderRuntime | None" = None
+_shared_renderer_runtime: ManimRenderRuntime | None = None
 _TERMINAL_JOB_STATUSES = {"ok", "error"}
 _RESTART_INTERRUPTED_ERROR_CODE = "job_interrupted_by_restart"
 _RESTART_INTERRUPTED_MESSAGE = (
     "Manim render job was interrupted by backend restart. "
     "Start a new render job to regenerate the final video."
 )
+_CAPACITY_QUEUE_MESSAGE = (
+    "Manim render capacity is full. Your video task is queued and will start automatically "
+    "when a render slot is available."
+)
+_RENDER_RUNNING_MESSAGE = "Manim render job is running. Final video is not ready yet."
+_TEXT_STREAM_EVENT_TYPES = {"analysis_delta", "code_delta", "llm_reasoning_summary_delta"}
+_PREVIEW_PUBLISH_INITIAL_RETRY_SECONDS = 30.0
+_PREVIEW_PUBLISH_MAX_RETRY_SECONDS = 300.0
+_PUBLIC_CLOUD_DELIVERY_ERROR_MESSAGE = (
+    "Manim video delivery is temporarily unavailable. Please retry after the service refreshes."
+)
+_CLOUD_CREDENTIAL_ERROR_CODES = frozenset(
+    {
+        "InvalidAccessKeyId",
+        "InvalidSecretId.NotFound",
+        "AuthFailure.InvalidSecretId",
+        "AuthFailure.SecretIdNotFound",
+        "AuthFailure.SignatureFailure",
+    }
+)
+_CLOUD_CREDENTIAL_ERROR_SNIPPETS = (
+    "InvalidAccessKeyId",
+    "Access Key Id",
+    "SecretId",
+    "SignatureFailure",
+)
+
+
+def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    dst = Path(path).resolve()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding=encoding,
+            dir=str(dst.parent),
+            prefix=f".{dst.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_file.write(text)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+            tmp_path = Path(tmp_file.name)
+        tmp_path.replace(dst)
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _job_slot_semaphore() -> threading.BoundedSemaphore:
@@ -54,7 +108,7 @@ SERVER_VERSION = "1.0.0"
 _QUALITY_PRESETS = {
     "default": "",
     "draft": "-ql --fps 30",
-    "medium": "",
+    "medium": "-qm --fps 60",
     "high": "-qh --fps 60",
 }
 _PUBLIC_REDACTED_TEXT = "[internal path redacted]"
@@ -104,11 +158,24 @@ def _publish_managed_video_atomically(source_path: Path, managed_path: Path) -> 
     if not src.exists() or not src.is_file():
         raise FileNotFoundError(f"Source video is missing: {src}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = dst.with_name(f"{dst.name}.tmp")
-    if tmp_path.exists():
-        tmp_path.unlink()
-    shutil.copy2(str(src), str(tmp_path))
-    tmp_path.replace(dst)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            dir=str(dst.parent),
+            prefix=f".{dst.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+        shutil.copy2(str(src), str(tmp_path))
+        tmp_path.replace(dst)
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _managed_video_metadata_path(managed_path: Path) -> Path:
@@ -138,9 +205,7 @@ def _write_managed_video_metadata(
         "is_final": is_final,
         "updated_at": time.time(),
     }
-    tmp_path = metadata_path.with_name(f"{metadata_path.name}.tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(metadata_path)
+    _atomic_write_text(metadata_path, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def _publish_managed_artifacts(
@@ -289,6 +354,75 @@ def _collect_video_versions_from_events(
     ]
 
 
+def _coerce_progress_value(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return max(0, min(100, value))
+    if isinstance(value, float) and value == value:
+        return max(0, min(100, round(value)))
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized.isdigit():
+            return max(0, min(100, int(normalized)))
+    return None
+
+
+def _project_job_progress(
+    *,
+    status: str,
+    events: list[dict[str, Any]],
+    result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    progress: int | None = 0 if status == "queued" else None
+    current_stage: str | None = None
+    stage_message: str | None = None
+    stage_progress: int | None = None
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").strip()
+        event_progress = _coerce_progress_value(event.get("progress"))
+        stage = event.get("stage")
+        if isinstance(stage, str) and stage.strip():
+            current_stage = stage.strip()
+            if event_type not in _TEXT_STREAM_EVENT_TYPES or stage_progress is None:
+                stage_progress = event_progress
+        message = event.get("message")
+        if isinstance(message, str) and message.strip():
+            stage_message = message.strip()
+            if event_progress is not None:
+                stage_progress = event_progress
+        if event_progress is not None:
+            progress = max(progress or 0, event_progress)
+        extra = event.get("extra")
+        if isinstance(extra, dict):
+            extra_progress = _coerce_progress_value(extra.get("progress"))
+            if extra_progress is not None:
+                progress = max(progress or 0, extra_progress)
+
+    if isinstance(result, dict):
+        result_progress = _coerce_progress_value(result.get("progress"))
+        if result_progress is not None:
+            progress = max(progress or 0, result_progress)
+
+    if status == "ok":
+        progress = 100
+        current_stage = current_stage or ManimStreamEventStage.DELIVERY.value
+    elif status == "error":
+        current_stage = current_stage or ManimStreamEventStage.UNKNOWN.value
+    elif status == "running" and progress is None:
+        progress = 1
+
+    return {
+        "stage": current_stage,
+        "current_stage": current_stage,
+        "stage_message": stage_message,
+        "progress": progress,
+    }
+
+
 def _manim_delivery_mode() -> str:
     return str(settings.manim.delivery.mode or "local_mp4").strip().lower() or "local_mp4"
 
@@ -391,6 +525,28 @@ def _redact_public_text(value: str) -> str:
     return redacted
 
 
+def _cloud_credential_error_code(message: object) -> str:
+    if isinstance(message, dict):
+        return str(message.get("code") or message.get("error_code") or "").strip()
+    for attr in ("code", "error_code"):
+        code = getattr(message, attr, "")
+        if code:
+            return str(code).strip()
+    text = str(message or "")
+    for code in _CLOUD_CREDENTIAL_ERROR_CODES:
+        if code in text:
+            return code
+    return ""
+
+
+def _is_cloud_credential_error(message: object) -> bool:
+    code = _cloud_credential_error_code(message)
+    if code in _CLOUD_CREDENTIAL_ERROR_CODES:
+        return True
+    text = str(message or "")
+    return any(snippet in text for snippet in _CLOUD_CREDENTIAL_ERROR_SNIPPETS)
+
+
 def _is_public_path_key(key: object) -> bool:
     normalized = str(key or "").strip()
     return normalized in _PUBLIC_PATH_KEYS or normalized.endswith("_path")
@@ -414,6 +570,8 @@ def _sanitize_public_payload(value: Any) -> Any:
 
 
 def _sanitize_public_error(message: object) -> str:
+    if _is_cloud_credential_error(message):
+        return _PUBLIC_CLOUD_DELIVERY_ERROR_MESSAGE
     return _redact_public_text(str(message or "").strip() or "Manim render failed.")
 
 
@@ -424,8 +582,11 @@ class RenderJobState:
     message: str
     conversation_id: str = ""
     idempotency_key: str = ""
+    request: str = ""
+    language: str = ""
     render_backend: str = "manim"
     quality: str = "default"
+    source_job_id: str = ""
     run_key: str = ""
     preview_file_name: str = ""
     delivery_type: str = "mp4"
@@ -440,7 +601,7 @@ class RenderJobState:
     updated_at: float = field(default_factory=time.time)
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "RenderJobState":
+    def from_payload(cls, payload: dict[str, Any]) -> RenderJobState:
         job_id = str(payload.get("job_id") or "").strip()
         if not job_id:
             raise ValueError("job_id is required")
@@ -466,8 +627,11 @@ class RenderJobState:
             message=str(payload.get("message") or ""),
             conversation_id=str(payload.get("conversation_id") or ""),
             idempotency_key=str(payload.get("idempotency_key") or ""),
+            request=str(payload.get("request") or ""),
+            language=str(payload.get("language") or ""),
             render_backend=str(payload.get("render_backend") or "manim"),
             quality=str(payload.get("quality") or "default"),
+            source_job_id=str(payload.get("source_job_id") or ""),
             run_key=str(payload.get("run_key") or ""),
             preview_file_name=str(payload.get("preview_file_name") or ""),
             delivery_type=str(payload.get("delivery_type") or "mp4"),
@@ -484,21 +648,38 @@ class RenderJobState:
 
     def to_payload(self) -> dict[str, Any]:
         versions = _collect_video_versions_from_events(self.events, self.result)
+        final_version = next((version for version in reversed(versions) if version.get("is_final")), None)
+        playable_version = final_version or (versions[-1] if versions else None)
+        progress_projection = _project_job_progress(
+            status=self.status,
+            events=self.events,
+            result=self.result,
+        )
         payload: dict[str, Any] = {
             "status": self.status,
             "job_id": self.job_id,
             "message": self.message,
             "conversation_id": self.conversation_id or None,
             "idempotency_key": self.idempotency_key or None,
+            "request": self.request or None,
+            "language": self.language or None,
             "render_backend": self.render_backend,
             "quality": self.quality,
+            "source_job_id": self.source_job_id or None,
             "run_key": self.run_key or None,
             "preview_file_name": self.preview_file_name or None,
             "delivery_type": self.delivery_type,
             "manifest_url": self.manifest_url or None,
             "preview_version": self.preview_version,
             "preview_ready": self.preview_ready,
+            "stage": progress_projection["stage"],
+            "current_stage": progress_projection["current_stage"],
+            "stage_message": progress_projection["stage_message"],
+            "progress": progress_projection["progress"],
+            "can_retry": self.status == "error" and bool(self.request.strip()),
             "video_versions": versions,
+            "video_url": final_version.get("video_url") if final_version else None,
+            "playback_url": playable_version.get("playback_url") if playable_version else None,
             "preview_url": (
                 self.manifest_url
                 if self.delivery_type == "hls" and self.manifest_url and self.preview_ready
@@ -564,6 +745,26 @@ class ManimRenderRuntime:
             )
         return self._hls_publisher
 
+    def _reset_hls_publisher(self) -> None:
+        self._hls_publisher = None
+
+    def _publish_hls_with_credential_refresh(self, payload: HlsPublishInput) -> Any:
+        try:
+            return self._get_hls_publisher().publish_hls(payload)
+        except Exception as exc:
+            if not _is_cloud_credential_error(exc):
+                raise
+            _logger.warning(
+                "[Manim] cloud credential error during HLS publish; refreshing settings and retrying once: code=%s",
+                _cloud_credential_error_code(exc) or type(exc).__name__,
+            )
+            try:
+                settings.reload()
+            except Exception:
+                _logger.exception("[Manim] failed to reload settings after cloud credential error")
+            self._reset_hls_publisher()
+            return self._get_hls_publisher().publish_hls(payload)
+
     def _job_snapshot_path(self, job_id: str) -> Path:
         normalized = re.sub(r"[^A-Za-z0-9._-]", "_", str(job_id or "").strip())
         if not normalized:
@@ -574,12 +775,7 @@ class ManimRenderRuntime:
         try:
             self._jobs_dir.mkdir(parents=True, exist_ok=True)
             snapshot_path = self._job_snapshot_path(state.job_id)
-            tmp_path = snapshot_path.with_name(f"{snapshot_path.name}.tmp")
-            tmp_path.write_text(
-                json.dumps(state.to_snapshot(), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            tmp_path.replace(snapshot_path)
+            _atomic_write_text(snapshot_path, json.dumps(state.to_snapshot(), ensure_ascii=False, indent=2))
         except Exception:
             _logger.exception("[Manim] failed to persist job snapshot: job_id=%s", state.job_id)
 
@@ -709,16 +905,13 @@ class ManimRenderRuntime:
             state.updated_at = time.time()
             self._persist_job_state_locked(state)
 
-    def _acquire_job_slot(self) -> bool:
-        """Acquire a concurrent render slot. Returns False only when wait policy is non-blocking."""
+    def _acquire_job_slot(self, *, blocking: bool = True) -> bool:
+        """Acquire a concurrent render slot, waiting by default instead of rejecting capacity overflow."""
         sem = _job_slot_semaphore()
-        wait = settings.manim.job_slot_wait_seconds
-        if wait is None:
-            sem.acquire()
-            return True
-        if wait == 0:
+        if not blocking:
             return sem.acquire(blocking=False)
-        return sem.acquire(timeout=float(wait))
+        sem.acquire()
+        return True
 
     def _set_job_state(
         self,
@@ -799,6 +992,9 @@ class ManimRenderRuntime:
         idempotency_key: str,
         render_backend: str,
         quality: str,
+        request: str = "",
+        language: str = "",
+        source_job_id: str = "",
     ) -> RenderJobState:
         run_key = _new_run_key()
         preview_file_name = _managed_video_name_for_run(run_key)
@@ -808,8 +1004,11 @@ class ManimRenderRuntime:
             message="Manim render job queued. Video generation is still in progress.",
             conversation_id=conversation_id,
             idempotency_key=idempotency_key,
+            request=str(request or "").strip(),
+            language=str(language or "").strip(),
             render_backend=render_backend,
             quality=quality,
+            source_job_id=str(source_job_id or "").strip(),
             run_key=run_key,
             preview_file_name=preview_file_name,
             delivery_type="hls" if _is_hls_cos_delivery_enabled() else "mp4",
@@ -889,6 +1088,8 @@ class ManimRenderRuntime:
         managed_path = self._videos_dir / resolved_managed_name
         latest_preview_version = 0
         run_id_hint = run_dir.name
+        preview_publish_failures: dict[int, int] = {}
+        preview_publish_retry_after: dict[int, float] = {}
 
         def _hls_event_extra(published: Any) -> dict[str, Any]:
             return {
@@ -913,7 +1114,7 @@ class ManimRenderRuntime:
             preview_sections: int,
             is_final: bool,
         ) -> Any:
-            return self._get_hls_publisher().publish_hls(
+            return self._publish_hls_with_credential_refresh(
                 HlsPublishInput(
                     hls_root=hls_root,
                     manifest_path=manifest_path,
@@ -932,35 +1133,58 @@ class ManimRenderRuntime:
                 preview_path, preview_version = _latest_incremental_preview_path(run_dir)
             if preview_path is None or preview_version <= latest_preview_version:
                 return latest_preview_version
-            if _is_hls_cos_delivery_enabled():
-                published = _publish_hls_manifest(
-                    manifest_path=preview_path,
-                    hls_root=Path(run_dir) / "round1" / "hls",
-                    preview_version=preview_version,
-                    preview_sections=preview_version,
-                    is_final=False,
+            now = time.monotonic()
+            retry_after = preview_publish_retry_after.get(preview_version, 0.0)
+            if retry_after > now:
+                return latest_preview_version
+            try:
+                if _is_hls_cos_delivery_enabled():
+                    published = _publish_hls_manifest(
+                        manifest_path=preview_path,
+                        hls_root=Path(run_dir) / "round1" / "hls",
+                        preview_version=preview_version,
+                        preview_sections=preview_version,
+                        is_final=False,
+                    )
+                    extra = _hls_event_extra(published)
+                else:
+                    _publish_managed_artifacts(
+                        preview_path,
+                        managed_path,
+                        conversation_id=conversation_id,
+                        run_key=resolved_run_key,
+                        job_id=job_id,
+                        preview_version=preview_version,
+                        final_version=None,
+                        is_final=False,
+                    )
+                    extra = {
+                        "delivery_type": "mp4",
+                        "preview_url": _versioned_video_url(resolved_managed_name, preview_version),
+                        "preview_file_name": resolved_managed_name,
+                        "preview_version": preview_version,
+                        "preview_ready": True,
+                        "preview_sections": preview_version,
+                        "is_final": False,
+                    }
+            except Exception:
+                failure_count = preview_publish_failures.get(preview_version, 0) + 1
+                preview_publish_failures[preview_version] = failure_count
+                delay = min(
+                    _PREVIEW_PUBLISH_MAX_RETRY_SECONDS,
+                    _PREVIEW_PUBLISH_INITIAL_RETRY_SECONDS * (2 ** min(failure_count - 1, 4)),
                 )
-                extra = _hls_event_extra(published)
-            else:
-                _publish_managed_artifacts(
-                    preview_path,
-                    managed_path,
-                    conversation_id=conversation_id,
-                    run_key=resolved_run_key,
-                    job_id=job_id,
-                    preview_version=preview_version,
-                    final_version=None,
-                    is_final=False,
+                preview_publish_retry_after[preview_version] = now + delay
+                _logger.exception(
+                    "[Manim] failed to publish latest preview; retry delayed: "
+                    "run=%s job_id=%s preview_version=%s retry_seconds=%.1f failure_count=%s",
+                    run_dir.name,
+                    job_id or "",
+                    preview_version,
+                    delay,
+                    failure_count,
                 )
-                extra = {
-                    "delivery_type": "mp4",
-                    "preview_url": _versioned_video_url(resolved_managed_name, preview_version),
-                    "preview_file_name": resolved_managed_name,
-                    "preview_version": preview_version,
-                    "preview_ready": True,
-                    "preview_sections": preview_version,
-                    "is_final": False,
-                }
+                return latest_preview_version
             if event_callback is not None:
                 event_callback(
                     make_manim_stream_event(
@@ -981,17 +1205,31 @@ class ManimRenderRuntime:
             run_dir.name,
         )
 
-        wait_policy = settings.manim.job_slot_wait_seconds
         queue_start = time.monotonic()
-        if not self._acquire_job_slot():
-            _logger.warning(
-                "[Manim] 并发已满，拒绝渲染: run=%s policy=%s",
-                run_dir.name,
-                wait_policy,
-            )
-            raise RuntimeError(
-                "Manim render capacity reached (no free job slot). "
-                "Retry later or increase [manim].max_concurrent_jobs / adjust job_slot_wait_seconds."
+        slot_acquired = self._acquire_job_slot(blocking=False)
+        if not slot_acquired:
+            _logger.info("[Manim] 并发已满，任务排队等待槽位: run=%s", run_dir.name)
+            if event_callback is not None:
+                event_callback(
+                    {
+                        "type": "job_status",
+                        "status": "queued",
+                        "message": _CAPACITY_QUEUE_MESSAGE,
+                        "progress": 0,
+                        "run_id": run_id_hint,
+                    }
+                )
+            self._acquire_job_slot()
+            slot_acquired = True
+        if event_callback is not None:
+            event_callback(
+                {
+                    "type": "job_status",
+                    "status": "running",
+                    "message": _RENDER_RUNNING_MESSAGE,
+                    "progress": 1,
+                    "run_id": run_id_hint,
+                }
             )
         queue_ms = (time.monotonic() - queue_start) * 1000.0
         if queue_ms > 1.0:
@@ -1001,7 +1239,7 @@ class ManimRenderRuntime:
             def _runtime_event_callback(event: Any) -> None:
                 nonlocal run_id_hint
                 if hasattr(event, "run_id"):
-                    run_id_hint = str(getattr(event, "run_id") or run_id_hint)
+                    run_id_hint = str(event.run_id or run_id_hint)
                 elif isinstance(event, dict) and event.get("run_id"):
                     run_id_hint = str(event.get("run_id") or run_id_hint)
                 if event_callback is not None:
@@ -1025,7 +1263,8 @@ class ManimRenderRuntime:
                 event_callback=_runtime_event_callback,
             )
         finally:
-            _job_slot_semaphore().release()
+            if slot_acquired:
+                _job_slot_semaphore().release()
 
         _maybe_publish_latest_preview()
 
@@ -1137,14 +1376,14 @@ class ManimRenderRuntime:
         run_key: str,
         managed_name: str,
     ) -> None:
-        self._set_job_state_with_event(
-            job_id,
-            status="running",
-            message="Manim render job is running. Final video is not ready yet.",
-        )
         try:
             def _job_event_callback(event: Any) -> None:
                 payload = event.model_dump() if hasattr(event, "model_dump") else dict(event)
+                if payload.get("type") == "job_status":
+                    status_value = str(payload.get("status") or "").strip()
+                    message = str(payload.get("message") or "").strip()
+                    if status_value in {"queued", "running"} and message:
+                        self._set_job_state(job_id, status=status_value, message=message)
                 self._append_job_event(job_id, payload)
 
             result = self._execute_render_video(
@@ -1189,6 +1428,7 @@ class ManimRenderRuntime:
         quality: str = "default",
         conversation_id: str = "",
         idempotency_key: str = "",
+        source_job_id: str = "",
     ) -> dict[str, Any]:
         request_text = str(request or "").strip()
         if not request_text:
@@ -1211,6 +1451,9 @@ class ManimRenderRuntime:
             idempotency_key=normalized_idempotency_key,
             render_backend=backend,
             quality=quality_normalized,
+            request=request_text,
+            language=language,
+            source_job_id=source_job_id,
         )
 
         worker = threading.Thread(

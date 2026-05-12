@@ -1,0 +1,97 @@
+{
+  "lesson_goal": "用“简略讲解”的讲法，让学生迅速进入正确的理解节奏。",
+  "student_profile": "面向知道一点点背景，但需要更合适讲法来真正听懂的学生。",
+  "teaching_promise": "按照“简略讲解”的节奏组织内容，让讲解方式本身成为理解抓手。",
+  "problem_intake": {
+    "is_problem_solving": false,
+    "restatement": "这次讲解采用“简略讲解”风格来组织内容。",
+    "givens": [
+      "讲解风格：简略讲解",
+      "节奏：fast"
+    ],
+    "target": "让学生不仅听到内容，还能感受到为什么这种讲法更容易懂。",
+    "key_terms": [
+      "简略讲解",
+      "high-level summary",
+      "light"
+    ],
+    "visual_marking_plan": "开场先明确这是“简略讲解”风格，再用版式和节奏把这种讲法固定下来。"
+  },
+  "hook": "如果只剩几分钟，怎样讲才能让学生先抓住大意？",
+  "opening": {
+    "style": "question_first",
+    "hook_line": "如果只剩几分钟，怎样讲才能让学生先抓住大意？",
+    "roadmap_style": "question_chain"
+  },
+  "big_idea": "简略讲解不是少讲，而是只保留最能支撑理解的骨架。",
+  "teacher_voice": "亲切、清晰、强调讲解方式本身的节奏感。",
+  "narrative_arc": [
+    "先给全景",
+    "只保留关键词",
+    "给一个代表性例子"
+  ],
+  "misconceptions": [
+    {
+      "mistake": "以为内容一换，讲法就完全失效。",
+      "teacher_response": "先识别讲解目标，再选择对应讲法，风格本身可以跨主题复用。"
+    }
+  ],
+  "sections": [
+    {
+      "id": "section_one_big_picture",
+      "title": "先给全景",
+      "teacher_move": "先把整件事的大轮廓抛出来。",
+      "visual_strategy": "总览图、主线、结论先行",
+      "key_takeaway": "在“简略讲解”里，这一段承担的是 先给全景 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“简略讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_two_key_terms",
+      "title": "只保留关键词",
+      "teacher_move": "只讲最关键的词和关系，不展开旁枝。",
+      "visual_strategy": "关键词、箭头关系",
+      "key_takeaway": "在“简略讲解”里，这一段承担的是 只保留关键词 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“简略讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_three_main_example",
+      "title": "给一个代表性例子",
+      "teacher_move": "用一个极小例子承接整体印象。",
+      "visual_strategy": "一个例子、一条主线",
+      "key_takeaway": "在“简略讲解”里，这一段承担的是 给一个代表性例子 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“简略讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_four_common_confusion",
+      "title": "顺手排一个误区",
+      "teacher_move": "快速指出最常见误解，避免学生带错印象离开。",
+      "visual_strategy": "误区对比",
+      "key_takeaway": "在“简略讲解”里，这一段承担的是 顺手排一个误区 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“简略讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_five_one_sentence",
+      "title": "一句话收口",
+      "teacher_move": "最后收成一句能带走的话。",
+      "visual_strategy": "一句话总结",
+      "key_takeaway": "在“简略讲解”里，这一段承担的是 一句话收口 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“简略讲解”，这一段最关键的讲法是什么？"
+    }
+  ],
+  "closing": {
+    "summary": "简略讲解不是少讲，而是只保留最能支撑理解的骨架。",
+    "transfer_question": "如果换一道新题或新概念，你还会沿用“简略讲解”这套理解路径吗？",
+    "after_class_prompt": "课后请回忆“简略讲解”最有效的两个讲解动作，并尝试迁移到别的主题。"
+  },
+  "selected_assets": [],
+  "selected_theme": {
+    "theme_id": "mist_blue_focus",
+    "display_name": "mist_blue_focus",
+    "reason": "deterministic fast path"
+  },
+  "explanation_profile": {
+    "style": "high-level summary",
+    "depth": "light",
+    "pacing": "fast"
+  }
+}

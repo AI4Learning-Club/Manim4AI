@@ -1,0 +1,12 @@
+{
+  "category_id": "interactive_prompt_explainer",
+  "display_name": "引导互动式讲解",
+  "style_axis": "interactive",
+  "template_id": "interactive_prompt_explainer_template_v1",
+  "status": "ready",
+  "template_file": "template.py",
+  "teaching_plan_file": "teaching_plan.json",
+  "metadata_file": "metadata.json",
+  "template_line_count": 184,
+  "section_count": 5
+}

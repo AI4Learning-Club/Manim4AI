@@ -272,6 +272,14 @@ class TencentCosCdnPublisher:
         self._cdn().PushUrlsCache(req)
         return tuple(urls)
 
+    def read_object_bytes(self, object_key: str, *, chunk_size: int = 64 * 1024) -> bytes:
+        response = self._cos().get_object(
+            Bucket=self._delivery.cos_bucket,
+            Key=object_key,
+        )
+        body = response["Body"]
+        return b"".join(body.get_stream(chunk_size=chunk_size))
+
     def publish_hls(self, payload: HlsPublishInput) -> HlsPublishedArtifact:
         if not self._delivery.cos_bucket or not self._delivery.cos_region:
             raise RuntimeError("manim.delivery.cos_bucket and cos_region are required for Manim COS delivery")

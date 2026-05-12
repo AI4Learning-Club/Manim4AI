@@ -38,6 +38,7 @@ from interface.plugins.manim import (
 from .asset_resolver import resolve_local_assets
 from .code_eval import CodeEvalAgent
 from .code_gen import CodeGenAgent
+from .fast_paths import build_fast_path_plan_and_code_for_category, maybe_build_fast_path_plan_and_code
 from .llm import resolve_pipeline_llm_configs, validate_pipeline_llm_configs
 from .output_language import normalize_output_language, output_language_name
 from .remotion_renderer import build_remotion_hybrid
@@ -56,6 +57,7 @@ from .scene_pack import parse_scene_pack
 from .streaming_scene_pack import ScenePackStreamBuffer, sanitize_streaming_code
 from .storyboard_agent import StoryboardAgent
 from .teaching_planner import TeachingPlannerAgent
+from .style_selector import ExplanationStyleSelector
 from .section_validation import validate_and_fix_streaming_scene_file
 from .theme_resolver import resolve_theme
 from .tts import has_audio_stream, voice_for_language
@@ -245,6 +247,14 @@ def _write_json_debug_impl(path: Path, payload: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        return
+
+
+def _write_text_debug(path: Path, text: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
     except Exception:
         return
 
@@ -579,6 +589,83 @@ def _record_timing_once(store: dict[str, float], key: str, pipeline_started_at: 
     store[key] = round(time.time() - pipeline_started_at, 3)
 
 
+def _round_timing_map(values: dict[str, float]) -> dict[str, float]:
+    return {
+        key: round(float(value), 3)
+        for key, value in values.items()
+    }
+
+
+def _build_pipeline_timing_summary(
+    *,
+    stage_times: dict[str, float],
+    stream_timing: dict[str, float],
+    streaming_section_counts: dict[str, Any],
+    streaming_preview: dict[str, Any],
+) -> dict[str, Any]:
+    rounded_stage_times = _round_timing_map(stage_times)
+    rounded_stream_timing = _round_timing_map(stream_timing)
+    preview_history = streaming_preview.get("history")
+    preview_history_count = len(preview_history) if isinstance(preview_history, list) else 0
+    preview_version = streaming_preview.get("version")
+    published_prefix_len = streaming_preview.get("published_prefix_len")
+    total_wall_seconds = rounded_stream_timing.get("t_final_done")
+    first_preview_seconds = rounded_stream_timing.get("t_first_preview_built")
+    first_section_ready_seconds = rounded_stream_timing.get("t_first_section_ready")
+    return {
+        "total_wall_seconds": total_wall_seconds,
+        "time_to_first_analysis_delta_seconds": rounded_stream_timing.get("t_first_analysis_delta"),
+        "time_to_first_code_delta_seconds": rounded_stream_timing.get("t_first_code_delta"),
+        "time_to_first_section_ready_seconds": first_section_ready_seconds,
+        "time_to_first_section_validation_started_seconds": rounded_stream_timing.get("t_first_section_validation_started"),
+        "time_to_first_section_validation_completed_seconds": rounded_stream_timing.get("t_first_section_validation_completed"),
+        "time_to_first_section_fix_completed_seconds": rounded_stream_timing.get("t_first_section_fix_completed"),
+        "time_to_first_section_tts_started_seconds": rounded_stream_timing.get("t_first_section_tts_started"),
+        "time_to_first_section_tts_completed_seconds": rounded_stream_timing.get("t_first_section_tts_completed"),
+        "time_to_first_section_render_started_seconds": rounded_stream_timing.get("t_first_section_render_started"),
+        "time_to_first_section_render_completed_seconds": rounded_stream_timing.get("t_first_section_render_completed"),
+        "time_to_first_preview_seconds": first_preview_seconds,
+        "time_from_first_section_ready_to_first_preview_seconds": (
+            round(first_preview_seconds - first_section_ready_seconds, 3)
+            if first_preview_seconds is not None and first_section_ready_seconds is not None
+            else None
+        ),
+        "render_stage_started_seconds": rounded_stream_timing.get("t_render_stage_started"),
+        "stage_times": rounded_stage_times,
+        "stream_timing": rounded_stream_timing,
+        "streaming_section_counts": dict(streaming_section_counts),
+        "preview_history_count": preview_history_count,
+        "preview_versions_published": int(preview_version or 0),
+        "preview_contiguous_prefix_sections": int(published_prefix_len or 0),
+        "preview_last_error": streaming_preview.get("last_error"),
+    }
+
+
+def _attempt_codegen_repair(
+    *,
+    agent: Any,
+    code: str,
+    codegen_failure_message: str,
+    output_language: str,
+) -> str | None:
+    try:
+        repaired = agent.fix(
+            code=code,
+            error_log=codegen_failure_message,
+            output_language=output_language,
+        )
+    except Exception:
+        return None
+    if not isinstance(repaired, str) or not repaired.strip():
+        return None
+    repaired = sanitize_streaming_code(repaired)
+    try:
+        spec = parse_scene_pack(repaired)
+    except Exception:
+        return None
+    return repaired if spec.manifest else None
+
+
 def _streaming_section_state_summary(state: Any) -> dict[str, Any]:
     validation_result = state.validation_result if isinstance(getattr(state, "validation_result", None), dict) else {}
     validation_report = validation_result.get("validation_report")
@@ -662,6 +749,30 @@ def _write_streaming_section_statuses(run_dir: Path, states: list[Any]) -> None:
         )
 
 
+def _write_streaming_submit_failure(
+    run_dir: Path,
+    *,
+    segment_id: str,
+    scene_name: str,
+    order: int,
+    parseable_prefix: str,
+    error: str,
+) -> None:
+    _write_json_debug(
+        run_dir / f"section_submit_failure_{segment_id}.json",
+        {
+            "segment_id": segment_id,
+            "scene_name": scene_name,
+            "order": order,
+            "error": error,
+        },
+    )
+    _write_text_debug(
+        run_dir / f"section_submit_failure_{segment_id}.py",
+        parseable_prefix,
+    )
+
+
 def _emit_section_ready_event(
     *,
     event_callback: Callable[[ManimStreamEvent], None] | None,
@@ -710,7 +821,7 @@ def _emit_section_ready_event(
 def _materialize_missing_streaming_sections(
     *,
     code: str,
-    ready_segment_ids: set[str],
+    submitted_segment_ids: set[str],
     ensure_coordinator: Callable[[int], SectionPipelineCoordinator],
     r1_dir: Path,
     tts_voice: str | None,
@@ -729,9 +840,9 @@ def _materialize_missing_streaming_sections(
     if not spec.manifest:
         return
     coordinator = ensure_coordinator(len(spec.manifest))
-    ready_count = len(ready_segment_ids)
+    ready_count = len(submitted_segment_ids)
     for segment in spec.manifest:
-        if segment.segment_id in ready_segment_ids:
+        if segment.segment_id in submitted_segment_ids:
             continue
         scene_file = r1_dir / "streaming_scene_files" / f"{segment.order:02d}_{segment.segment_id}.py"
         _, resolved_scene_file, _ = write_streaming_scene_pack_segment_file(
@@ -810,6 +921,34 @@ def _build_section_only_render_result(
             f"[{segment.order:02d}:{segment.segment_id}] {segment.error_log or 'segment_render_failed'}"
             for segment in failed_segments
         )
+        successful_segments = [
+            segment
+            for segment in sorted(segment_results, key=lambda item: item.order)
+            if segment.success and segment.video_path is not None
+        ]
+        if successful_segments:
+            final_video = output_dir / "video.mp4"
+            concat_error = _concat_segment_videos(successful_segments, final_video)
+            if not concat_error:
+                fallback_note = (
+                    "Partial Manim video rendered because one or more sections failed. "
+                    "Failed sections:\n"
+                    f"{error_log}"
+                )
+                _write_round_render_log(
+                    output_dir,
+                    segment_results,
+                    final_video=final_video,
+                    final_error=fallback_note,
+                )
+                return RenderResult(
+                    success=True,
+                    video_path=final_video,
+                    error_log=fallback_note,
+                    scene_name="ScenePack",
+                    segments=segment_results,
+                )
+            error_log = f"{error_log}\n\nPartial video concat also failed:\n{concat_error}"
         _write_round_render_log(output_dir, segment_results, final_error=error_log)
         return RenderResult(success=False, error_log=error_log, scene_name="ScenePack", segments=segment_results)
 
@@ -1407,6 +1546,7 @@ def run_pipeline(
         _log("Teaching planner: building lesson structure ...")
         stage_started_at = time.time()
         planner = TeachingPlannerAgent(analysis_llm)
+        style_selector = ExplanationStyleSelector(analysis_llm)
         agent = CodeGenAgent(code_llm)
         code_eval_agent = CodeEvalAgent(analysis_llm)
         analysis_delta_bridge = _make_text_delta_event_bridge(
@@ -1435,13 +1575,75 @@ def run_pipeline(
                 analysis_delta_bridge(delta)
         def _analysis_llm_event(payload: dict[str, Any]) -> None:
             _emit_debug_observation(debug_callback, payload)
-        teaching_plan: Dict[str, Any] = _call_with_optional_on_event(
-            planner.plan,
-            request_text,
-            image_path,
-            on_delta=_analysis_delta_and_persist,
-            on_event=_analysis_llm_event,
-        )
+        fast_path_used = False
+        fast_path_template_id = ""
+        fast_path_reference_code = ""
+        teaching_plan: Dict[str, Any]
+        selected_theme: Dict[str, Any] | None = None
+        if MANIM_SETTINGS.render.deterministic_fast_path_enabled:
+            selected_theme = {"theme_id": "mist_blue_focus", "display_name": "Mist Blue Focus"}
+            fast_path = None
+            try:
+                style_pick = style_selector.select(
+                    request_text,
+                    on_event=_analysis_llm_event,
+                )
+                picked_category_id = str(style_pick.get("category_id") or "").strip()
+                if picked_category_id:
+                    fast_path = build_fast_path_plan_and_code_for_category(
+                        picked_category_id,
+                        selected_theme=selected_theme,
+                    )
+            except Exception as exc:
+                _emit_debug_observation(
+                    debug_callback,
+                    {
+                        "type": "style_selector_failed",
+                        "run_id": run_id,
+                        "error": str(exc),
+                    },
+                )
+            if fast_path is None:
+                fast_path = maybe_build_fast_path_plan_and_code(
+                    request_text,
+                    output_language=output_language,
+                    selected_theme=selected_theme,
+                )
+            if fast_path is not None:
+                teaching_plan, fast_path_reference_code = fast_path
+                fast_path_used = True
+                fast_path_template_id = str(
+                    teaching_plan.get("fast_path", {}).get("template_id") or "deterministic_fast_path"
+                )
+                _record_timing_once(stream_timing, "t_first_analysis_delta", pipeline_started_at)
+                _append_stream_text(analysis_stream_path, json.dumps(teaching_plan, ensure_ascii=False))
+                _write_json_debug(stream_timing_path, stream_timing)
+                _emit_debug_observation(
+                    debug_callback,
+                    {
+                        "type": "analysis_delta",
+                        "run_id": run_id,
+                        "delta": "[FAST_PATH_PLAN]",
+                        "char_count": len(json.dumps(teaching_plan, ensure_ascii=False)),
+                    },
+                )
+                _log(f"Teaching planner: deterministic fast path matched ({fast_path_template_id})")
+            else:
+                teaching_plan = _call_with_optional_on_event(
+                    planner.plan,
+                    request_text,
+                    image_path,
+                    on_delta=_analysis_delta_and_persist,
+                    on_event=_analysis_llm_event,
+                )
+        else:
+            teaching_plan = _call_with_optional_on_event(
+                planner.plan,
+                request_text,
+                image_path,
+                on_delta=_analysis_delta_and_persist,
+                on_event=_analysis_llm_event,
+            )
         stage_times["planning"] = time.time() - stage_started_at
         _log(f"Teaching planner: {len(teaching_plan.get('sections', []))} section(s) ready")
         _emit_pipeline_event(
@@ -1450,7 +1652,11 @@ def run_pipeline(
             stage=ManimStreamEventStage.ANALYSIS,
             message="Teaching analysis completed",
             run_id=run_id,
-            extra={"section_count": len(teaching_plan.get("sections", []))},
+            extra={
+                "section_count": len(teaching_plan.get("sections", [])),
+                "fast_path_used": fast_path_used,
+                "fast_path_template_id": fast_path_template_id or None,
+            },
         )
         _emit_stage_completed(
             event_callback,
@@ -1471,9 +1677,13 @@ def run_pipeline(
         _log("主题: 正在匹配课件主题 …")
         _log("Theme resolver: selecting lesson theme ...")
         stage_started_at = time.time()
-        selected_theme = resolve_theme(request_text, teaching_plan)
-        stage_times["theme_selection"] = time.time() - stage_started_at
-        teaching_plan["selected_theme"] = selected_theme
+        if fast_path_used and selected_theme is not None:
+            stage_times["theme_selection"] = time.time() - stage_started_at
+            teaching_plan["selected_theme"] = selected_theme
+        else:
+            selected_theme = resolve_theme(request_text, teaching_plan)
+            stage_times["theme_selection"] = time.time() - stage_started_at
+            teaching_plan["selected_theme"] = selected_theme
         _log(
             "Theme resolver: selected "
             f"{selected_theme['theme_id']} ({selected_theme['display_name']})"
@@ -1603,6 +1813,8 @@ def run_pipeline(
             "selected_theme_reason": selected_theme.get("reason"),
             "selected_assets_file": str(selected_assets_path),
             "selected_assets_count": len(teaching_plan.get("selected_assets", [])),
+            "fast_path_used": fast_path_used,
+            "fast_path_template_id": fast_path_template_id or None,
             "storyboard_file": str(storyboard_path) if storyboard_path else None,
             "manim_teaching_plan_file": str(manim_plan_path) if manim_plan_path else str(teaching_plan_path),
             "hybrid_routes": manim_teaching_plan.get("hybrid_routes"),
@@ -1631,6 +1843,7 @@ def run_pipeline(
                 "history": [],
                 "last_error": None,
             },
+            "codegen_warnings": [],
         }
 
         _emit_stage_started(
@@ -1928,7 +2141,16 @@ def run_pipeline(
                             "scene_file": resolved_scene_file,
                         }
                     )
+                    stream_buffer.mark_submitted(report.segment.segment_id)
                 except Exception as exc:
+                    _write_streaming_submit_failure(
+                        run_dir,
+                        segment_id=report.segment.segment_id,
+                        scene_name=report.segment.scene_name,
+                        order=report.segment.order,
+                        parseable_prefix=snapshot.parseable_prefix,
+                        error=str(exc),
+                    )
                     _log(
                         f"Code streaming: failed to submit ready section "
                         f"{report.segment.segment_id} - {exc}"
@@ -1937,6 +2159,12 @@ def run_pipeline(
         def _code_llm_event(payload: dict[str, Any]) -> None:
             _emit_debug_observation(debug_callback, payload)
 
+        if fast_path_used and fast_path_reference_code:
+            manim_teaching_plan = dict(manim_teaching_plan)
+            manim_teaching_plan["fast_path_reference"] = {
+                "template_code": fast_path_reference_code,
+                "fusion_required": True,
+            }
         code = _call_with_optional_on_event(
             agent.generate,
             request_text,
@@ -1955,13 +2183,25 @@ def run_pipeline(
         except Exception as exc:
             codegen_failure_reason = "codegen_unparseable"
             codegen_failure_message = f"Code generation produced an unparseable Scene Pack: {exc}"
+            repaired_codegen = _attempt_codegen_repair(
+                agent=agent,
+                code=sanitized_code,
+                codegen_failure_message=codegen_failure_message,
+                output_language=output_language,
+            )
+            if repaired_codegen:
+                sanitized_code = repaired_codegen
+                code = repaired_codegen
+                codegen_failure_reason = ""
+                codegen_failure_message = ""
+                expected_segment_count = len(parse_scene_pack(sanitized_code).manifest)
         if not codegen_failure_reason and expected_segment_count <= 0:
             codegen_failure_reason = "codegen_truncated"
             codegen_failure_message = "Code generation finished without any renderable Scene Pack sections."
         if not codegen_failure_reason:
             _materialize_missing_streaming_sections(
                 code=code,
-                ready_segment_ids=set(stream_buffer.ready_segment_ids),
+                submitted_segment_ids=set(stream_buffer.ready_segment_ids),
                 ensure_coordinator=_ensure_streaming_coordinator,
                 r1_dir=r1_dir,
                 tts_voice=tts_voice,
@@ -1972,6 +2212,7 @@ def run_pipeline(
                 stream_timing_path=stream_timing_path,
                 pipeline_started_at=pipeline_started_at,
             )
+        stage_times["round1_codegen"] = time.time() - stage_started_at
         if coordinator is not None:
             coordinator.close_submissions()
             streaming_states = coordinator.wait_until_complete()
@@ -2001,25 +2242,49 @@ def run_pipeline(
             ),
         }
         if codegen_failure_reason:
+            rendered_section_count = sum(
+                1
+                for state in streaming_states
+                if getattr(state, "status", "") == "done"
+                and getattr(getattr(state, "render_result", None), "success", False)
+            )
+            if rendered_section_count <= 0:
+                _emit_pipeline_event(
+                    event_callback,
+                    event_type=ManimStreamEventType.TASK_FAILED,
+                    stage=ManimStreamEventStage.CODEGEN,
+                    message=codegen_failure_message,
+                    run_id=run_id,
+                    extra={
+                        "reason": codegen_failure_reason,
+                        "partial_chars": len(code),
+                        "ready_sections": len(streaming_states),
+                    },
+                )
+                raise RuntimeError(f"{codegen_failure_reason}: {codegen_failure_message}")
+            warning = {
+                "reason": codegen_failure_reason,
+                "message": codegen_failure_message,
+                "partial_chars": len(code),
+                "ready_sections": len(streaming_states),
+                "rendered_sections": rendered_section_count,
+            }
+            summary["codegen_warnings"].append(warning)
+            expected_segment_count = len(streaming_states)
             _emit_pipeline_event(
                 event_callback,
-                event_type=ManimStreamEventType.TASK_FAILED,
+                event_type=ManimStreamEventType.STAGE_PROGRESS,
                 stage=ManimStreamEventStage.CODEGEN,
-                message=codegen_failure_message,
+                message="Manim code stream completed with a salvageable Scene Pack parse warning",
                 run_id=run_id,
-                extra={
-                    "reason": codegen_failure_reason,
-                    "partial_chars": len(code),
-                    "ready_sections": len(streaming_states),
-                },
+                progress=60,
+                extra=warning,
             )
-            raise RuntimeError(f"{codegen_failure_reason}: {codegen_failure_message}")
         pre_rendered_segment_ids = {
             state.task.segment_id
             for state in streaming_states
             if state.status == "done"
         }
-        stage_times["round1_codegen"] = time.time() - stage_started_at
         _emit_pipeline_event(
             event_callback,
             event_type=ManimStreamEventType.CODEGEN_STREAM_COMPLETED,
@@ -2102,7 +2367,14 @@ def run_pipeline(
         )
         _record_timing_once(stream_timing, "t_final_done", pipeline_started_at)
         _write_json_debug(stream_timing_path, stream_timing)
-        summary["stream_timing"] = dict(stream_timing)
+        summary["stage_times"] = _round_timing_map(stage_times)
+        summary["stream_timing"] = _round_timing_map(stream_timing)
+        summary["timing"] = _build_pipeline_timing_summary(
+            stage_times=stage_times,
+            stream_timing=stream_timing,
+            streaming_section_counts=summary["streaming_section_counts"],
+            streaming_preview=summary["streaming_preview"],
+        )
         summary["stream_debug_files"] = {
             "analysis_stream": str(analysis_stream_path),
             "code_stream_partial": str(code_stream_path),

@@ -1,0 +1,97 @@
+{
+  "lesson_goal": "用“详细讲解”的讲法，让学生迅速进入正确的理解节奏。",
+  "student_profile": "面向知道一点点背景，但需要更合适讲法来真正听懂的学生。",
+  "teaching_promise": "按照“详细讲解”的节奏组织内容，让讲解方式本身成为理解抓手。",
+  "problem_intake": {
+    "is_problem_solving": false,
+    "restatement": "这次讲解采用“详细讲解”风格来组织内容。",
+    "givens": [
+      "讲解风格：详细讲解",
+      "节奏：slow"
+    ],
+    "target": "让学生不仅听到内容，还能感受到为什么这种讲法更容易懂。",
+    "key_terms": [
+      "详细讲解",
+      "deep walkthrough",
+      "high"
+    ],
+    "visual_marking_plan": "开场先明确这是“详细讲解”风格，再用版式和节奏把这种讲法固定下来。"
+  },
+  "hook": "为什么有些内容必须讲细，学生才不会只记住表面？",
+  "opening": {
+    "style": "question_first",
+    "hook_line": "为什么有些内容必须讲细，学生才不会只记住表面？",
+    "roadmap_style": "question_chain"
+  },
+  "big_idea": "详细讲解的价值在于把隐含台阶全部点亮，让学生不靠猜。",
+  "teacher_voice": "亲切、清晰、强调讲解方式本身的节奏感。",
+  "narrative_arc": [
+    "补背景",
+    "把定义讲透",
+    "展示推理链"
+  ],
+  "misconceptions": [
+    {
+      "mistake": "以为内容一换，讲法就完全失效。",
+      "teacher_response": "先识别讲解目标，再选择对应讲法，风格本身可以跨主题复用。"
+    }
+  ],
+  "sections": [
+    {
+      "id": "section_one_context",
+      "title": "补背景",
+      "teacher_move": "先把学生缺失的上下文补足。",
+      "visual_strategy": "前置知识、边界条件",
+      "key_takeaway": "在“详细讲解”里，这一段承担的是 补背景 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“详细讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_two_define",
+      "title": "把定义讲透",
+      "teacher_move": "概念、条件、对象都逐一定清楚。",
+      "visual_strategy": "定义卡、限制条件",
+      "key_takeaway": "在“详细讲解”里，这一段承担的是 把定义讲透 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“详细讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_three_reasoning",
+      "title": "展示推理链",
+      "teacher_move": "不给跳步，把为什么成立一路说清。",
+      "visual_strategy": "推理链、阶段节点",
+      "key_takeaway": "在“详细讲解”里，这一段承担的是 展示推理链 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“详细讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_four_edge_cases",
+      "title": "补边界与反例",
+      "teacher_move": "专门处理细节、反例、易错点。",
+      "visual_strategy": "反例、边界情况",
+      "key_takeaway": "在“详细讲解”里，这一段承担的是 补边界与反例 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“详细讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_five_reconstruct",
+      "title": "让学生重建一遍",
+      "teacher_move": "收尾时让学生能自己再说一遍。",
+      "visual_strategy": "重构图、复述框架",
+      "key_takeaway": "在“详细讲解”里，这一段承担的是 让学生重建一遍 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“详细讲解”，这一段最关键的讲法是什么？"
+    }
+  ],
+  "closing": {
+    "summary": "详细讲解的价值在于把隐含台阶全部点亮，让学生不靠猜。",
+    "transfer_question": "如果换一道新题或新概念，你还会沿用“详细讲解”这套理解路径吗？",
+    "after_class_prompt": "课后请回忆“详细讲解”最有效的两个讲解动作，并尝试迁移到别的主题。"
+  },
+  "selected_assets": [],
+  "selected_theme": {
+    "theme_id": "mist_blue_focus",
+    "display_name": "mist_blue_focus",
+    "reason": "deterministic fast path"
+  },
+  "explanation_profile": {
+    "style": "deep walkthrough",
+    "depth": "high",
+    "pacing": "slow"
+  }
+}

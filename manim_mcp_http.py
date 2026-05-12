@@ -60,6 +60,7 @@ def main() -> None:
             quality=str(payload.get("quality") or "default"),
             conversation_id=str(payload.get("conversation_id") or ""),
             idempotency_key=str(payload.get("idempotency_key") or ""),
+            source_job_id=str(payload.get("source_job_id") or ""),
         ),
         get_job_status=lambda job_id: runtime.renderer.get_job_status(job_id=job_id),
         get_job_events=lambda job_id, after_index: runtime.renderer.get_job_events(job_id=job_id, after_index=after_index),

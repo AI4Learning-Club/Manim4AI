@@ -1,0 +1,97 @@
+{
+  "lesson_goal": "用“分层递进讲解”的讲法，让学生迅速进入正确的理解节奏。",
+  "student_profile": "面向知道一点点背景，但需要更合适讲法来真正听懂的学生。",
+  "teaching_promise": "按照“分层递进讲解”的节奏组织内容，让讲解方式本身成为理解抓手。",
+  "problem_intake": {
+    "is_problem_solving": false,
+    "restatement": "这次讲解采用“分层递进讲解”风格来组织内容。",
+    "givens": [
+      "讲解风格：分层递进讲解",
+      "节奏：steady"
+    ],
+    "target": "让学生不仅听到内容，还能感受到为什么这种讲法更容易懂。",
+    "key_terms": [
+      "分层递进讲解",
+      "layered",
+      "medium"
+    ],
+    "visual_marking_plan": "开场先明确这是“分层递进讲解”风格，再用版式和节奏把这种讲法固定下来。"
+  },
+  "hook": "如果内容没变，只是讲法换了，理解体验会差多少？",
+  "opening": {
+    "style": "question_first",
+    "hook_line": "如果内容没变，只是讲法换了，理解体验会差多少？",
+    "roadmap_style": "question_chain"
+  },
+  "big_idea": "分层递进讲解的核心不是多讲内容，而是用合适的讲法把理解路径变短。",
+  "teacher_voice": "亲切、清晰、强调讲解方式本身的节奏感。",
+  "narrative_arc": [
+    "先给出讲法定位",
+    "再固定讲解结构",
+    "执行这套讲法"
+  ],
+  "misconceptions": [
+    {
+      "mistake": "以为内容一换，讲法就完全失效。",
+      "teacher_response": "先识别讲解目标，再选择对应讲法，风格本身可以跨主题复用。"
+    }
+  ],
+  "sections": [
+    {
+      "id": "section_one_position",
+      "title": "先给出讲法定位",
+      "teacher_move": "先告诉学生这次为什么采用这种讲法。",
+      "visual_strategy": "风格标签、目标、适用场景",
+      "key_takeaway": "在“分层递进讲解”里，这一段承担的是 先给出讲法定位 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“分层递进讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_two_structure",
+      "title": "再固定讲解结构",
+      "teacher_move": "��这种讲法的结构骨架明确下来。",
+      "visual_strategy": "结构框架、节奏分层",
+      "key_takeaway": "在“分层递进讲解”里，这一段承担的是 再固定讲解结构 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“分层递进讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_three_execution",
+      "title": "执行这套讲法",
+      "teacher_move": "展示真正推进内容时，这种讲法如何发力。",
+      "visual_strategy": "步骤推进、重点切换",
+      "key_takeaway": "在“分层递进讲解”里，这一段承担的是 执行这套讲法 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“分层递进讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_four_feedback",
+      "title": "用反馈校正",
+      "teacher_move": "强调这种讲法如何处理学生常见卡点。",
+      "visual_strategy": "误区提醒、反馈回路",
+      "key_takeaway": "在“分层递进讲解”里，这一段承担的是 用反馈校正 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“分层递进讲解”，这一段最关键的讲法是什么？"
+    },
+    {
+      "id": "section_five_transfer",
+      "title": "最后做迁移",
+      "teacher_move": "把这种讲法迁移到别的内容场景。",
+      "visual_strategy": "迁移问题、复用提醒",
+      "key_takeaway": "在“分层递进讲解”里，这一段承担的是 最后做迁移 这个讲解动作。",
+      "check_for_understanding": "如果你要复用“分层递进讲解”，这一段最关键的讲法是什么？"
+    }
+  ],
+  "closing": {
+    "summary": "分层递进讲解的核心不是多讲内容，而是用合适的讲法把理解路径变短。",
+    "transfer_question": "如果换一道新题或新概念，你还会沿用“分层递进讲解”这套理解路径吗？",
+    "after_class_prompt": "课后请回忆“分层递进讲解”最有效的两个讲解动作，并尝试迁移到别的主题。"
+  },
+  "selected_assets": [],
+  "selected_theme": {
+    "theme_id": "mist_blue_focus",
+    "display_name": "mist_blue_focus",
+    "reason": "deterministic fast path"
+  },
+  "explanation_profile": {
+    "style": "layered",
+    "depth": "medium",
+    "pacing": "steady"
+  }
+}

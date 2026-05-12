@@ -1,0 +1,12 @@
+{
+  "category_id": "conceptual_explainer",
+  "display_name": "概念型讲解",
+  "style_axis": "conceptual",
+  "template_id": "conceptual_explainer_template_v1",
+  "status": "ready",
+  "template_file": "template.py",
+  "teaching_plan_file": "teaching_plan.json",
+  "metadata_file": "metadata.json",
+  "template_line_count": 184,
+  "section_count": 5
+}

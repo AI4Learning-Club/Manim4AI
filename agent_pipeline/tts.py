@@ -18,10 +18,10 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from .output_language import normalize_output_language
 from plugins.manim.runtime_config import get_manim_settings, get_manim_tts_global_cache_dir
 from service.tts_account_pool import acquire_doubao_tts_account, doubao_tts_resource_cache_key
 
+from .output_language import normalize_output_language
 
 _MANIM_SETTINGS = get_manim_settings()
 VOICE_ZH = _MANIM_SETTINGS.tts_voice_zh
@@ -43,6 +43,7 @@ _EDGE_TTS_ATTEMPTS = 3
 _EDGE_TTS_RETRY_BASE_S = 0.45
 _DOUBAO_TTS_ATTEMPTS = 1
 _DOUBAO_TTS_RETRY_BASE_S = 0.6
+_DOUBAO_TTS_POOL_ACQUIRE_DEFAULT_TIMEOUT_S = 60.0
 
 
 def _edge_tts_semaphore() -> threading.Semaphore:
@@ -390,7 +391,7 @@ def generate_audio(
         speaker = doubao_speaker_for_edge_voice(voice, text)
         for attempt in range(_DOUBAO_TTS_ATTEMPTS):
             try:
-                with acquire_doubao_tts_account() as account:
+                with acquire_doubao_tts_account(timeout=_DOUBAO_TTS_POOL_ACQUIRE_DEFAULT_TIMEOUT_S) as account:
                     fd, tmp_name = tempfile.mkstemp(
                         suffix=".mp3",
                         prefix=".tts_doubao_",

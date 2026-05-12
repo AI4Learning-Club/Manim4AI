@@ -1,0 +1,12 @@
+{
+  "category_id": "mistake_first_explainer",
+  "display_name": "易错点优先讲解",
+  "style_axis": "mistake-first",
+  "template_id": "mistake_first_explainer_template_v1",
+  "status": "ready",
+  "template_file": "template.py",
+  "teaching_plan_file": "teaching_plan.json",
+  "metadata_file": "metadata.json",
+  "template_line_count": 184,
+  "section_count": 5
+}

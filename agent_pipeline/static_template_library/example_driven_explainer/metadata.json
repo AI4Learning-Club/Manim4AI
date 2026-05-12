@@ -1,0 +1,12 @@
+{
+  "category_id": "example_driven_explainer",
+  "display_name": "例题驱动讲解",
+  "style_axis": "example",
+  "template_id": "example_driven_explainer_template_v1",
+  "status": "ready",
+  "template_file": "template.py",
+  "teaching_plan_file": "teaching_plan.json",
+  "metadata_file": "metadata.json",
+  "template_line_count": 184,
+  "section_count": 5
+}

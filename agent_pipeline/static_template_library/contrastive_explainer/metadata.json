@@ -1,0 +1,12 @@
+{
+  "category_id": "contrastive_explainer",
+  "display_name": "对比辨析讲解",
+  "style_axis": "contrast",
+  "template_id": "contrastive_explainer_template_v1",
+  "status": "ready",
+  "template_file": "template.py",
+  "teaching_plan_file": "teaching_plan.json",
+  "metadata_file": "metadata.json",
+  "template_line_count": 184,
+  "section_count": 5
+}

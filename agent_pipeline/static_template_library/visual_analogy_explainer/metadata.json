@@ -1,0 +1,12 @@
+{
+  "category_id": "visual_analogy_explainer",
+  "display_name": "类比型讲解",
+  "style_axis": "analogy",
+  "template_id": "visual_analogy_explainer_template_v1",
+  "status": "ready",
+  "template_file": "template.py",
+  "teaching_plan_file": "teaching_plan.json",
+  "metadata_file": "metadata.json",
+  "template_line_count": 184,
+  "section_count": 5
+}

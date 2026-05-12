@@ -18,8 +18,8 @@ from plugins.manim.runtime_config import get_manim_settings
 from .agent_skills import build_manim_skill_prompt
 from .llm import LLMClient, LLMConfig, LLMDeltaCallback, LLMEventCallback, StreamTerminated
 from .output_language import normalize_output_language, output_language_name
-from .scene_pack import parse_scene_pack
-from .streaming_scene_pack import sanitize_streaming_code
+from .scene_pack import parse_scene_pack, recover_scene_pack_skeleton
+from .streaming_scene_pack import extract_parseable_prefix, sanitize_streaming_code
 from .tool_runtime import ManimToolRuntime, ToolResult, build_openai_tool_schemas
 
 # ---------------------------------------------------------------------------
@@ -78,6 +78,10 @@ GROUP / VGROUP / CREATE SAFETY:
   into `VGroup(...)` later.
 - `self.make_panel(...)` returns `Group(panel, content)`, so never place the
   result of `self.make_panel(...)` inside `VGroup(...)`.
+- Do NOT pass `width=...` or `height=...` into `self.make_panel(...)`.
+  This helper auto-sizes from `content` via `SurroundingRectangle(...)`, and
+  those size kwargs cause a runtime constructor conflict in this theme stack.
+  Resize the inner content or surrounding layout instead.
 - Typical bad pattern: `VGroup(title, summary, transfer)` when `summary` or
   `transfer` already comes from `self.make_panel(...)` or another `Group(...)`.
   In that case, use `Group(...).arrange(...)` instead.
@@ -95,11 +99,30 @@ GROUP / VGROUP / CREATE SAFETY:
 
 LANGUAGE / API SAFETY:
 - `from manim import *` at the top.
+- Target `Manim Community v0.20.1` compatibility. Do not rely on older blog
+  posts, outdated snippets, or pre-0.20 helper methods.
 - Manim CE does **not** define a `CENTER` constant (using it raises NameError).
   For the center of the frame use **`ORIGIN`** (e.g. `mob.move_to(ORIGIN)`).
   Do not use `CENTER` in code even if layout prose says "center".
+- `Axes` does NOT provide `get_grid()` in the target runtime. If you need a
+  background grid, build it explicitly with `NumberPlane(...)`, or style the
+  axes/ticks directly. Never call `axes.get_grid()`.
+- Do NOT access `axes.get_x_axis().label_marks` or `axes.get_y_axis().label_marks`.
+  Those internals are not stable in the target runtime. If you need coordinate
+  labels, use `axes.add_coordinates()` defaults or rebuild explicit labels as
+  your own text/math mobjects.
+- For axis / number-line labels created via `add_labels(...)`, never pass a
+  raw LaTeX-heavy string such as `r"\\frac{\\pi}{2}"`, `r"x^2"`, or
+  `r"y_1"` directly in the mapping. Use a ready-made label mobject such as
+  `MathTex(r"\\frac{\\pi}{2}")` or `MathTex(r"x^2")` instead.
+- Simple numeric string labels like `"0"` or `"1"` are acceptable in
+  `add_labels(...)`, but any nontrivial math notation must be wrapped in a
+  math mobject explicitly.
 - Use `Text(...)` or theme text helpers for natural-language titles, labels,
   captions, subtitles, and narration-related screen text.
+- `Write(...)` only works on vectorized mobjects. Do NOT call `Write(...)` on a
+  `Group(...)` / panel / mixed container. For those, prefer `FadeIn(...)`, or
+  animate their child VMobjects individually.
 - Do NOT put full natural-language phrases inside `MathTex(...)` / `Tex(...)`.
 - Chinese text must NEVER appear inside `MathTex(...)` / `Tex(...)`.
 - Pure math: `MathTex(r"...", font_size=...)`.
@@ -118,6 +141,10 @@ CALLBACK / DEEPCOPY SAFETY:
   `self.some_helper` into Manim objects that may store callbacks and later get
   copied, including `axes.plot(...)`, `FunctionGraph(...)`,
   `ParametricFunction(...)`, `always_redraw(...)`, and updater callbacks.
+- In particular, do NOT write `axes.plot(self.func, ...)`, `axes.plot(self.some_curve, ...)`,
+  or helper methods that return `axes.plot(...)` from a lambda/inner function
+  that still closes over `self`. Those patterns later trigger deep-copy /
+  pickle failures in Manim.
 - Avoid callbacks or lambdas that capture `self` when those callbacks are stored
   on mobjects, graphs, or animations.
 - Bad pattern: `axes.plot(self._position_func, ...)`.
@@ -180,6 +207,12 @@ GEOMETRY / ANCHOR PROTOCOL:
   `build_tangent_on_axes(...)`, `build_secant_on_axes(...)`,
   `build_point_marker_on_axes(...)`, or `build_label_on_point(...)`, then call
   `self.build_on_anchor(...)`.
+- If you call `self.build_on_anchor(...)` with a STRING builder name, that
+  builder must be a real method on `LessonBase` / `self`, not a nested local
+  function defined inside the section method.
+- If the builder is a nested local function, pass the callable itself:
+  `self.build_on_anchor(build_point_on_axes, axes, ...)`, not
+  `self.build_on_anchor("build_point_on_axes", axes, ...)`.
 - BUILDER PROTOCOL:
   - Define anchor builders on `LessonBase` or the current scene when a section
     needs persistent geometry leaves.
@@ -459,6 +492,11 @@ PAGE / BODY AUTHORING CONTRACT:
 - Sentence-like teaching text must be inside `bodyN`.
 - Only symbolic labels or very short object names may stay local near graphics,
   such as `A`, `B`, `x`, `y`, `T`, `q1`, or similarly short identifiers.
+- Short coordinate labels such as `(2,4)`, `(-2,4)`, `(0,0)`, or one short
+  point name plus a tiny coordinate may stay local near their anchor point.
+- Formula cards like `y=f(-x)` or `y=-f(x)` are NOT symbolic point labels.
+  They are teaching content and should be planned inside `bodyN`, not attached
+  later as loose post-fit cards.
 - Use `next_to(...)` primarily for those symbolic labels and for non-text
   geometric overlays such as arrows, braces, rings, and highlights.
 - Do NOT use `next_to(...)` to place sentence-like teaching text.
@@ -974,153 +1012,43 @@ VECTOR DIAGRAM RULES:
     into the explanation panel.
 
 AVAILABLE LAYOUT HELPERS (already defined on AI4LearningBaseScene):
-- `self.fit_body(body, max_width=12, max_height=None, center=None, resolve_overlaps=True)`
-- `self.make_page_title("Title", font_size=34, max_width=11.4)`
-- `self.show_page_title_chip("Title")`
-- `self.fit_to_top_band(group, max_width=11.8, max_height=None, center=None)`
-- `self.clear_scene_keep_bg(run_time=0.7, wait_time=0.3)`
-- `self.make_subtitle_panel("字幕内容")`
-- `self.set_subtitle("字幕内容")`
-- `self.clear_subtitle()`
-- `self.speak_with_subtitle("旁白文本", *animations, run_time=...)`
-- `self.stack_panel(top, bottom, buff=0.18, max_width=5.4, max_height=4.2)`
-- `self.connect_side(source, target, direction=RIGHT, buff=0.12, **kwargs)`
-- `self.connect_vertical(source, target, buff=0.12, **kwargs)`
-- `self.load_local_icon("calculator.png", height=0.9)`
-- `self.get_secondary_text("标签", font_size=20)`
-- `self.get_muted_text("注释", font_size=18)`
-- `self.get_warning_text("易错点", font_size=20)`
-- `self.get_success_text("结论", font_size=20)`
-- `self.get_highlighted_math(r"...", level="primary")`
-- `self.highlight_formula_parts(formula, primary=["x"], secondary=["y"])`
-- `self.make_panel(content, padding=0.25)`
-- `self.make_panel_style()`
-- `self.get_warning_color()`, `self.get_success_color()`
-- `self.get_border_color()`, `self.get_axis_color()`
-Preferred new-code pattern: for each page choose exactly one of
-`self.make_page_title(...)` or `self.show_page_title_chip(...)`, and call
-`self.fit_body(bodyN, ...)` exactly once for that page's unique body root.
+- `self.fit_body(...)`, `self.make_page_title(...)`, `self.show_page_title_chip(...)`
+- `self.fit_to_top_band(...)`, `self.clear_scene_keep_bg(...)`
+- `self.speak_with_subtitle(...)`, `self.set_subtitle(...)`, `self.clear_subtitle()`
+- `self.make_panel(...)`, `self.stack_panel(...)`
+- `self.connect_side(...)`, `self.connect_vertical(...)`
+- `self.load_local_icon(...)`
+- `self.get_secondary_text(...)`, `self.get_muted_text(...)`, `self.get_warning_text(...)`, `self.get_success_text(...)`
+- `self.get_highlighted_math(...)`, `self.highlight_formula_parts(...)`
+- `self.get_warning_color()`, `self.get_success_color()`, `self.get_border_color()`, `self.get_axis_color()`
+Preferred pattern: one title helper per page, one `self.fit_body(bodyN, ...)` for that page's unique body root.
 
-SECTION TITLE RULES:
-- Keep section titles short, usually 2-6 words in English or 4-10 Chinese characters.
-- Title names should be informative and teacher-like, not vague slogans.
-- Prefer titles that tell the student what this step is for, such as
-    "先看每一步加了什么", "为什么它还不是乱噪声", "把图像翻译成公式".
-- Avoid empty labels like "只看一步", "继续推导", "再看一个" unless they are
-    expanded into a concrete learning goal.
+SECTION / SUBTITLE / DENSITY RULES:
+- Keep section titles short and informative; avoid vague slogans.
+- Prefer `self.speak_with_subtitle(...)` for explanation beats and keep subtitle
+  wording aligned with the spoken narration.
+- Prefer one natural clause per subtitle beat; split long explanations into
+  multiple beats instead of forcing dense multi-line subtitles.
+- Nothing except subtitles may occupy the subtitle band.
+- Do NOT cram explanation text onto one page. If a page loses a clear focal
+  structure, split it into another page.
+- On one slide, an explanation panel should usually contain at most one short
+  heading plus three short body lines.
 
-SUBTITLE RULES:
-- Keep a bottom subtitle module during explanation-heavy beats.
-- Prefer `self.speak_with_subtitle(...)` so subtitle, narration, and animation
-    stay aligned.
-- Subtitle changes must follow semantic pauses that a human reader can track:
-    prefer one natural clause per `self.speak_with_subtitle(...)`, instead of
-    one long sentence covering multiple ideas.
-- Prefer a single-line subtitle whenever possible. If narration is too long for
-    one bottom line, split it into multiple explanation beats instead of forcing
-    multi-line subtitles.
-- Subtitle changes should be visually quiet. Use simple fade-in / fade-out
-    behavior only. Avoid flashy transforms, sliding subtitles, or morphing text.
-- Subtitle text must match the spoken TTS content for that beat. Do not
-    paraphrase the subtitle into different wording than the narration.
-- Update subtitles when the spoken focus changes, and clear them before dense
-    transitions if necessary.
-- Nothing except the subtitle module itself should occupy the subtitle band.
-- Keep the subtitle-safe margin tight. Leave only a small visual buffer above
-  the subtitle band; do not invent oversized empty bottom margins.
-
-CONTENT DENSITY RULES:
-- Do NOT try to fit all explanation text on one slide.
-- Do NOT use a fixed cap on block count. Judge the page by readability,
-  hierarchy, and overlap.
-- If the page loses a clear focal structure, split it into another page or a
-  cleaner follow-up beat instead of cramming more into the current page.
-- On any single slide, an explanation panel may contain at most 1 short heading
-    plus 3 short body lines.
-- If a concept needs more text, split it into the next slide while preserving
-    the same teaching content.
-- It is GOOD to make the video longer if this avoids crowding.
-- Preserving all content across more slides is better than squeezing content
-    into one crowded slide.
-- If subtitles are present, treat the bottom band as unavailable space when
-  planning every page.
-
-ANIMATION RULES:
-- Use `Write()` for formulas, `Create()` for shapes, `FadeIn(shift=DOWN*0.2)`
-  for text, `GrowArrow()` for arrows.
-- To clear a section: prefer `self.clear_scene_keep_bg()`. Do NOT use
-  `FadeOut(Group(*self.mobjects))`, because it removes the persistent background.
-- Each major section should contain multiple meaningful visual beats, not just
-  one static page with narration on top of it.
-- In most sections, include at least 2-4 visible changes that help the student
-  see the idea develop over time.
-- Prefer animations that change the state of the current visual, not just add
-  more text beside it.
-
-ANIMATION VARIETY RULES:
-- Across a full lesson, include a mix of animation types instead of relying on
-  only `FadeIn(...)` and static holds.
-- Good animation motifs include:
-  - building a diagram piece by piece,
-  - moving a point, marker, or object along a path,
-  - changing a graph from one state to another,
-  - highlighting one part while dimming another,
-  - turning a visual relationship into a formula,
-  - comparing two nearby cases through a staged change,
-  - transforming one formula line into the next with structural continuity.
-- Prefer `Transform(...)`, `ReplacementTransform(...)`,
-  `TransformMatchingTex(...)`, `LaggedStart(...)`, `AnimationGroup(...)`,
-  `Indicate(...)`, `Circumscribe(...)`, `Flash(...)`, `MoveAlongPath(...)`,
-  and `ValueTracker` + `always_redraw` when they clarify the idea.
-- Do NOT add motion just for decoration. Every animation should teach a
-  relation, change, comparison, buildup, or consequence.
-
-STATE CHANGE RULES:
-- At least half of the major sections should include a genuine state change in
-  the visual itself: not only new text appearing, but the diagram, graph,
-  marker, region, or formula evolving.
-- For graphs, prefer a progression such as base axes -> base curve -> changed
-  curve -> marked point/intersection -> takeaway.
-- For geometry or process diagrams, prefer object construction, part-by-part
-  highlighting, motion along a path, or before/after comparison.
-- For formulas, prefer deriving or transforming from the previous line rather
-  than showing isolated final equations with no visual transition.
-- If a visual stays on screen for several narration beats, make it evolve in at
-  least one meaningful way during those beats.
-
-STABILITY RULES (reduce messy motion):
-- Once a page layout appears, keep its title, panels, and axes FIXED in place.
-- Do NOT animate whole pages with `.animate.shift(...)` or move large groups
-    around after they are already on screen.
-- Do NOT call `self.fit_body(...)` again on an already visible whole page just
-  because a late takeaway, note, or other persistent element appears.
-- Reveal new information in place with FadeIn, Write, Create, or small local
-    transforms.
-- If a section needs a new layout, FadeOut the old page and build a new stable
-    page, instead of dragging old elements across the screen.
-- Axes should enter once and then stay anchored; only curves, dots, arrows,
-    or highlights should change.
-- Text blocks should appear at their final positions. Avoid long sliding text.
-
-REVEAL RHYTHM RULES:
-- Think like a teacher building the board live.
-- Define the page objects before the first reveal of that page. Then reveal
-  them in the order the narration needs.
-- At the start of a section, show only the minimum needed to begin the
-  explanation.
-- When narration says "now look at this label / this step / this formula",
-  that specific object should appear at that beat, not earlier.
-- Do NOT pre-place a full explanation panel if its lines will be explained one
-  by one. Reveal those lines progressively.
-- Do NOT pre-place the final formula before the intuition or derivation has
-  happened.
-- Do NOT pre-place a late persistent note or takeaway by repacking the current
-  visible page. If it needs its own stable region, plan it as part of the page
-  before reveal or move it to the next page.
-- If a section has 3 teaching beats, implement 3 reveals, not one full-page
-  reveal plus 3 repeated explanations.
-- Page/layout helpers are for positioning and stable composition, not for
-  dumping all content on screen at once.
+ANIMATION / STABILITY / REVEAL RULES:
+- Use animation to teach change, comparison, buildup, or consequence; avoid
+  decorative motion.
+- Prefer `Write()` for formulas, `Create()` for shapes, `FadeIn(shift=DOWN*0.2)`
+  for text, and `GrowArrow()` for arrows unless a stronger transition is truly
+  explanatory.
+- Each major section should have multiple meaningful visual beats, not one
+  static page with narration pasted on top.
+- Once a page layout appears, keep its title, panels, and axes fixed in place.
+- Reveal new information in place; do not drag whole page groups around.
+- Define page objects before the first reveal of that page, then reveal them in
+  the order the narration needs.
+- Do not pre-place late explanation panels, final formulas, or takeaways if
+  they should only appear after the relevant teaching beat.
 
 VOICE NARRATION (audio-synced pacing):
 - New code MUST follow the Scene Pack contract.
@@ -1194,15 +1122,9 @@ GRAPH ANNOTATION RULES:
     split the explanation into a follow-up slide rather than forcing the pointer in.
 
 PACING RULES:
-- Let the speak() duration drive the timing.  Do NOT add extra self.wait()
-  after a speak-synced animation unless you need a deliberate pause.
-- VISUAL ANIMATIONS: run_time = dur (from speak).
-- TRANSITIONS: run_time=0.7, no speak, self.wait(0.3).
-- KEY INSIGHTS: speak() + self.wait(dur) to let student absorb.
-
-GEOMETRY RULES:
-- Shapes on polygon edges MUST extend OUTWARD (check normal direction).
-- No two filled shapes should overlap.
+- Let `self.speak()` / `self.speak_with_subtitle(...)` drive timing.
+- Keep transitions short and mostly silent.
+- Let key insight beats breathe long enough to read and hear clearly.
 
 Output ONLY the Python code inside a ```python``` block.
 """
@@ -1233,13 +1155,18 @@ shared runtime safety rules below and fix every violation first:
     + """
 
 STEP 2 - Read the error log and fix any remaining issues:
-- Attribute errors -> check Manim CE v0.18+ API.
+- Attribute errors -> check Manim Community v0.20.1 API.
 - Type errors -> check argument types.
 - `TypeError: cannot pickle '_thread.lock' object` during `Create(...)`,
   `FadeIn(...)`, `Transform(...)`, or graph animation usually means a mobject
   captured a bound Scene method or another callback that closes over `self`.
   Replace it with a pure function / staticmethod / local function that does
   NOT capture `self`, then rebuild the affected mobject.
+- `Axes.get_grid()` is not available in the target runtime. Replace it with an
+  explicit `NumberPlane(...)` background grid or remove the call.
+- If `add_labels(...)` fails around `\\frac`, subscripts, superscripts, or
+  other math notation, do not pass those labels as raw strings. Construct the
+  label explicitly with `MathTex(...)` and pass that mobject in the mapping.
 - `get_tangent_line` does NOT accept `color` keyword. Create tangent manually:
     tangent = Line(start, end, color=GREEN)
 - `VMobject` does NOT provide `get_tangent_vector(...)` here. Use
@@ -1344,6 +1271,13 @@ Repair discipline:
 - Prefer using existing helpers already shown in the context.
 - Fix only issues supported by the validation report; do not rewrite unrelated
   pages.
+- If the report mentions `unsupported_manim_api` for `label_marks`, you MUST
+  delete those accesses and keep coordinate labels via `axes.add_coordinates()`
+  defaults or explicit text/math labels. Do not reintroduce `label_marks`.
+- If the report mentions `multiple_body_roots_same_page` or
+  `fit_body_multiple_calls_same_page`, you MUST rewrite that section so each
+  page has exactly one `bodyN` root and exactly one `self.fit_body(bodyN, ...)`.
+  Do not try to keep multiple fitted page roots alive.
 - For drifting or detached geometry leaves, prefer a local builder plus
   `self.build_on_anchor(...)` instead of patching with ad-hoc shifts or adding
   another detached object.
@@ -1412,6 +1346,12 @@ Focus only on these four code-eval categories:
 Repair discipline:
 - Make the smallest defensible change that removes the flagged issue.
 - Do NOT rewrite unrelated pages.
+- If the report includes `unsupported_manim_api` for `label_marks`, remove
+  those internal axis-label accesses completely instead of trying to patch them.
+- If the report includes `multiple_body_roots_same_page` or
+  `fit_body_multiple_calls_same_page`, rebuild the page so it has one page root
+  and one `fit_body` call. Treat this as a mandatory structural repair, not as
+  a cosmetic tweak.
 - Do NOT turn a symbolic label into a sentence block unless the report says it
   was misclassified.
 - If a persistent note/takeaway/prompt appears after `fit_body(...)`, fold it
@@ -1996,6 +1936,148 @@ def _build_selected_theme_prompt(teaching_plan: Optional[Dict]) -> str:
     )
 
 
+def _build_codegen_teaching_context(teaching_plan: Optional[Dict]) -> Dict[str, object]:
+    if not isinstance(teaching_plan, dict):
+        return {}
+
+    context: Dict[str, object] = {}
+
+    for key in ("lesson_goal", "big_idea"):
+        value = teaching_plan.get(key)
+        if isinstance(value, str) and value.strip():
+            context[key] = value.strip()
+
+    problem_intake = teaching_plan.get("problem_intake")
+    if isinstance(problem_intake, dict):
+        context["problem_intake"] = {
+            key: problem_intake.get(key)
+            for key in ("is_problem_solving", "restatement", "target", "key_terms", "visual_marking_plan")
+            if key in problem_intake
+        }
+
+    opening = teaching_plan.get("opening")
+    if isinstance(opening, dict):
+        context["opening"] = {
+            key: opening.get(key)
+            for key in ("style", "hook_line", "roadmap_style")
+            if key in opening
+        }
+
+    misconceptions = teaching_plan.get("misconceptions")
+    if isinstance(misconceptions, list) and misconceptions:
+        compact_misconceptions: list[dict[str, object]] = []
+        for item in misconceptions[:1]:
+            if not isinstance(item, dict):
+                continue
+            compact_misconceptions.append(
+                {
+                    key: item.get(key)
+                    for key in ("mistake", "teacher_response")
+                    if key in item
+                }
+            )
+        if compact_misconceptions:
+            context["misconceptions"] = compact_misconceptions
+
+    sections = teaching_plan.get("sections")
+    if isinstance(sections, list) and sections:
+        compact_sections: list[dict[str, object]] = []
+        for item in sections[:4]:
+            if not isinstance(item, dict):
+                continue
+            compact_sections.append(
+                {
+                    key: item.get(key)
+                    for key in (
+                        "id",
+                        "title",
+                        "teacher_move",
+                        "visual_strategy",
+                        "key_takeaway",
+                        "check_for_understanding",
+                    )
+                    if key in item
+                }
+            )
+        if compact_sections:
+            context["sections"] = compact_sections
+
+    selected_assets = teaching_plan.get("selected_assets")
+    if isinstance(selected_assets, list):
+        context["selected_assets"] = selected_assets
+
+    selected_theme = teaching_plan.get("selected_theme")
+    if isinstance(selected_theme, dict):
+        context["selected_theme"] = {
+            key: selected_theme.get(key)
+            for key in ("theme_id", "display_name", "reason")
+            if key in selected_theme
+        }
+
+    fast_path = teaching_plan.get("fast_path")
+    if isinstance(fast_path, dict):
+        context["fast_path"] = {
+            key: fast_path.get(key)
+            for key in (
+                "template_id",
+                "category_id",
+                "category_display_name",
+                "mode",
+                "rewrite_required",
+                "taxonomy_size",
+            )
+            if key in fast_path
+        }
+
+    return context
+
+
+def _build_fast_path_reference_prompt(teaching_plan: Optional[Dict]) -> str:
+    if not isinstance(teaching_plan, dict):
+        return ""
+    fast_path = teaching_plan.get("fast_path")
+    reference = teaching_plan.get("fast_path_reference")
+    if not isinstance(fast_path, dict) or not isinstance(reference, dict):
+        return ""
+    template_code = str(reference.get("template_code") or "").strip()
+    if not template_code:
+        return ""
+    fast_path_meta = {
+        key: fast_path.get(key)
+        for key in (
+            "template_id",
+            "category_id",
+            "category_display_name",
+            "mode",
+            "rewrite_required",
+            "taxonomy_size",
+        )
+        if key in fast_path
+    }
+    return (
+        "## Classified template reference\n"
+        "A backend-side classifier matched this request to a lesson/video category. "
+        "The template below is a reference baseline only, not final code. "
+        "You must fuse it with the actual student request and teaching plan, rewriting sections, narration beats, "
+        "examples, labels, scene flow, and visual emphasis so the output matches the current lesson rather than copying the baseline verbatim.\n\n"
+        "Allowed reuse:\n"
+        "- high-level segment ordering when it still fits the current lesson\n"
+        "- stable helper patterns and page-composition techniques\n"
+        "- proven visual idioms that remain relevant\n\n"
+        "Required changes:\n"
+        "- adapt the math/content details to the current request\n"
+        "- rewrite scene text, examples, and checks for understanding\n"
+        "- remove or replace any baseline-specific content that does not belong to this lesson\n"
+        "- preserve the Scene Pack contract while producing a fresh lesson-specific implementation\n\n"
+        f"Category metadata:\n{_compact_json_text(fast_path_meta)}\n\n"
+        f"Reference template baseline:\n```python\n{template_code}\n```"
+    )
+
+
+def _compact_json_text(payload: object) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 def _build_output_language_prompt(output_language: str) -> str:
     language = normalize_output_language(output_language)
     language_name = output_language_name(language)
@@ -2313,8 +2395,9 @@ class CodeGenAgent:
         prompt_parts = [_build_output_language_prompt(output_language)]
         prompt_parts.append(f"## Student request\n{request_text}")
         if teaching_plan:
+            codegen_context = _build_codegen_teaching_context(teaching_plan)
             prompt_parts.append(
-                "## Teaching plan\n" + json.dumps(teaching_plan, ensure_ascii=False, indent=2)
+                "## Teaching plan\n" + _compact_json_text(codegen_context)
             )
             prompt_parts.append(build_manim_skill_prompt(teaching_plan))
             prompt_parts.append(
@@ -2338,14 +2421,23 @@ class CodeGenAgent:
             theme_prompt = _build_selected_theme_prompt(teaching_plan)
             if theme_prompt:
                 prompt_parts.append(theme_prompt)
+            fast_path_reference_prompt = _build_fast_path_reference_prompt(teaching_plan)
+            if fast_path_reference_prompt:
+                prompt_parts.append(fast_path_reference_prompt)
         prompt_parts.append("## Output structure\nFollow the Scene Pack contract exactly.")
+        prompt_parts.append(
+            "## Output prefix requirement\n"
+            "Start the file with a valid Scene Pack skeleton as early as possible: imports, top-level `SCENE_MANIFEST`, "
+            "`LessonBase`, then numbered wrapper scenes. Do not spend the early output on a single-scene script, prose, or helper-only code before `SCENE_MANIFEST` appears."
+        )
         prompt_parts.append(
             "## Implementation priority\n"
             "Plan each section as one or more stable pages and compose each page before its first reveal. "
             "Use blocks as the teaching layout units, and choose layouts based on the content instead of defaulting to one repeated template. "
             "Keep each page visually stable after it appears, and if the explanation needs a new persistent structure, move to a new page instead of repacking the old one. "
             "Use teacher-like sequencing, self-drawn vector diagrams when helpful, and informative section titles rather than vague slogans. "
-            "Prioritize clean visual focus, readable density, and clear explanation flow over trying to fit everything onto one crowded screen."
+            "Prioritize clean visual focus, readable density, and clear explanation flow over trying to fit everything onto one crowded screen. "
+            "Also optimize the first section for fast closure: make the opening page independently renderable early, avoid unnecessary helper coupling in the first section, and prefer one compact visual idea over a complex opening construction."
         )
         content: list = [{"type": "input_text", "text": "\n\n".join(prompt_parts)}]
         if image_path and image_path.exists():
@@ -2385,6 +2477,17 @@ class CodeGenAgent:
         try:
             spec = parse_scene_pack(sanitized)
         except Exception:
+            parseable_prefix = extract_parseable_prefix(sanitized)
+            if parseable_prefix and parseable_prefix != sanitized:
+                try:
+                    prefix_spec = parse_scene_pack(parseable_prefix)
+                except Exception:
+                    prefix_spec = None
+                if prefix_spec is not None and prefix_spec.manifest:
+                    return parseable_prefix
+            recovered = recover_scene_pack_skeleton(sanitized)
+            if recovered is not None:
+                return recovered
             return extracted
         return sanitized if spec.manifest else extracted
 
