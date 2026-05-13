@@ -360,6 +360,18 @@ def build_render_failure_validation_report(
             "Avoid invalid Tex/MathTex content, unsupported LaTeX commands, and malformed "
             "math strings in this section method."
         )
+        if "missing $ inserted" in lowered or "add_labels" in lowered:
+            fix_hint += (
+                " In Manim Community v0.20.1, do not pass nontrivial math notation as a raw string into "
+                "`add_labels(...)`; construct those labels with `MathTex(...)` explicitly."
+            )
+    elif "object has no attribute 'grid'" in lowered or "get_grid" in lowered:
+        category = "unsupported_manim_api"
+        message = "Section uses a Manim API that is unavailable in the target runtime."
+        fix_hint = (
+            "Target Manim Community v0.20.1 APIs only. Do not call `Axes.get_grid()`; use `NumberPlane(...)` "
+            "for a background grid, or style the axes/ticks directly."
+        )
     elif "audio track" in lowered:
         category = "audio_runtime"
         message = "Rendered segment is missing the expected audio track."

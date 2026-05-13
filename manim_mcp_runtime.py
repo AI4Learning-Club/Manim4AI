@@ -510,6 +510,43 @@ def _probe_duration_seconds(video_path: Path) -> float | None:
         return None
 
 
+def _normalized_manim_job_timing(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if isinstance(item, bool) or item is None:
+            normalized[key] = item
+            continue
+        if isinstance(item, (int, float)):
+            normalized[key] = round(float(item), 3)
+            continue
+        if isinstance(item, str):
+            normalized[key] = item
+            continue
+        if isinstance(item, dict):
+            nested = _normalized_manim_job_timing(item)
+            if nested:
+                normalized[key] = nested
+            continue
+        if isinstance(item, list):
+            normalized_list: list[Any] = []
+            for entry in item:
+                if isinstance(entry, dict):
+                    nested = _normalized_manim_job_timing(entry)
+                    if nested:
+                        normalized_list.append(nested)
+                elif isinstance(entry, bool) or entry is None:
+                    normalized_list.append(entry)
+                elif isinstance(entry, (int, float)):
+                    normalized_list.append(round(float(entry), 3))
+                elif isinstance(entry, str):
+                    normalized_list.append(entry)
+            if normalized_list:
+                normalized[key] = normalized_list
+    return normalized or None
+
+
 def _normalize_quality_flags(quality: str) -> str | None:
     normalized = (quality or "default").strip().lower()
     if normalized not in _QUALITY_PRESETS:
@@ -700,6 +737,13 @@ class RenderJobState:
             if versions and "video_versions" not in result_payload:
                 result_payload["video_versions"] = versions
             payload["result"] = _sanitize_public_payload(result_payload)
+        if self.result is not None:
+            timing_payload = _normalized_manim_job_timing(self.result.get("timing"))
+            if timing_payload is not None:
+                payload["timing"] = timing_payload
+            quality_flags = str(self.result.get("quality_flags") or "").strip()
+            if quality_flags:
+                payload["quality_flags"] = quality_flags
         return payload
 
     def to_snapshot(self) -> dict[str, Any]:
@@ -1335,6 +1379,14 @@ class ManimRenderRuntime:
             )
 
         duration_seconds = _probe_duration_seconds(source_path)
+        pipeline_timing = _normalized_manim_job_timing(summary.get("timing")) or {}
+        queue_wait_seconds = round(queue_ms / 1000.0, 3)
+        pipeline_wall_seconds = pipeline_timing.get("total_wall_seconds")
+        end_to_end_seconds = (
+            round(queue_wait_seconds + float(pipeline_wall_seconds), 3)
+            if isinstance(pipeline_wall_seconds, (int, float))
+            else None
+        )
         _logger.info(
             "[Manim] 生成完成: delivery=%s target=%s duration=%s",
             delivery_type,
@@ -1360,8 +1412,14 @@ class ManimRenderRuntime:
             "preview_ready": True,
             "render_backend": backend,
             "quality": quality_normalized,
+            "quality_flags": summary.get("quality_flags"),
             "output_language": summary.get("output_language"),
             "conversation_id": conversation_id or None,
+            "timing": {
+                "queue_wait_seconds": queue_wait_seconds,
+                "pipeline": pipeline_timing,
+                "end_to_end_seconds": end_to_end_seconds,
+            },
         }
 
     def _run_render_job(

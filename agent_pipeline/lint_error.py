@@ -60,6 +60,11 @@ _PLAIN_TEXT_MATH_PATTERNS = (
     r"\\int",
     r"\$[^$]+\$",
 )
+_ADD_LABELS_MATH_STRING_PATTERNS = (
+    r"\\[A-Za-z]+",
+    r"[\^\_\{\}]",
+    r"\$[^$]+\$",
+)
 _GEOMETRY_LEAF_NAME_RE = re.compile(
     r"(?:^|_)(axes|axis|curve|graph|plot|dot|dots|point|points|marker|markers|"
     r"tangent|tangents|secant|secants|arrow|arrows|brace|braces|line|lines)(?:$|_)"
@@ -146,6 +151,8 @@ def lint_section_code(code: str, *, filename: str = "scene.py") -> dict[str, obj
 
     issues: list[ValidationIssue] = []
     issues.extend(_lint_math_call_cjk_risk(module))
+    issues.extend(_lint_unsupported_manim_api_usage(module))
+    issues.extend(_lint_add_labels_math_string_risk(module))
     for class_def in [node for node in module.body if isinstance(node, ast.ClassDef)]:
         for func in [node for node in class_def.body if isinstance(node, ast.FunctionDef)]:
             if not _SECTION_METHOD_RE.match(func.name):
@@ -390,6 +397,71 @@ def _lint_math_call_cjk_risk(module: ast.AST) -> list[ValidationIssue]:
                         symbol=call_name,
                     )
                 )
+    return issues
+
+
+def _lint_unsupported_manim_api_usage(module: ast.AST) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call):
+            continue
+        if _call_attr_name(node) != "get_grid":
+            continue
+        line = getattr(node, "lineno", None)
+        evidence = f"line {line}: {ast.unparse(node)}" if line else ast.unparse(node)
+        issues.append(
+            ValidationIssue(
+                tool="lint_error",
+                severity="error",
+                category="unsupported_manim_api",
+                message="`get_grid()` is not available in the target Manim Community v0.20.1 runtime.",
+                evidence=evidence,
+                fix_hint=(
+                    "Do not call `get_grid()`. If you need a background grid, build it explicitly with "
+                    "`NumberPlane(...)`, or style the axes/ticks directly."
+                ),
+                line=line,
+                symbol="get_grid",
+            )
+        )
+    return issues
+
+
+def _lint_add_labels_math_string_risk(module: ast.AST) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call):
+            continue
+        if _call_attr_name(node) != "add_labels":
+            continue
+        if not node.args:
+            continue
+        first_arg = node.args[0]
+        if not isinstance(first_arg, ast.Dict):
+            continue
+        for value in first_arg.values:
+            raw = _literal_str(value)
+            if not raw:
+                continue
+            if not any(re.search(pattern, raw) for pattern in _ADD_LABELS_MATH_STRING_PATTERNS):
+                continue
+            line = getattr(value, "lineno", getattr(node, "lineno", None))
+            evidence = f"line {line}: {ast.unparse(node)}" if line else ast.unparse(node)
+            issues.append(
+                ValidationIssue(
+                    tool="lint_error",
+                    severity="error",
+                    category="add_labels_math_string_risk",
+                    message="`add_labels(...)` contains raw math/LaTeX strings that should be explicit MathTex labels.",
+                    evidence=evidence,
+                    fix_hint=(
+                        "Keep simple numeric labels as plain strings only. For `\\frac`, subscripts, superscripts, "
+                        "or other math notation, pass a ready-made `MathTex(...)` label mobject in the mapping."
+                    ),
+                    line=line,
+                    symbol="add_labels",
+                )
+            )
     return issues
 
 
