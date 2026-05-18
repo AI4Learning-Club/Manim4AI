@@ -1030,6 +1030,30 @@ def _build_section_probe_source(
     return "\n\n".join(part for part in parts if part).strip() + "\n"
 
 
+def recover_scene_pack_skeleton(code: str) -> str | None:
+    """Best-effort recovery for partially streamed Scene Pack code.
+
+    If we can parse at least the manifest and rebuild one syntactically valid
+    single-segment scene, return that minimal source so downstream codegen can
+    keep operating. Otherwise return ``None`` and let callers fall back.
+    """
+    try:
+        segments = extract_manifest_order(code)
+    except Exception:
+        return None
+    if not segments:
+        return None
+
+    for segment in segments:
+        try:
+            recovered = build_segment_scene_source(code, segment.segment_id)
+        except Exception:
+            continue
+        if recovered.strip():
+            return recovered
+    return None
+
+
 def _synthesized_wrapper_scene_source(
     *,
     segment: SegmentSpec,
@@ -1199,6 +1223,7 @@ __all__ = [
     "extract_manifest_order",
     "validate_scene_pack",
     "parse_scene_pack",
+    "recover_scene_pack_skeleton",
     "inspect_section_readiness",
     "build_segment_repair_context",
     "build_segment_scene_source",
