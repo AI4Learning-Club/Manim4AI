@@ -1324,6 +1324,16 @@ class ManimRenderRuntime:
         delivery_type = "mp4"
         final_manifest_key = ""
         final_video_url: str
+        if event_callback is not None:
+            event_callback(
+                make_manim_stream_event(
+                    event_type=ManimStreamEventType.STAGE_PROGRESS,
+                    stage=ManimStreamEventStage.DELIVERY,
+                    message="Packaging final video for delivery",
+                    run_id=run_id_hint,
+                    progress=96,
+                )
+            )
         if _is_hls_cos_delivery_enabled():
             final_manifest_path, hls_error = build_hls_video_file(
                 source_path,
@@ -1333,6 +1343,16 @@ class ManimRenderRuntime:
             )
             if hls_error or final_manifest_path is None:
                 raise RuntimeError(hls_error or "Failed to package final HLS output.")
+            if event_callback is not None:
+                event_callback(
+                    make_manim_stream_event(
+                        event_type=ManimStreamEventType.STAGE_PROGRESS,
+                        stage=ManimStreamEventStage.DELIVERY,
+                        message="Publishing final video to CDN",
+                        run_id=run_id_hint,
+                        progress=98,
+                    )
+                )
             published_final = _publish_hls_manifest(
                 manifest_path=final_manifest_path,
                 hls_root=run_dir / "final_hls",

@@ -2356,7 +2356,15 @@ def run_pipeline(
             message="Delivery stage started",
             progress=91,
         )
-        _apply_delivery_assets(run_dir, request_text, teaching_plan, storyboard, summary)
+        _apply_delivery_assets(
+            run_dir,
+            request_text,
+            teaching_plan,
+            storyboard,
+            summary,
+            event_callback=event_callback,
+            run_id=run_id,
+        )
         _emit_stage_completed(
             event_callback,
             stage=ManimStreamEventStage.DELIVERY,
@@ -2413,6 +2421,9 @@ def _apply_delivery_assets(
     teaching_plan: Dict[str, Any],
     storyboard: Optional[Dict[str, Any]],
     summary: Dict[str, Any],
+    *,
+    event_callback: Callable[[ManimStreamEvent], None] | None = None,
+    run_id: str = "",
 ) -> None:
     """When a storyboard exists, wrap the Manim video with Remotion."""
     source_video = summary.get("final_video_with_audio") or summary.get("final_video")
@@ -2423,6 +2434,14 @@ def _apply_delivery_assets(
     if not storyboard:
         return
 
+    _emit_pipeline_event(
+        event_callback,
+        event_type=ManimStreamEventType.STAGE_PROGRESS,
+        stage=ManimStreamEventStage.DELIVERY,
+        message="Preparing hybrid delivery assets",
+        run_id=run_id,
+        progress=94,
+    )
     _log("混合成片: 正在构建 Remotion 成片 …")
     _log("Remotion: building hybrid delivery ...")
     try:
@@ -2445,6 +2464,15 @@ def _apply_delivery_assets(
     except Exception as exc:
         _log(f"Remotion: hybrid delivery failed - {exc}")
         summary["hybrid_delivery"] = {"enabled": True, "status": "error", "error": str(exc)}
+    finally:
+        _emit_pipeline_event(
+            event_callback,
+            event_type=ManimStreamEventType.STAGE_PROGRESS,
+            stage=ManimStreamEventStage.DELIVERY,
+            message="Hybrid delivery preparation finished",
+            run_id=run_id,
+            progress=97,
+        )
 
 
 def _save_summary(run_dir: Path, summary: Dict[str, Any]) -> None:
