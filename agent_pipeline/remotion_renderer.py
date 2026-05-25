@@ -159,7 +159,7 @@ def _build_props(
     segment_durations: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     metadata = _video_metadata(source_video)
-    fps = 30
+    fps = 60
     core_frames = _int_frames(metadata["duration_sec"], fps)
     theme = storyboard.get("theme") if isinstance(storyboard.get("theme"), dict) else {}
     asset_name = source_video.name

@@ -105,11 +105,12 @@ def _job_slot_semaphore() -> threading.BoundedSemaphore:
 
 SERVER_NAME = "manim-edu-agent"
 SERVER_VERSION = "1.0.0"
+_MANIM_1080P60_FLAGS = "-qh --fps 60"
 _QUALITY_PRESETS = {
-    "default": "",
+    "default": _MANIM_1080P60_FLAGS,
     "draft": "-ql --fps 30",
-    "medium": "-qm --fps 60",
-    "high": "-qh --fps 60",
+    "medium": _MANIM_1080P60_FLAGS,
+    "high": _MANIM_1080P60_FLAGS,
 }
 _PUBLIC_REDACTED_TEXT = "[internal path redacted]"
 _PUBLIC_PATH_KEYS = frozenset(
