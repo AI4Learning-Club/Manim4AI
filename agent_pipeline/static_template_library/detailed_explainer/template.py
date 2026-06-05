@@ -21,9 +21,9 @@ class LessonBase(AI4LearningBaseScene):
             *[
                 self.get_secondary_text(text, font_size=18)
                 for text in [
-                    "1. 明确讲法目标",
-                    "2. 按这种节奏推进",
-                    "3. 最后做迁移收束",
+                    "1. 看到对象和目标",
+                    "2. 绑定图像与关系",
+                    "3. 走完一次关键过程",
                 ]
             ]
         ).arrange(DOWN, buff=0.12, aligned_edge=LEFT)

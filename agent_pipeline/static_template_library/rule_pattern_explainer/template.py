@@ -3,11 +3,11 @@ from plugins.manim.colortest.ai4learning_theme import AI4LearningBaseScene
 
 SCENE_MANIFEST = [
     {"id": "opening", "scene": "Segment00OpeningScene", "method": "opening_page"},
-    {"id": "section_one_position", "scene": "Segment01SectionOnePositionScene", "method": "section_one_position"},
-    {"id": "section_two_structure", "scene": "Segment02SectionTwoStructureScene", "method": "section_two_structure"},
-    {"id": "section_three_execution", "scene": "Segment03SectionThreeExecutionScene", "method": "section_three_execution"},
-    {"id": "section_four_feedback", "scene": "Segment04SectionFourFeedbackScene", "method": "section_four_feedback"},
-    {"id": "section_five_transfer", "scene": "Segment05SectionFiveTransferScene", "method": "section_five_transfer"},
+    {"id": "section_one_object_goal", "scene": "Segment01SectionOneObjectGoalScene", "method": "section_one_object_goal"},
+    {"id": "section_two_core_relation", "scene": "Segment02SectionTwoCoreRelationScene", "method": "section_two_core_relation"},
+    {"id": "section_three_dynamic_walkthrough", "scene": "Segment03SectionThreeDynamicWalkthroughScene", "method": "section_three_dynamic_walkthrough"},
+    {"id": "section_four_misconception_check", "scene": "Segment04SectionFourMisconceptionCheckScene", "method": "section_four_misconception_check"},
+    {"id": "section_five_transfer_summary", "scene": "Segment05SectionFiveTransferSummaryScene", "method": "section_five_transfer_summary"},
     {"id": "closing", "scene": "Segment06ClosingScene", "method": "closing_page"},
 ]
 
@@ -21,9 +21,9 @@ class LessonBase(AI4LearningBaseScene):
             *[
                 self.get_secondary_text(text, font_size=18)
                 for text in [
-                    "1. 明确讲法目标",
-                    "2. 按这种节奏推进",
-                    "3. 最后做迁移收束",
+                    "1. 看到对象和目标",
+                    "2. 绑定图像与关系",
+                    "3. 走完一次关键过程",
                 ]
             ]
         ).arrange(DOWN, buff=0.12, aligned_edge=LEFT)
@@ -34,16 +34,16 @@ class LessonBase(AI4LearningBaseScene):
         self.add(body2)
         self.wait(0.1)
 
-    def section_one_position(self):
-        title = self.get_text("先给出讲法定位", font_size=28)
-        narrative = self.get_text("先告诉学生这次为什么采用这种讲法。", font_size=20)
-        visual = self.get_secondary_text("视觉重点：风格标签、目标、适用场景", font_size=18)
+    def section_one_object_goal(self):
+        title = self.get_text("对象和目标先入场", font_size=28)
+        narrative = self.get_text("先把本节真正要理解的对象、起点和目标放到同一张图里。", font_size=20)
+        visual = self.get_secondary_text("视觉重点：对象标注、起始状态、目标箭头", font_size=18)
         bullets = VGroup(
             *[
                 self.get_text(text, font_size=18)
                 for text in [
-                    "先给出讲法定位",
-                    "风格标签、目标、适用场景",
+                    "对象和目标先入场",
+                    "对象标注、起始状态、目标箭头",
                     "关键句",
                     "迁移提醒",
                 ]
@@ -56,16 +56,16 @@ class LessonBase(AI4LearningBaseScene):
         self.add(body1)
         self.wait(0.1)
 
-    def section_two_structure(self):
-        title = self.get_text("再固定讲解结构", font_size=28)
-        narrative = self.get_text("��这种讲法的结构骨架明确下来。", font_size=20)
-        visual = self.get_secondary_text("视觉重点：结构框架、节奏分层", font_size=18)
+    def section_two_core_relation(self):
+        title = self.get_text("核心关系绑到图像", font_size=28)
+        narrative = self.get_text("把关键量之间的关系和画面对象一一对应起来。", font_size=20)
+        visual = self.get_secondary_text("视觉重点：图像-公式绑定、颜色高亮", font_size=18)
         bullets = VGroup(
             *[
                 self.get_text(text, font_size=18)
                 for text in [
-                    "再固定讲解结构",
-                    "结构框架、节奏分层",
+                    "核心关系绑到图像",
+                    "图像-公式绑定、颜色高亮",
                     "关键句",
                     "迁移提醒",
                 ]
@@ -78,16 +78,16 @@ class LessonBase(AI4LearningBaseScene):
         self.add(body1)
         self.wait(0.1)
 
-    def section_three_execution(self):
-        title = self.get_text("执行这套讲法", font_size=28)
-        narrative = self.get_text("展示真正推进内容时，这种讲法如何发力。", font_size=20)
-        visual = self.get_secondary_text("视觉重点：步骤推进、重点切换", font_size=18)
+    def section_three_dynamic_walkthrough(self):
+        title = self.get_text("走完一次关键过程", font_size=28)
+        narrative = self.get_text("用一次完整动态演示串起状态变化和因果链。", font_size=20)
+        visual = self.get_secondary_text("视觉重点：步骤推进、状态更新、轨迹变化", font_size=18)
         bullets = VGroup(
             *[
                 self.get_text(text, font_size=18)
                 for text in [
-                    "执行这套讲法",
-                    "步骤推进、重点切换",
+                    "走完一次关键过程",
+                    "步骤推进、状态更新、轨迹变化",
                     "关键句",
                     "迁移提醒",
                 ]
@@ -100,16 +100,16 @@ class LessonBase(AI4LearningBaseScene):
         self.add(body1)
         self.wait(0.1)
 
-    def section_four_feedback(self):
-        title = self.get_text("用反馈校正", font_size=28)
-        narrative = self.get_text("强调这种讲法如何处理学生常见卡点。", font_size=20)
-        visual = self.get_secondary_text("视觉重点：误区提醒、反馈回路", font_size=18)
+    def section_four_misconception_check(self):
+        title = self.get_text("校正常见误解", font_size=28)
+        narrative = self.get_text("把最容易混淆的方向、条件或边界并排对比。", font_size=20)
+        visual = self.get_secondary_text("视觉重点：正误对照、边界提醒、反馈回路", font_size=18)
         bullets = VGroup(
             *[
                 self.get_text(text, font_size=18)
                 for text in [
-                    "用反馈校正",
-                    "误区提醒、反馈回路",
+                    "校正常见误解",
+                    "正误对照、边界提醒、反馈回路",
                     "关键句",
                     "迁移提醒",
                 ]
@@ -122,16 +122,16 @@ class LessonBase(AI4LearningBaseScene):
         self.add(body1)
         self.wait(0.1)
 
-    def section_five_transfer(self):
-        title = self.get_text("最后做迁移", font_size=28)
-        narrative = self.get_text("把这种讲法迁移到别的内容场景。", font_size=20)
-        visual = self.get_secondary_text("视觉重点：迁移问题、复用提醒", font_size=18)
+    def section_five_transfer_summary(self):
+        title = self.get_text("迁移成可复用方法", font_size=28)
+        narrative = self.get_text("把本节具体画面压缩成学生能带走的通用步骤。", font_size=20)
+        visual = self.get_secondary_text("视觉重点：方法卡、迁移例子、收束句", font_size=18)
         bullets = VGroup(
             *[
                 self.get_text(text, font_size=18)
                 for text in [
-                    "最后做迁移",
-                    "迁移问题、复用提醒",
+                    "迁移成可复用方法",
+                    "方法卡、迁移例子、收束句",
                     "关键句",
                     "迁移提醒",
                 ]
@@ -159,25 +159,25 @@ class Segment00OpeningScene(LessonBase):
     def construct(self):
         self.opening_page()
 
-class Segment01SectionOnePositionScene(LessonBase):
+class Segment01SectionOneObjectGoalScene(LessonBase):
     def construct(self):
-        self.section_one_position()
+        self.section_one_object_goal()
 
-class Segment02SectionTwoStructureScene(LessonBase):
+class Segment02SectionTwoCoreRelationScene(LessonBase):
     def construct(self):
-        self.section_two_structure()
+        self.section_two_core_relation()
 
-class Segment03SectionThreeExecutionScene(LessonBase):
+class Segment03SectionThreeDynamicWalkthroughScene(LessonBase):
     def construct(self):
-        self.section_three_execution()
+        self.section_three_dynamic_walkthrough()
 
-class Segment04SectionFourFeedbackScene(LessonBase):
+class Segment04SectionFourMisconceptionCheckScene(LessonBase):
     def construct(self):
-        self.section_four_feedback()
+        self.section_four_misconception_check()
 
-class Segment05SectionFiveTransferScene(LessonBase):
+class Segment05SectionFiveTransferSummaryScene(LessonBase):
     def construct(self):
-        self.section_five_transfer()
+        self.section_five_transfer_summary()
 
 class Segment06ClosingScene(LessonBase):
     def construct(self):

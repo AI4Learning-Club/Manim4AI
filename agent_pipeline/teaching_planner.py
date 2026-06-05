@@ -10,15 +10,30 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .llm import LLMClient, LLMConfig, LLMDeltaCallback, LLMEventCallback, StreamTerminated
+from .math_physics_visualization import build_planner_system_prompt
 
 
 OPENING_STYLES = {
     "question_first",
     "misconception_first",
+    "example_first",
     "visual_first",
+    "phenomenon_first",
     "result_first",
     "task_first",
+    "direct_first",
     "roadmap_first",
+}
+
+OPENING_ARCHITECTURES = {
+    "question_led",
+    "example_led",
+    "visual_reveal",
+    "direct_explanation",
+    "problem_walkthrough",
+    "result_backwards",
+    "comparison_led",
+    "story_led",
 }
 
 ROADMAP_STYLES = {
@@ -37,14 +52,19 @@ You are a master teacher designing a short educational animation lesson.
 Your job is NOT to write Manim code yet. Your job is to plan the teaching.
 Return teaching decisions only. Do NOT write Manim code, detailed derivations,
 tentative calculations, storyboard-level proof details, or self-correcting
-drafts. The final video should feel like a skilled teacher guiding a student
-from confusion to understanding, instead of dumping concepts directly.
+drafts. The final video should feel like a skilled teacher choosing the right
+lesson architecture for this topic: sometimes question-led, sometimes
+example-led, sometimes visual-first, sometimes direct and concise. It should
+never feel like a repeated opening template.
 
 Think like an excellent classroom teacher, not like a textbook outline writer.
-Your plan must tell the next agent HOW the teacher will lead the student:
-- what question to ask first,
+First choose the lesson's scene architecture, then tell the next agent HOW the
+teacher will lead the student:
+- which opening architecture fits this lesson and why,
+- whether the first beat should be a question, a concrete example, a visual reveal,
+  a result preview, a task read-in, or a direct explanation,
 - what intuition to build before any formal statement,
-- what misconception to surface and correct,
+- what misconception to surface and correct when it is actually useful,
 - what visual moment should make the student say "哦，原来是这样",
 - and how to transition naturally from one step to the next.
 
@@ -73,7 +93,8 @@ Return EXACTLY ONE top-level JSON object with this field order and structure:
   },
   "hook": "...",
   "opening": {
-    "style": "question_first|misconception_first|visual_first|result_first|task_first|roadmap_first",
+    "architecture": "question_led|example_led|visual_reveal|direct_explanation|problem_walkthrough|result_backwards|comparison_led|story_led",
+    "style": "question_first|misconception_first|example_first|visual_first|phenomenon_first|result_first|task_first|direct_first|roadmap_first",
     "hook_line": "...",
     "roadmap_style": "task_line|question_chain|visual_tags|two_step|result_path|classic_outline"
   },
@@ -117,8 +138,14 @@ Field semantics:
   lesson. It must be 1-2 concise spoken sentences in student language.
 - `problem_intake.restatement` is NOT a long prompt copy, a meta summary, a
   derivation preview, or a strategy slogan.
-- `hook` and `opening.hook_line` come AFTER the student has heard the concise
-  read-in and seen the opening marking setup.
+- `opening.architecture` is the whole opening/storyboard structure, not a
+  cosmetic label. It should control the first 15-30 seconds of the lesson.
+- `opening.hook_line` is the first meaningful opening beat for that structure.
+  It may be a question, a concrete example, a visual instruction, a result
+  preview, a task statement, or a direct teaching sentence. It is NOT always a
+  question.
+- For problem-solving lessons, `hook` and `opening.hook_line` come AFTER the
+  student has heard the concise read-in and seen the opening marking setup.
 
 Rules:
 - JSON string fields must contain final teaching decisions only. Do not include
@@ -130,6 +157,11 @@ Rules:
 - Do NOT include detailed derivations, tentative数值猜测, competing proof paths,
   or self-correction narrative inside plan fields.
 - Every lesson must include an `opening` object.
+- Choose the opening architecture deliberately. Do NOT force a question-led
+  opening. Use `question_first` / `question_chain` only when a real question is
+  the best way into this particular topic.
+- Avoid stacking multiple rhetorical questions at the beginning. One strong
+  opening beat is usually better than several similar questions.
 - Every lesson must include a `problem_intake` object. Set
   `problem_intake.is_problem_solving` to true for concrete exercises, proofs,
   calculations, geometry questions, or image-based problem statements. Set it
@@ -143,24 +175,30 @@ Rules:
   sub-question plus the overall objective in 1-2 spoken sentences, and the
   first scene must use one compact reconstructed题面 card that covers the
   sub-questions before formal analysis begins.
+- `opening.architecture` must be exactly one of:
+  `question_led`, `example_led`, `visual_reveal`, `direct_explanation`,
+  `problem_walkthrough`, `result_backwards`, `comparison_led`, `story_led`.
 - `opening.style` must be exactly one of:
-  `question_first`, `misconception_first`, `visual_first`,
-  `result_first`, `task_first`, `roadmap_first`.
+  `question_first`, `misconception_first`, `example_first`, `visual_first`,
+  `phenomenon_first`, `result_first`, `task_first`, `direct_first`,
+  `roadmap_first`.
 - `opening.roadmap_style` must be exactly one of:
   `task_line`, `question_chain`, `visual_tags`, `two_step`,
   `result_path`, `classic_outline`.
-- For problem-solving lessons, the opening order is fixed:
+- For problem-solving lessons, the opening order keeps the题面 safety line:
   1. concise spoken题目复述 via `problem_intake.restatement`
   2. visual marking of 已知 / 要求 / 关键关系 on a compact题面 card
-  3. hook question via `opening.hook_line`
-  4. roadmap
+  3. the chosen opening beat via `opening.hook_line` when it helps
+  4. roadmap or structure cue
 - Do NOT invert this order. Do NOT lead with meta commentary such as
   “先别急着算” or a strategy slogan before the concise read-in.
 - Every lesson still needs a roadmap, but the roadmap must explain how THIS
   lesson will proceed. It must not be empty motivation or vague slogans.
 - Do NOT default to a numbered "我们将看懂三件事" outline.
   `classic_outline` is only one roadmap style, not the default.
-- The first section must motivate the problem and establish a concrete path into the lesson.
+- The first section must follow the selected architecture. It may motivate
+  through a question, a concrete example, a visual reveal, a result preview, a
+  task read-in, or a direct first explanation.
 - For a concrete exercise, proof, calculation, geometry problem, or image-based
   problem, the first section must be a "题面导入" beat: restate/analyze the
   problem in student language, identify 已知条件 / 目标问题 / 关键变量或图形关系,
@@ -309,10 +347,11 @@ def _normalize_opening(opening: Any, hook_fallback: str) -> Dict[str, str]:
     opening = opening if isinstance(opening, dict) else {}
     hook_line = _text(
         opening.get("hook_line"),
-        hook_fallback or "先用一句具体问题把学生带进这节课。",
+        hook_fallback or "先用一个具体画面、例子或直接句子把学生带进这节课。",
     )
     return {
-        "style": _enum_choice(opening.get("style"), OPENING_STYLES, "question_first"),
+        "architecture": _enum_choice(opening.get("architecture"), OPENING_ARCHITECTURES, "visual_reveal"),
+        "style": _enum_choice(opening.get("style"), OPENING_STYLES, "visual_first"),
         "hook_line": hook_line,
         "roadmap_style": _enum_choice(
             opening.get("roadmap_style"),
@@ -392,9 +431,9 @@ def _normalize_sections(items: Any) -> List[Dict[str, str]]:
             "id": _text(item.get("id"), f"section_{idx}"),
             "title": _text(item.get("title"), f"第{idx}步"),
             "teacher_goal": _text(item.get("teacher_goal"), "让学生在这一段真正看懂当前关键点。"),
-            "teacher_move": _text(item.get("teacher_move"), "先提问，再用图像带学生自己得出结论。"),
-            "student_question": _text(item.get("student_question"), "学生此刻最可能会问什么？"),
-            "why_this_step_now": _text(item.get("why_this_step_now"), "这一步承接上一步的疑问，继续推进理解。"),
+            "teacher_move": _text(item.get("teacher_move"), "选择最合适的动作：可以直接演示、举例、对比或提问，再把结论落到画面上。"),
+            "student_question": _text(item.get("student_question"), "学生此刻最需要抓住的关注点是什么？"),
+            "why_this_step_now": _text(item.get("why_this_step_now"), "这一步承接上一步的重点，继续推进理解。"),
             "expected_student_reaction": _text(
                 item.get("expected_student_reaction"),
                 "学生会从模糊转向能描述出关键关系。",
@@ -416,7 +455,7 @@ def _normalize_sections(items: Any) -> List[Dict[str, str]]:
 
 def _normalize_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
     closing_raw = plan.get("closing") if isinstance(plan.get("closing"), dict) else {}
-    hook = _text(plan.get("hook"), "先从学生最困惑的一句话切入。")
+    hook = _text(plan.get("hook"), "先用最适合本课的开场动作把学生带入。")
     opening = _normalize_opening(plan.get("opening"), hook)
 
     normalized = {
@@ -435,7 +474,7 @@ def _normalize_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
         "big_idea": _text(plan.get("big_idea"), "把现象、图像和结论连成一条因果线。"),
         "teacher_voice": _text(
             plan.get("teacher_voice"),
-            "像经验丰富的老师，先共情困惑，再一步步带学生看懂。",
+            "像经验丰富的老师，按内容选择提问、举例、演示或直接讲解的节奏。",
         ),
         "narrative_arc": (
             plan.get("narrative_arc")
@@ -465,8 +504,8 @@ def _normalize_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
         normalized["sections"] = [{
             "id": "section_1",
             "title": "题面导入",
-            "teacher_goal": "先用精炼读题把任务讲清楚，再圈出解题入口，最后抛出推进问题。",
-            "teacher_move": "先用1到2句复述题目，再逐个标出已知条件、目标和关键变量，随后提出 hook 问题。",
+            "teacher_goal": "先用精炼读题把任务讲清楚，再圈出解题入口，最后进入选定的开场节奏。",
+            "teacher_move": "先用1到2句复述题目，再逐个标出已知条件、目标和关键变量，随后用问题、例子或直接说明推进。",
             "student_question": "这到底在讲什么，为什么会这样？",
             "why_this_step_now": "学生先得知道自己为什么要继续看下去。",
             "expected_student_reaction": "先看清题目给了什么、问什么，再愿意跟着老师继续往下看。",
@@ -521,20 +560,22 @@ class TeachingPlannerAgent:
                 "image_url": _image_to_data_url(image_path),
             })
 
+        system_prompt = build_planner_system_prompt(_SYSTEM_PLAN)
+
         for attempt in range(3):
             try:
                 json_stream_guard = _FirstJsonObjectStreamGuard(on_delta)
                 try:
                     if on_event is None:
                         text = self.client.generate_text(
-                            _SYSTEM_PLAN,
+                            system_prompt,
                             content,
                             max_retries=1,
                             on_delta=json_stream_guard,
                         )
                     else:
                         text = self.client.generate_text(
-                            _SYSTEM_PLAN,
+                            system_prompt,
                             content,
                             max_retries=1,
                             on_delta=json_stream_guard,

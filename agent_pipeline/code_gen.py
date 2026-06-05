@@ -1,4 +1,4 @@
-﻿"""
+"""
 Agent for generating, fixing, and improving Manim scene code via LLM.
 
 Supports text and image inputs.  Uses the OpenAI-compatible API with
@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 from plugins.manim.runtime_config import get_manim_settings
 
 from .agent_skills import build_manim_skill_prompt
+from .math_physics_visualization import MATH_PHYSICS_CODEGEN_DIRECTOR_PROMPT
 from .llm import LLMClient, LLMConfig, LLMDeltaCallback, LLMEventCallback, StreamTerminated
 from .output_language import normalize_output_language, output_language_name
 from .scene_pack import parse_scene_pack, recover_scene_pack_skeleton
@@ -721,55 +722,55 @@ When a teaching plan is provided, treat it as a TEACHER SCRIPT, not as metadata.
 That means:
 - use `hook`, `teaching_promise`, and `opening` to shape the opening tone,
 - use each section's `teacher_move` to decide how the teacher acts,
-- use each section's `student_question` as the confusion you are answering,
+- use each section's `student_question` as the learner focus or question you are answering,
 - use `misconceptions` to create explicit correction moments,
 - use each section's `transition` so the lesson flows naturally,
 - use `key_takeaway` to end each section with one clear sentence students can keep.
 
-Each major section should feel like this classroom loop:
-1. Raise the student's real question or prediction.
-2. Show a visual or concrete example.
-3. Explain the mechanism in plain language.
-4. Land on one memorable takeaway.
-5. Bridge naturally into the next section.
+Each major section should choose a teaching beat structure that fits the content.
+Do not force every section into a question-first loop. Good structures include:
+- question-led: raise a real question, then answer it with a visual;
+- example-led: start from a concrete example, then reveal the rule;
+- visual-reveal: show the phenomenon first, then name what is happening;
+- direct-explanation: state the useful idea plainly, then support it with motion;
+- result-backwards: show the result, then trace why it must be true.
+Whichever structure you choose, land on one memorable takeaway and bridge
+naturally into the next section.
 
 Do NOT sound like a textbook outline such as "定义是..., 性质是..., 应用是...".
-Instead, sound like a live teacher responding to a student's current confusion:
-- start from what the student is likely to think at this moment,
-- use the current visual or example to test that intuition,
+Instead, sound like a live teacher choosing the right move for this moment:
+- sometimes start from what the student is likely to wonder,
+- sometimes start from a concrete example, result, picture, or direct explanation,
+- use the current visual or example to build the intended intuition,
 - then explain what actually matters in plain classroom language.
 Keep the wording specific to THIS lesson. Do NOT copy stock phrases or sample
 sentences from this prompt verbatim.
 
 Before writing any code, plan a multi-step teaching flow:
 
-STEP 1 - OPENING READ-IN + HOOK (5-10 seconds):
-  What is the problem?  Why should the student care?
-  The opening must feel lesson-specific, not like a reusable stock intro.
+STEP 1 - CHOOSE AND EXECUTE THE OPENING ARCHITECTURE (5-10 seconds):
+  The opening must follow the teaching plan's `opening.architecture` and
+  `opening.style`. Do NOT reuse a stock question opener.
+  Possible opening architectures include:
+    - question-led: one genuine question drives the first beat;
+    - example-led: begin with a concrete example or mini case;
+    - visual-reveal: show motion/shape/change first, then name it;
+    - direct-explanation: start with the useful idea in a plain sentence;
+    - result-backwards: show the result first, then trace the reason;
+    - comparison-led: contrast two cases and explain the difference;
+    - story-led: use a tiny scenario when it genuinely helps.
   If the request is a concrete exercise, proof, calculation, geometry problem,
-  or image-based problem, the first spoken beat MUST read
-  `problem_intake.restatement` in concise student-friendly language. Keep it to
-  1-2 short sentences.
-  If the request is a concrete exercise, proof, calculation, geometry problem,
-  or image-based problem, the first visual beat MUST be a problem-intake beat:
-  briefly restate or analyze the problem in student-friendly language, separate
-  givens from the target, and mark the key information before the solution
-  begins. Use a concise problem card or reconstructed题面 card; do not copy a
-  long prompt verbatim if only selected conditions are needed.
-  For multi-part problems, the compact reconstructed题面 card must cover every
-  sub-question before structural explanation begins.
-  Animate the marking sequentially with theme-safe circles/ellipses, outline
-  rectangles, underlines, arrows, braces, color highlights, or small callout
-  labels. Mark the givens, the target question, and the important variable or
-  diagram relation before revealing derivation steps.
-  Only after the concise read-in and marking setup should the next narration
-  beat cash out `opening.hook_line`.
-  If the restatement already embeds that question naturally, keep the hook as
-  the second beat or merge it cleanly, but never let the hook replace the read-in.
-  Do NOT open with meta commentary, strategy slogans, or lines such as
-  “先别急着算” before the concise read-in.
-  Every lesson still needs a roadmap, but the roadmap must match THIS lesson
-  rather than falling back to a stock outline.
+  or image-based problem, keep the题面 safety line: the first spoken beat MUST
+  read `problem_intake.restatement` in concise student-friendly language, and
+  the first visual beat MUST mark the givens, target, and key relation before
+  solving. After that, cash out `opening.hook_line` according to the selected
+  architecture.
+  For non-problem lessons, `opening.hook_line` is the chosen opening beat. It
+  may be a question, a direct teaching sentence, a concrete example, a result
+  preview, or a visual instruction. Do not turn it into a question unless the
+  plan chose a question-led opening.
+  Every lesson still needs a roadmap or structure cue, but it must match THIS
+  lesson rather than falling back to a stock outline.
   Valid roadmap styles include:
     - `task_line`: one short task-oriented path for this lesson
     - `question_chain`: 2 linked questions that define the route
@@ -778,8 +779,8 @@ STEP 1 - OPENING READ-IN + HOOK (5-10 seconds):
     - `result_path`: start from the result, then state the route back to it
     - `classic_outline`: a true outline, used only when it really fits
   The roadmap must explain how THIS lesson will proceed.
-  Do not use stock numbered roadmap slogans or generic motivational filler.
-  Use simple language.  Make the student feel "I want to know the answer."
+  Avoid stacking several rhetorical questions at the beginning. One precise
+  opening beat is better than a repeated question pattern.
 STEP 2+ - TEACH EACH CONCEPT with VISUAL + FORMULA TOGETHER:
   This is the CORE of the animation.  For EACH concept in the planned lesson path:
   A section may use multiple pages when the content needs it. When one page
@@ -824,16 +825,20 @@ FINAL STEP - CONCLUSION (5-8 seconds):
   Can be full-screen centered (no need for left/right split here).
 
 TEACHER-LIKE DELIVERY RULES:
-- Open with the student's confusion, not the formal definition.
+- Open with the plan's chosen architecture, not a reusable question pattern.
 - For problem-solving videos, open by reading the problem like a teacher:
   "题目给了什么？要我们求什么？哪几个词或图形关系最关键？" Then visually mark
   those items before the first algebraic or geometric move.
+- For concept videos, the first beat may be a question, example, visual reveal,
+  result preview, analogy, or direct explanation. Choose the one that teaches
+  this topic best.
 - Before any abstract formula, first give the student a visible or causal picture.
-- At least twice in the video, let the narration ask the student to predict,
-    compare, or notice something before giving the answer.
+- When useful, let the narration ask the student to predict, compare, or notice
+  something before giving the answer. Do not add questions just to satisfy a template.
 - When correcting a misconception, first acknowledge why it feels plausible,
     then overturn it with the visual.
-- Use short bridge lines such as "先别急着背结论，我们先看画面", "现在公式只是把刚才的画面写下来".
+- Use bridge lines only when they fit the chosen architecture; avoid repeating
+  stock phrases such as "先别急着..." across videos.
 - End each section with a one-sentence takeaway a good teacher would actually say.
 
 IMPORTANT: The visual+formula side-by-side approach is what makes
@@ -1824,7 +1829,9 @@ def _build_opening_prompt(teaching_plan: Optional[Dict]) -> str:
     if not (style or roadmap_style or hook_line):
         return ""
 
+    architecture = str(opening.get("architecture", "")).strip()
     opening_summary = {
+        "architecture": architecture,
         "style": style,
         "hook_line": hook_line,
         "roadmap_style": roadmap_style,
@@ -1836,19 +1843,20 @@ def _build_opening_prompt(teaching_plan: Optional[Dict]) -> str:
         "## Opening plan for this lesson\n"
         + json.dumps(opening_summary, ensure_ascii=False, indent=2)
         + "\n\nThis opening plan is already fixed for the lesson.\n"
-        + "- The opening must follow `opening.style`.\n"
+        + "- The opening must follow `opening.architecture` and `opening.style`.\n"
+        + "- `opening.hook_line` is the chosen opening beat; it is not necessarily a question.\n"
         + "- The lesson roadmap must follow `opening.roadmap_style`.\n"
         + "- Every roadmap style must explain how THIS lesson will proceed.\n"
-        + "- Do NOT write empty slogans or generic motivation lines.\n"
+        + "- Do NOT write empty slogans, generic motivation lines, or repeated rhetorical questions.\n"
     )
     if is_problem_solving:
         prompt += (
             "- Because this is a problem-solving lesson, `opening.hook_line` belongs AFTER the concise read-in and opening marking beat.\n"
-            "- Treat `opening.hook_line` as the second narration question beat unless the restatement already contains it.\n"
+            "- Treat `opening.hook_line` as the next opening beat, not necessarily a question.\n"
             "- Do NOT lead with a meta strategy slogan or hook before the concise read-in.\n"
         )
     else:
-        prompt += "- The first spoken or visual beat should cash out `opening.hook_line`.\n"
+        prompt += "- The first spoken or visual beat should cash out `opening.hook_line` according to `opening.architecture`; do not force it into a question.\n"
     return prompt
 
 
@@ -1878,7 +1886,7 @@ def _build_problem_intake_prompt(teaching_plan: Optional[Dict]) -> str:
         + "- If `is_problem_solving` is true, show a compact problem card or reconstructed题面 card before solving.\n"
         + "- If `is_problem_solving` is true and the problem has multiple sub-questions, the compact reconstructed题面 card must cover each sub-question before structural explanation begins.\n"
         + "- If `is_problem_solving` is true, visually mark givens, target, key terms, variables, or diagram relations before the first derivation.\n"
-        + "- If `is_problem_solving` is true, the opening order is: concise restatement -> visual marking -> `opening.hook_line` -> roadmap/structure.\n"
+        + "- If `is_problem_solving` is true, the opening order is: concise restatement -> visual marking -> chosen `opening.hook_line` beat -> roadmap/structure.\n"
         + "- If `is_problem_solving` is false, use this only as a short topic-intake: restate the learner's central question and highlight key terms without inventing a fake exercise.\n"
         + "- Use sequential circles/ellipses, outline boxes, underlines, arrows, braces, color highlights, or callout labels.\n"
         + "- Keep markings attached to the exact text, formula part, or diagram relation they explain; do not place decorative floating marks.\n"
@@ -1959,7 +1967,7 @@ def _build_codegen_teaching_context(teaching_plan: Optional[Dict]) -> Dict[str, 
     if isinstance(opening, dict):
         context["opening"] = {
             key: opening.get(key)
-            for key in ("style", "hook_line", "roadmap_style")
+            for key in ("architecture", "style", "hook_line", "roadmap_style")
             if key in opening
         }
 
@@ -2394,6 +2402,7 @@ class CodeGenAgent:
         """Generate Manim code from a student request (text, optionally image)."""
         prompt_parts = [_build_output_language_prompt(output_language)]
         prompt_parts.append(f"## Student request\n{request_text}")
+        prompt_parts.append(MATH_PHYSICS_CODEGEN_DIRECTOR_PROMPT)
         if teaching_plan:
             codegen_context = _build_codegen_teaching_context(teaching_plan)
             prompt_parts.append(
@@ -2404,9 +2413,9 @@ class CodeGenAgent:
                 "## Required teaching-plan execution\n"
                 "Turn the teaching plan into concrete teaching behavior. "
                 "If `problem_intake.is_problem_solving` is true, make the first narration beat the concise `problem_intake.restatement`, then convert it into the opening visual-marking beat before solving. "
-                "After that opening read-in + marking sequence, let `opening.hook_line` become the next question beat unless the restatement already contains it. "
+                "After that opening read-in + marking sequence, let `opening.hook_line` become the next opening beat according to `opening.architecture`, not automatically a question. "
                 "If it is false, use it only as a short topic-intake beat. "
-                "For each section, reflect `teacher_move`, answer the section's `student_question`, "
+                "For each section, reflect `teacher_move`, address the section's `student_question` or focus, "
                 "include the concrete example or visual strategy when provided, and end with `key_takeaway` "
                 "or `check_for_understanding`. Use listed misconceptions to create at least one explicit "
                 "'you may think X, but actually Y' correction moment. Use transitions so the lesson feels continuous rather than segmented."

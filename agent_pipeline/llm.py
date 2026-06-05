@@ -276,6 +276,14 @@ def _is_retryable_responses_error(exc: Exception) -> bool:
     return any(marker in text for marker in _RESPONSES_RETRYABLE_ERROR_MARKERS)
 
 
+def _is_responses_initial_event_error(exc: Exception) -> bool:
+    message = str(exc)
+    return (
+        "Expected to have received `response.created` before `None`" in message
+        or "Expected to have received `response.created` before `NoneType`" in message
+    )
+
+
 class LLMClient:
     """Thin OpenAI wrapper shared by planner, asset selector, and codegen."""
 
@@ -299,6 +307,58 @@ class LLMClient:
         self.client = OpenAI(
             **client_kwargs,
         )
+
+    def _call_responses_api_non_stream(
+        self,
+        request_kwargs: dict[str, Any],
+        *,
+        on_delta: LLMDeltaCallback | None = None,
+        on_event: LLMEventCallback | None = None,
+        attempt: int = 1,
+        requested_service_tier: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        _emit_llm_event(
+            on_event,
+            {
+                "type": "llm_request_retry",
+                "stage": self.config.stage,
+                "attempt": attempt,
+                "next_attempt": attempt,
+                "retry_kind": "responses_non_stream_fallback",
+                "endpoint": "responses.create",
+            },
+        )
+        with llm_traffic_controller.provider_scope_sync(
+            self.config.provider_name,
+            operation=f"manim.{self.config.stage}.responses_non_stream",
+        ):
+            response = self.client.responses.create(**request_kwargs, stream=False)
+
+        text = str(getattr(response, "output_text", "") or "").strip()
+        if text and on_delta is not None:
+            try:
+                on_delta(text)
+            except StreamTerminated as exc:
+                return _apply_stream_termination(text, exc)
+
+        effective_service_tier = str(getattr(response, "service_tier", "") or "").strip()
+        _emit_llm_event(
+            on_event,
+            {
+                "type": "llm_request_completed",
+                "stage": self.config.stage,
+                "attempt": attempt,
+                "output_chars": len(text),
+                "reasoning_chars": 0,
+                "reasoning_summary_chars": 0,
+                "service_tier_requested": requested_service_tier or "unset",
+                "service_tier_effective": effective_service_tier or "unknown",
+                "reasoning_summary_requested": DEFAULT_REASONING_SUMMARY if reasoning_effort else "unset",
+                "endpoint": "responses.create",
+            },
+        )
+        return text
 
     def _to_chat_messages(self, system: str, user_content: list[dict[str, Any]]) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = []
@@ -496,6 +556,15 @@ class LLMClient:
                         return resolved_text
             except Exception as exc:
                 last_error = exc
+                if _is_responses_initial_event_error(exc):
+                    return self._call_responses_api_non_stream(
+                        dict(stream_kwargs),
+                        on_delta=on_delta,
+                        on_event=on_event,
+                        attempt=attempt + 1,
+                        requested_service_tier=requested_service_tier,
+                        reasoning_effort=reasoning_effort,
+                    )
                 before_fallback = dict(stream_kwargs)
                 retry = _apply_responses_fallbacks(stream_kwargs, str(exc))
                 if retry:

@@ -19,9 +19,10 @@
   },
   "hook": "如果只剩几分钟，怎样讲才能让学生先抓住大意？",
   "opening": {
-    "style": "question_first",
+    "architecture": "visual_reveal",
+    "style": "visual_first",
     "hook_line": "如果只剩几分钟，怎样讲才能让学生先抓住大意？",
-    "roadmap_style": "question_chain"
+    "roadmap_style": "task_line"
   },
   "big_idea": "简略讲解不是少讲，而是只保留最能支撑理解的骨架。",
   "teacher_voice": "亲切、清晰、强调讲解方式本身的节奏感。",
@@ -42,40 +43,40 @@
       "title": "先给全景",
       "teacher_move": "先把整件事的大轮廓抛出来。",
       "visual_strategy": "总览图、主线、结论先行",
-      "key_takeaway": "在“简略讲解”里，这一段承担的是 先给全景 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“简略讲解”，这一段最关键的讲法是什么？"
+      "key_takeaway": "先把整件事的大轮廓抛出来。",
+      "check_for_understanding": "看完“先给全景”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
       "id": "section_two_key_terms",
       "title": "只保留关键词",
       "teacher_move": "只讲最关键的词和关系，不展开旁枝。",
       "visual_strategy": "关键词、箭头关系",
-      "key_takeaway": "在“简略讲解”里，这一段承担的是 只保留关键词 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“简略讲解”，这一段最关键的讲法是什么？"
+      "key_takeaway": "只讲最关键的词和关系，不展开旁枝。",
+      "check_for_understanding": "看完“只保留关键词”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
       "id": "section_three_main_example",
       "title": "给一个代表性例子",
       "teacher_move": "用一个极小例子承接整体印象。",
       "visual_strategy": "一个例子、一条主线",
-      "key_takeaway": "在“简略讲解”里，这一段承担的是 给一个代表性例子 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“简略讲解”，这一段最关键的讲法是什么？"
+      "key_takeaway": "用一个极小例子承接整体印象。",
+      "check_for_understanding": "看完“给一个代表性例子”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
       "id": "section_four_common_confusion",
       "title": "顺手排一个误区",
       "teacher_move": "快速指出最常见误解，避免学生带错印象离开。",
       "visual_strategy": "误区对比",
-      "key_takeaway": "在“简略讲解”里，这一段承担的是 顺手排一个误区 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“简略讲解”，这一段最关键的讲法是什么？"
+      "key_takeaway": "快速指出最常见误解，避免学生带错印象离开。",
+      "check_for_understanding": "看完“顺手排一个误区”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
       "id": "section_five_one_sentence",
       "title": "一句话收口",
       "teacher_move": "最后收成一句能带走的话。",
       "visual_strategy": "一句话总结",
-      "key_takeaway": "在“简略讲解”里，这一段承担的是 一句话收口 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“简略讲解”，这一段最关键的讲法是什么？"
+      "key_takeaway": "最后收成一句能带走的话。",
+      "check_for_understanding": "看完“一句话收口”后，你能指出画面里哪个对象或变化最关键吗？"
     }
   ],
   "closing": {

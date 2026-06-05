@@ -7,9 +7,10 @@ description: Use for mathematically dense educational animation generation. Appl
 
 Use a reverse-knowledge-tree mindset.
 
-- Start from the learner's confusion, not the formal statement.
+- Choose the opening beat that fits the concept: a real question, concrete example, visual phenomenon, result preview, direct explanation, or task read-in.
+- Do not force every lesson to start with learner confusion or a chain of rhetorical questions.
 - Ask what prerequisite intuition must be clear before the target concept.
-- Build the explanation from intuitive setup -> mathematical mechanism -> takeaway.
+- Build the explanation from the chosen opening structure -> mathematical mechanism -> takeaway.
 - Prefer clean visual reasoning over decorative effects.
 - When a section is routed to Manim, make the animation do the hard logical work.
 - Couple every important formula with a visible object, graph, geometric relation, or state change.

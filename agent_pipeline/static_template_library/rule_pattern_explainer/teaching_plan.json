@@ -19,16 +19,17 @@
   },
   "hook": "如果内容没变，只是讲法换了，理解体验会差多少？",
   "opening": {
-    "style": "question_first",
+    "architecture": "example_led",
+    "style": "example_first",
     "hook_line": "如果内容没变，只是讲法换了，理解体验会差多少？",
-    "roadmap_style": "question_chain"
+    "roadmap_style": "result_path"
   },
   "big_idea": "规律归纳讲解的核心不是多讲内容，而是用合适的讲法把理解路径变短。",
   "teacher_voice": "亲切、清晰、强调讲解方式本身的节奏感。",
   "narrative_arc": [
-    "先给出讲法定位",
-    "再固定讲解结构",
-    "执行这套讲法"
+    "对象和目标先入场",
+    "核心关系绑到图像",
+    "走完一次关键过程"
   ],
   "misconceptions": [
     {
@@ -38,44 +39,44 @@
   ],
   "sections": [
     {
-      "id": "section_one_position",
-      "title": "先给出讲法定位",
-      "teacher_move": "先告诉学生这次为什么采用这种讲法。",
-      "visual_strategy": "风格标签、目标、适用场景",
-      "key_takeaway": "在“规律归纳讲解”里，这一段承担的是 先给出讲法定位 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“规律归纳讲解”，这一段最关键的讲法是什么？"
+      "id": "section_one_object_goal",
+      "title": "对象和目标先入场",
+      "teacher_move": "先把本节真正要理解的对象、起点和目标放到同一张图里。",
+      "visual_strategy": "对象标注、起始状态、目标箭头",
+      "key_takeaway": "先把本节真正要理解的对象、起点和目标放到同一张图里。",
+      "check_for_understanding": "看完“对象和目标先入场”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
-      "id": "section_two_structure",
-      "title": "再固定讲解结构",
-      "teacher_move": "��这种讲法的结构骨架明确下来。",
-      "visual_strategy": "结构框架、节奏分层",
-      "key_takeaway": "在“规律归纳讲解”里，这一段承担的是 再固定讲解结构 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“规律归纳讲解”，这一段最关键的讲法是什么？"
+      "id": "section_two_core_relation",
+      "title": "核心关系绑到图像",
+      "teacher_move": "把关键量之间的关系和画面对象一一对应起来。",
+      "visual_strategy": "图像-公式绑定、颜色高亮",
+      "key_takeaway": "把关键量之间的关系和画面对象一一对应起来。",
+      "check_for_understanding": "看完“核心关系绑到图像”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
-      "id": "section_three_execution",
-      "title": "执行这套讲法",
-      "teacher_move": "展示真正推进内容时，这种讲法如何发力。",
-      "visual_strategy": "步骤推进、重点切换",
-      "key_takeaway": "在“规律归纳讲解”里，这一段承担的是 执行这套讲法 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“规律归纳讲解”，这一段最关键的讲法是什么？"
+      "id": "section_three_dynamic_walkthrough",
+      "title": "走完一次关键过程",
+      "teacher_move": "用一次完整动态演示串起状态变化和因果链。",
+      "visual_strategy": "步骤推进、状态更新、轨迹变化",
+      "key_takeaway": "用一次完整动态演示串起状态变化和因果链。",
+      "check_for_understanding": "看完“走完一次关键过程”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
-      "id": "section_four_feedback",
-      "title": "用反馈校正",
-      "teacher_move": "强调这种讲法如何处理学生常见卡点。",
-      "visual_strategy": "误区提醒、反馈回路",
-      "key_takeaway": "在“规律归纳讲解”里，这一段承担的是 用反馈校正 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“规律归纳讲解”，这一段最关键的讲法是什么？"
+      "id": "section_four_misconception_check",
+      "title": "校正常见误解",
+      "teacher_move": "把最容易混淆的方向、条件或边界并排对比。",
+      "visual_strategy": "正误对照、边界提醒、反馈回路",
+      "key_takeaway": "把最容易混淆的方向、条件或边界并排对比。",
+      "check_for_understanding": "看完“校正常见误解”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
-      "id": "section_five_transfer",
-      "title": "最后做迁移",
-      "teacher_move": "把这种讲法迁移到别的内容场景。",
-      "visual_strategy": "迁移问题、复用提醒",
-      "key_takeaway": "在“规律归纳讲解”里，这一段承担的是 最后做迁移 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“规律归纳讲解”，这一段最关键的讲法是什么？"
+      "id": "section_five_transfer_summary",
+      "title": "迁移成可复用方法",
+      "teacher_move": "把本节具体画面压缩成学生能带走的通用步骤。",
+      "visual_strategy": "方法卡、迁移例子、收束句",
+      "key_takeaway": "把本节具体画面压缩成学生能带走的通用步骤。",
+      "check_for_understanding": "看完“迁移成可复用方法”后，你能指出画面里哪个对象或变化最关键吗？"
     }
   ],
   "closing": {

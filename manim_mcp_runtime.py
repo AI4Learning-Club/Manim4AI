@@ -105,12 +105,11 @@ def _job_slot_semaphore() -> threading.BoundedSemaphore:
 
 SERVER_NAME = "manim-edu-agent"
 SERVER_VERSION = "1.0.0"
-_MANIM_1080P60_FLAGS = "-qh --fps 60"
 _QUALITY_PRESETS = {
-    "default": _MANIM_1080P60_FLAGS,
+    "default": "",
     "draft": "-ql --fps 30",
-    "medium": _MANIM_1080P60_FLAGS,
-    "high": _MANIM_1080P60_FLAGS,
+    "medium": "-qm --fps 60",
+    "high": "-qh --fps 60",
 }
 _PUBLIC_REDACTED_TEXT = "[internal path redacted]"
 _PUBLIC_PATH_KEYS = frozenset(
@@ -424,6 +423,212 @@ def _project_job_progress(
     }
 
 
+def _safe_run_path_component(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _string_value(value: Any) -> str:
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def _prettify_storyboard_id(value: str) -> str:
+    normalized = re.sub(r"Scene$", "", value)
+    normalized = re.sub(r"^Segment\d*", "", normalized)
+    normalized = re.sub(r"^section[_\s-]*", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"[_-]+", " ", normalized)
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized.title() if normalized else value
+
+
+def _coerce_storyboard_order(value: Any, fallback: int) -> int:
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value == value:
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return fallback
+
+
+def _storyboard_status_from_stage(stage: str, payload: dict[str, Any] | None) -> tuple[str, int]:
+    lowered = stage.lower()
+    data = payload if isinstance(payload, dict) else {}
+    if data.get("success") is False or "failed" in lowered or "error" in lowered:
+        return "error", 100
+    if data.get("success") is True or "completed" in lowered or "rendered" in lowered:
+        return "done", 100
+    if "render_started" in lowered or "rendering" in lowered:
+        return "running", 75
+    if "tts" in lowered:
+        return "running", 55
+    if "validation" in lowered or "validated" in lowered:
+        return "running", 45
+    return "running", 30
+
+
+def _merge_storyboard_item(
+    items: dict[str, dict[str, Any]],
+    key: str,
+    update: dict[str, Any],
+) -> None:
+    if not key:
+        return
+    existing = items.get(key)
+    if existing is None:
+        items[key] = update
+        return
+
+    rank = {"pending": 0, "running": 1, "done": 2, "error": 3}
+    existing_status = str(existing.get("status") or "pending")
+    incoming_status = str(update.get("status") or existing_status)
+    existing_progress = _coerce_progress_value(existing.get("progress")) or 0
+    incoming_progress = _coerce_progress_value(update.get("progress")) or 0
+    next_status = (
+        "error"
+        if "error" in {existing_status, incoming_status}
+        else incoming_status
+        if rank.get(incoming_status, -1) >= rank.get(existing_status, -1)
+        else existing_status
+    )
+    existing.update({k: v for k, v in update.items() if v is not None})
+    existing["status"] = next_status
+    existing["progress"] = max(existing_progress, incoming_progress)
+
+
+def _build_manim_storyboard_items(
+    *,
+    conversation_id: str,
+    run_key: str,
+    job_status: str,
+) -> list[dict[str, Any]]:
+    if not conversation_id or not run_key:
+        return []
+
+    run_dir_name = f"{_safe_run_path_component(conversation_id)}_{_safe_run_path_component(run_key)}"
+    candidate_roots = [get_managed_runs_dir()]
+    configured_runs_dir = str(settings.manim.runs_output_dir or "").strip()
+    if configured_runs_dir:
+        candidate_roots.append(Path(configured_runs_dir).resolve())
+    else:
+        candidate_roots.append(get_manim_runs_dir().resolve())
+
+    run_dir = next(
+        (root / run_dir_name for root in candidate_roots if (root / run_dir_name).exists()),
+        candidate_roots[0] / run_dir_name,
+    )
+    if not run_dir.exists():
+        return []
+
+    items_by_order: dict[int, dict[str, Any]] = {}
+    fallback_items: dict[str, dict[str, Any]] = {}
+    plan = _read_json_object(run_dir / "teaching_plan.json") or {}
+    sections = plan.get("sections")
+    if isinstance(sections, list):
+        for index, section in enumerate(sections, start=1):
+            if not isinstance(section, dict):
+                continue
+            section_id = _string_value(section.get("id")) or f"section_{index}"
+            title = _string_value(section.get("title")) or _prettify_storyboard_id(section_id)
+            items_by_order[index] = {
+                "id": section_id,
+                "title": title,
+                "order": index,
+                "status": "pending",
+                "progress": 0,
+                "stage": "planned",
+                "segment_id": section_id,
+            }
+
+    def apply_segment_file(path: Path, *, ready: bool = False, failure: bool = False) -> None:
+        data = _read_json_object(path)
+        if not data:
+            return
+        payload = data.get("payload") if isinstance(data.get("payload"), dict) else None
+        order_source = data.get("order")
+        if order_source is None:
+            order_source = data.get("segment_order")
+        if order_source is None and payload:
+            order_source = payload.get("segment_order")
+        order = _coerce_storyboard_order(order_source, len(items_by_order) + len(fallback_items) + 1)
+        if order == 0 and items_by_order:
+            return
+        segment_id = _string_value(data.get("segment_id")) or _string_value(payload.get("segment_id") if payload else None)
+        scene_name = _string_value(data.get("scene_name")) or _string_value(payload.get("scene_name") if payload else None)
+        title = _prettify_storyboard_id(segment_id or scene_name or f"section_{order}")
+        status = "running"
+        progress = 25
+        stage = _string_value(data.get("stage")) or ("section_ready" if ready else "section_status")
+        if failure:
+            error = _string_value(data.get("error"))
+            if "mark_submitted" in error:
+                status, progress = "running", 30
+            else:
+                status, progress = "error", 100
+        elif stage:
+            status, progress = _storyboard_status_from_stage(stage, payload)
+        update = {
+            "id": segment_id or scene_name or f"section_{order}",
+            "title": title,
+            "order": order,
+            "status": status,
+            "progress": progress,
+            "stage": stage,
+            "message": _string_value(data.get("error")) or None,
+            "scene_name": scene_name or None,
+            "segment_id": segment_id or None,
+        }
+        if order in items_by_order:
+            item = items_by_order[order]
+            planned_id = item.get("id")
+            planned_title = item.get("title")
+            planned_order = item.get("order")
+            planned_segment_id = item.get("segment_id")
+            _merge_storyboard_item({str(order): item}, str(order), update)
+            if planned_id:
+                item["id"] = planned_id
+            if planned_title:
+                item["title"] = planned_title
+            if planned_order is not None:
+                item["order"] = planned_order
+            item["scene_name"] = update["scene_name"] or item.get("scene_name")
+            if update["segment_id"] and update["segment_id"] != planned_segment_id:
+                item["runtime_segment_id"] = update["segment_id"]
+            item["segment_id"] = planned_segment_id or item.get("segment_id") or update["segment_id"]
+            return
+        _merge_storyboard_item(fallback_items, str(order), update)
+
+    for path in sorted(run_dir.glob("section_ready_*.json")):
+        apply_segment_file(path, ready=True)
+    for path in sorted(run_dir.glob("section_status_*.json")):
+        apply_segment_file(path)
+    for path in sorted(run_dir.glob("section_submit_failure_*.json")):
+        apply_segment_file(path, failure=True)
+
+    if items_by_order:
+        items = list(items_by_order.values())
+    elif str(job_status or "").lower() in {"queued", "running"}:
+        items = []
+    else:
+        items = list(fallback_items.values())
+    if job_status == "ok":
+        for item in items:
+            if item.get("status") != "error":
+                item["status"] = "done"
+                item["progress"] = 100
+    return sorted(items, key=lambda item: (int(item.get("order") or 0), str(item.get("title") or "")))
+
+
 def _manim_delivery_mode() -> str:
     return str(settings.manim.delivery.mode or "local_mp4").strip().lower() or "local_mp4"
 
@@ -509,43 +714,6 @@ def _probe_duration_seconds(video_path: Path) -> float | None:
         return round(float(raw), 3)
     except ValueError:
         return None
-
-
-def _normalized_manim_job_timing(value: object) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    normalized: dict[str, Any] = {}
-    for key, item in value.items():
-        if isinstance(item, bool) or item is None:
-            normalized[key] = item
-            continue
-        if isinstance(item, (int, float)):
-            normalized[key] = round(float(item), 3)
-            continue
-        if isinstance(item, str):
-            normalized[key] = item
-            continue
-        if isinstance(item, dict):
-            nested = _normalized_manim_job_timing(item)
-            if nested:
-                normalized[key] = nested
-            continue
-        if isinstance(item, list):
-            normalized_list: list[Any] = []
-            for entry in item:
-                if isinstance(entry, dict):
-                    nested = _normalized_manim_job_timing(entry)
-                    if nested:
-                        normalized_list.append(nested)
-                elif isinstance(entry, bool) or entry is None:
-                    normalized_list.append(entry)
-                elif isinstance(entry, (int, float)):
-                    normalized_list.append(round(float(entry), 3))
-                elif isinstance(entry, str):
-                    normalized_list.append(entry)
-            if normalized_list:
-                normalized[key] = normalized_list
-    return normalized or None
 
 
 def _normalize_quality_flags(quality: str) -> str | None:
@@ -693,6 +861,11 @@ class RenderJobState:
             events=self.events,
             result=self.result,
         )
+        storyboard_items = _build_manim_storyboard_items(
+            conversation_id=self.conversation_id,
+            run_key=self.run_key,
+            job_status=self.status,
+        )
         payload: dict[str, Any] = {
             "status": self.status,
             "job_id": self.job_id,
@@ -715,6 +888,7 @@ class RenderJobState:
             "stage_message": progress_projection["stage_message"],
             "progress": progress_projection["progress"],
             "can_retry": self.status == "error" and bool(self.request.strip()),
+            "storyboard_items": storyboard_items,
             "video_versions": versions,
             "video_url": final_version.get("video_url") if final_version else None,
             "playback_url": playable_version.get("playback_url") if playable_version else None,
@@ -738,13 +912,6 @@ class RenderJobState:
             if versions and "video_versions" not in result_payload:
                 result_payload["video_versions"] = versions
             payload["result"] = _sanitize_public_payload(result_payload)
-        if self.result is not None:
-            timing_payload = _normalized_manim_job_timing(self.result.get("timing"))
-            if timing_payload is not None:
-                payload["timing"] = timing_payload
-            quality_flags = str(self.result.get("quality_flags") or "").strip()
-            if quality_flags:
-                payload["quality_flags"] = quality_flags
         return payload
 
     def to_snapshot(self) -> dict[str, Any]:
@@ -1325,16 +1492,6 @@ class ManimRenderRuntime:
         delivery_type = "mp4"
         final_manifest_key = ""
         final_video_url: str
-        if event_callback is not None:
-            event_callback(
-                make_manim_stream_event(
-                    event_type=ManimStreamEventType.STAGE_PROGRESS,
-                    stage=ManimStreamEventStage.DELIVERY,
-                    message="Packaging final video for delivery",
-                    run_id=run_id_hint,
-                    progress=96,
-                )
-            )
         if _is_hls_cos_delivery_enabled():
             final_manifest_path, hls_error = build_hls_video_file(
                 source_path,
@@ -1344,16 +1501,6 @@ class ManimRenderRuntime:
             )
             if hls_error or final_manifest_path is None:
                 raise RuntimeError(hls_error or "Failed to package final HLS output.")
-            if event_callback is not None:
-                event_callback(
-                    make_manim_stream_event(
-                        event_type=ManimStreamEventType.STAGE_PROGRESS,
-                        stage=ManimStreamEventStage.DELIVERY,
-                        message="Publishing final video to CDN",
-                        run_id=run_id_hint,
-                        progress=98,
-                    )
-                )
             published_final = _publish_hls_manifest(
                 manifest_path=final_manifest_path,
                 hls_root=run_dir / "final_hls",
@@ -1400,14 +1547,6 @@ class ManimRenderRuntime:
             )
 
         duration_seconds = _probe_duration_seconds(source_path)
-        pipeline_timing = _normalized_manim_job_timing(summary.get("timing")) or {}
-        queue_wait_seconds = round(queue_ms / 1000.0, 3)
-        pipeline_wall_seconds = pipeline_timing.get("total_wall_seconds")
-        end_to_end_seconds = (
-            round(queue_wait_seconds + float(pipeline_wall_seconds), 3)
-            if isinstance(pipeline_wall_seconds, (int, float))
-            else None
-        )
         _logger.info(
             "[Manim] 生成完成: delivery=%s target=%s duration=%s",
             delivery_type,
@@ -1433,14 +1572,8 @@ class ManimRenderRuntime:
             "preview_ready": True,
             "render_backend": backend,
             "quality": quality_normalized,
-            "quality_flags": summary.get("quality_flags"),
             "output_language": summary.get("output_language"),
             "conversation_id": conversation_id or None,
-            "timing": {
-                "queue_wait_seconds": queue_wait_seconds,
-                "pipeline": pipeline_timing,
-                "end_to_end_seconds": end_to_end_seconds,
-            },
         }
 
     def _run_render_job(

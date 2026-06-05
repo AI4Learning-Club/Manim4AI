@@ -38,7 +38,11 @@ from interface.plugins.manim import (
 from .asset_resolver import resolve_local_assets
 from .code_eval import CodeEvalAgent
 from .code_gen import CodeGenAgent
-from .fast_paths import build_fast_path_plan_and_code_for_category, maybe_build_fast_path_plan_and_code
+from .fast_paths import (
+    build_fast_path_plan_and_code_for_category,
+    maybe_build_fast_path_plan_and_code,
+    should_skip_fast_path_for_request,
+)
 from .llm import resolve_pipeline_llm_configs, validate_pipeline_llm_configs
 from .output_language import normalize_output_language, output_language_name
 from .remotion_renderer import build_remotion_hybrid
@@ -1580,7 +1584,8 @@ def run_pipeline(
         fast_path_reference_code = ""
         teaching_plan: Dict[str, Any]
         selected_theme: Dict[str, Any] | None = None
-        if MANIM_SETTINGS.render.deterministic_fast_path_enabled:
+        skip_deterministic_fast_path = should_skip_fast_path_for_request(request_text)
+        if MANIM_SETTINGS.render.deterministic_fast_path_enabled and not skip_deterministic_fast_path:
             selected_theme = {"theme_id": "mist_blue_focus", "display_name": "Mist Blue Focus"}
             fast_path = None
             try:
@@ -1634,7 +1639,7 @@ def run_pipeline(
                     request_text,
                     image_path,
                     on_delta=_analysis_delta_and_persist,
-                    on_event=_analysis_llm_event,
+                        on_event=_analysis_llm_event,
                 )
         else:
             teaching_plan = _call_with_optional_on_event(

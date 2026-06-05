@@ -162,6 +162,8 @@ def build_fast_path_plan_and_code_for_category(
 
 
 def _match_category(text: str) -> FastPathCategory | None:
+    if should_skip_fast_path_for_request(text):
+        return None
     for category in _FAST_PATH_CATEGORIES:
         if category.status != "ready":
             continue
@@ -177,6 +179,91 @@ def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
     return any(token.lower() in lowered for token in tokens)
 
 
+def should_skip_fast_path_for_request(text: str) -> bool:
+    return _looks_like_concrete_lesson_request(text) and not _explicit_template_style_requested(text)
+
+
+def _explicit_template_style_requested(text: str) -> bool:
+    style_tokens = tuple(
+        dict.fromkeys(
+            tuple(category.display_name for category in _FAST_PATH_CATEGORIES)
+            + tuple(category.style_axis for category in _FAST_PATH_CATEGORIES)
+            + (
+                "例题驱动",
+                "直觉优先",
+                "问题驱动",
+                "题目驱动",
+                "框架梳理",
+                "问答式",
+                "易错点优先",
+                "定义优先",
+                "应用优先",
+                "公式优先",
+            )
+        )
+    )
+    if not _contains_any(text, style_tokens):
+        return False
+
+    normalized = re.sub(r"\s+", "", text.lower())
+    style_pattern = "|".join(
+        re.escape(re.sub(r"\s+", "", token.lower()))
+        for token in sorted(style_tokens, key=len, reverse=True)
+        if token
+    )
+    if not style_pattern:
+        return False
+
+    explicit_verbs = r"(?:按|按照|采用|使用|套用|选择|指定|切换到|改成|请用|用)"
+    style_nouns = r"(?:讲解风格|讲解方式|讲法|风格|模板|模板库|结构模板|分镜模板)"
+    return bool(
+        re.search(rf"{explicit_verbs}.{{0,10}}(?:{style_pattern}).{{0,10}}(?:{style_nouns})", normalized)
+        or re.search(rf"{explicit_verbs}.{{0,6}}(?:{style_pattern})", normalized)
+        or re.search(rf"(?:{style_pattern}).{{0,6}}(?:{style_nouns})", normalized)
+        or re.search(rf"{style_nouns}.{{0,8}}(?:{style_pattern})", normalized)
+    )
+
+
+def _looks_like_concrete_lesson_request(text: str) -> bool:
+    return _contains_any(
+        text,
+        (
+            "教学动画",
+            "动画",
+            "视频",
+            "manim",
+            "remotion",
+            "主题是",
+            "讲清楚",
+            "讲解",
+            "公式",
+            "函数",
+            "导数",
+            "梯度",
+            "曲线",
+            "曲面",
+            "几何",
+            "物理",
+            "化学",
+            "生物",
+            "数学",
+        ),
+    ) and _contains_any(
+        text,
+        (
+            "开头",
+            "分镜",
+            "画面",
+            "动态",
+            "例子",
+            "推导",
+            "演示",
+            "总结",
+            "迁移",
+        ),
+    )
+
+
 def _looks_like_brief_explainer(text: str) -> bool:
     return _contains_any(text, ("简略讲解", "简要讲解", "快速讲解", "简短讲解", "速览", "快速过一遍"))
 
@@ -190,7 +277,7 @@ def _looks_like_step_by_step_explainer(text: str) -> bool:
 
 
 def _looks_like_example_driven_explainer(text: str) -> bool:
-    return _contains_any(text, ("举例讲解", "例题讲解", "通过例子", "用例子讲", "例题驱动"))
+    return _contains_any(text, ("举例讲解", "例题讲解", "例题驱动", "例子驱动讲解"))
 
 
 def _looks_like_contrastive_explainer(text: str) -> bool:
@@ -198,7 +285,7 @@ def _looks_like_contrastive_explainer(text: str) -> bool:
 
 
 def _looks_like_intuition_first_explainer(text: str) -> bool:
-    return _contains_any(text, ("直观讲解", "直觉讲解", "形象讲解", "先建立直觉", "先别上公式"))
+    return _contains_any(text, ("直观讲解", "直觉讲解", "直觉优先", "形象讲解", "先建立直觉", "先别上公式"))
 
 
 def _looks_like_formal_proof_explainer(text: str) -> bool:
@@ -210,7 +297,7 @@ def _looks_like_review_recap_explainer(text: str) -> bool:
 
 
 def _looks_like_beginner_onboarding_explainer(text: str) -> bool:
-    return _contains_any(text, ("零基础", "入门", "新手", "完全不会", "从最基础开始"))
+    return _contains_any(text, ("零基础讲解", "入门讲解", "新手入门", "完全不会", "从最基础开始"))
 
 
 def _looks_like_advanced_deep_dive(text: str) -> bool:
@@ -289,6 +376,44 @@ def _make_blueprint(
     )
 
 
+def _opening_shape_for_fast_path(category: FastPathCategory) -> tuple[str, str, str]:
+    style = category.blueprint.explanation_style
+    style_map = {
+        "example": ("example_first", "example_led", "task_line"),
+        "contrast": ("misconception_first", "comparison_led", "visual_tags"),
+        "intuition": ("visual_first", "visual_reveal", "visual_tags"),
+        "proof": ("direct_first", "direct_explanation", "two_step"),
+        "review": ("roadmap_first", "direct_explanation", "classic_outline"),
+        "onboarding": ("example_first", "example_led", "two_step"),
+        "advanced": ("direct_first", "direct_explanation", "result_path"),
+        "question-led": ("question_first", "question_led", "question_chain"),
+        "structure": ("roadmap_first", "direct_explanation", "visual_tags"),
+        "storytelling": ("visual_first", "story_led", "visual_tags"),
+        "qa": ("question_first", "question_led", "question_chain"),
+        "exam": ("task_first", "problem_walkthrough", "task_line"),
+        "mistake-first": ("misconception_first", "comparison_led", "two_step"),
+        "definition-first": ("direct_first", "direct_explanation", "two_step"),
+        "application-first": ("example_first", "example_led", "task_line"),
+        "formula-first": ("result_first", "result_backwards", "result_path"),
+        "conceptual": ("visual_first", "visual_reveal", "visual_tags"),
+        "operational": ("task_first", "problem_walkthrough", "task_line"),
+        "memory": ("example_first", "example_led", "visual_tags"),
+        "analogy": ("example_first", "example_led", "visual_tags"),
+        "scenario": ("example_first", "story_led", "task_line"),
+        "layered": ("roadmap_first", "direct_explanation", "two_step"),
+        "micro-lecture": ("direct_first", "direct_explanation", "task_line"),
+        "longform": ("roadmap_first", "direct_explanation", "classic_outline"),
+        "table-comparison": ("misconception_first", "comparison_led", "visual_tags"),
+        "timeline": ("visual_first", "visual_reveal", "visual_tags"),
+        "causal": ("phenomenon_first", "visual_reveal", "two_step"),
+        "pattern": ("example_first", "example_led", "result_path"),
+        "interactive": ("question_first", "question_led", "question_chain"),
+        "checkpoint": ("task_first", "problem_walkthrough", "task_line"),
+        "mixed": ("visual_first", "visual_reveal", "visual_tags"),
+    }
+    return style_map.get(style, ("visual_first", "visual_reveal", "task_line"))
+
+
 def _build_teaching_plan(category: FastPathCategory, *, theme_id: str) -> dict[str, Any]:
     blueprint = category.blueprint
     sections: list[dict[str, str]] = []
@@ -299,10 +424,12 @@ def _build_teaching_plan(category: FastPathCategory, *, theme_id: str) -> dict[s
                 "title": section.title,
                 "teacher_move": section.narrative,
                 "visual_strategy": section.visual_focus,
-                "key_takeaway": f"在“{category.display_name}”里，这一段承担的是 {section.title} 这个讲解动作。",
-                "check_for_understanding": f"如果你要复用“{category.display_name}”，这一段最关键的讲法是什么？",
+                "key_takeaway": section.narrative,
+                "check_for_understanding": f"看完“{section.title}”后，你能指出画面里哪个对象或变化最关键吗？",
             }
         )
+
+    opening_style, opening_architecture, roadmap_style = _opening_shape_for_fast_path(category)
 
     return {
         "lesson_goal": blueprint.lesson_goal,
@@ -318,9 +445,10 @@ def _build_teaching_plan(category: FastPathCategory, *, theme_id: str) -> dict[s
         },
         "hook": blueprint.hook,
         "opening": {
-            "style": "question_first",
+            "architecture": opening_architecture,
+            "style": opening_style,
             "hook_line": blueprint.hook,
-            "roadmap_style": "question_chain",
+            "roadmap_style": roadmap_style,
         },
         "big_idea": blueprint.big_idea,
         "teacher_voice": "亲切、清晰、强调讲解方式本身的节奏感。",
@@ -389,9 +517,9 @@ def _build_opening_method(category: FastPathCategory) -> str:
             "        *[",
             "            self.get_secondary_text(text, font_size=18)",
             "            for text in [",
-            f"                {_py_str('1. 明确讲法目标')},",
-            f"                {_py_str('2. 按这种节奏推进')},",
-            f"                {_py_str('3. 最后做迁移收束')},",
+            f"                {_py_str('1. 看到对象和目标')},",
+            f"                {_py_str('2. 绑定图像与关系')},",
+            f"                {_py_str('3. 走完一次关键过程')},",
             "            ]",
             "        ]",
             "    ).arrange(DOWN, buff=0.12, aligned_edge=LEFT)",
@@ -506,11 +634,36 @@ def _make_category(
             hook=f"如果内容没变，只是讲法换了，理解体验会差多少？",
             big_idea=f"{display_name}的核心不是多讲内容，而是用合适的讲法把理解路径变短。",
             section_specs=[
-                ("section_one_position", "先给出讲法定位", "先告诉学生这次为什么采用这种讲法。", "风格标签、目标、适用场景"),
-                ("section_two_structure", "再固定讲解结构", "��这种讲法的结构骨架明确下来。", "结构框架、节奏分层"),
-                ("section_three_execution", "执行这套讲法", "展示真正推进内容时，这种讲法如何发力。", "步骤推进、重点切换"),
-                ("section_four_feedback", "用反馈校正", "强调这种讲法如何处理学生常见卡点。", "误区提醒、反馈回路"),
-                ("section_five_transfer", "最后做迁移", "把这种讲法迁移到别的内容场景。", "迁移问题、复用提醒"),
+                (
+                    "section_one_object_goal",
+                    "对象和目标先入场",
+                    "先把本节真正要理解的对象、起点和目标放到同一张图里。",
+                    "对象标注、起始状态、目标箭头",
+                ),
+                (
+                    "section_two_core_relation",
+                    "核心关系绑到图像",
+                    "把关键量之间的关系和画面对象一一对应起来。",
+                    "图像-公式绑定、颜色高亮",
+                ),
+                (
+                    "section_three_dynamic_walkthrough",
+                    "走完一次关键过程",
+                    "用一次完整动态演示串起状态变化和因果链。",
+                    "步骤推进、状态更新、轨迹变化",
+                ),
+                (
+                    "section_four_misconception_check",
+                    "校正常见误解",
+                    "把最容易混淆的方向、条件或边界并排对比。",
+                    "正误对照、边界提醒、反馈回路",
+                ),
+                (
+                    "section_five_transfer_summary",
+                    "迁移成可复用方法",
+                    "把本节具体画面压缩成学生能带走的通用步骤。",
+                    "方法卡、迁移例子、收束句",
+                ),
             ],
         ),
         matcher=matcher,

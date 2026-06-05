@@ -19,9 +19,10 @@
   },
   "hook": "为什么有些内容必须讲细，学生才不会只记住表面？",
   "opening": {
-    "style": "question_first",
+    "architecture": "visual_reveal",
+    "style": "visual_first",
     "hook_line": "为什么有些内容必须讲细，学生才不会只记住表面？",
-    "roadmap_style": "question_chain"
+    "roadmap_style": "task_line"
   },
   "big_idea": "详细讲解的价值在于把隐含台阶全部点亮，让学生不靠猜。",
   "teacher_voice": "亲切、清晰、强调讲解方式本身的节奏感。",
@@ -42,40 +43,40 @@
       "title": "补背景",
       "teacher_move": "先把学生缺失的上下文补足。",
       "visual_strategy": "前置知识、边界条件",
-      "key_takeaway": "在“详细讲解”里，这一段承担的是 补背景 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“详细讲解”，这一段最关键的讲法是什么？"
+      "key_takeaway": "先把学生缺失的上下文补足。",
+      "check_for_understanding": "看完“补背景”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
       "id": "section_two_define",
       "title": "把定义讲透",
       "teacher_move": "概念、条件、对象都逐一定清楚。",
       "visual_strategy": "定义卡、限制条件",
-      "key_takeaway": "在“详细讲解”里，这一段承担的是 把定义讲透 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“详细讲解”，这一段最关键的讲法是什么？"
+      "key_takeaway": "概念、条件、对象都逐一定清楚。",
+      "check_for_understanding": "看完“把定义讲透”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
       "id": "section_three_reasoning",
       "title": "展示推理链",
       "teacher_move": "不给跳步，把为什么成立一路说清。",
       "visual_strategy": "推理链、阶段节点",
-      "key_takeaway": "在“详细讲解”里，这一段承担的是 展示推理链 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“详细讲解”，这一段最关键的讲法是什么？"
+      "key_takeaway": "不给跳步，把为什么成立一路说清。",
+      "check_for_understanding": "看完“展示推理链”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
       "id": "section_four_edge_cases",
       "title": "补边界与反例",
       "teacher_move": "专门处理细节、反例、易错点。",
       "visual_strategy": "反例、边界情况",
-      "key_takeaway": "在“详细讲解”里，这一段承担的是 补边界与反例 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“详细讲解”，这一段最关键的讲法是什么？"
+      "key_takeaway": "专门处理细节、反例、易错点。",
+      "check_for_understanding": "看完“补边界与反例”后，你能指出画面里哪个对象或变化最关键吗？"
     },
     {
       "id": "section_five_reconstruct",
       "title": "让学生重建一遍",
       "teacher_move": "收尾时让学生能自己再说一遍。",
       "visual_strategy": "重构图、复述框架",
-      "key_takeaway": "在“详细讲解”里，这一段承担的是 让学生重建一遍 这个讲解动作。",
-      "check_for_understanding": "如果你要复用“详细讲解”，这一段最关键的讲法是什么？"
+      "key_takeaway": "收尾时让学生能自己再说一遍。",
+      "check_for_understanding": "看完“让学生重建一遍”后，你能指出画面里哪个对象或变化最关键吗？"
     }
   ],
   "closing": {

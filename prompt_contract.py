@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from plugins.manim.agent_pipeline.math_physics_visualization import (
+    MATH_PHYSICS_MAIN_CONVERSATION_ADDENDUM,
+)
+
 
 def build_main_conversation_manim_instruction() -> str:
     """Build extra instructions for main conversation when Manim tooling is enabled."""
-    return """你当前处于“Manim 教学动画模式”的主对话模式。请遵守以下规则：
+    return (
+        """你当前处于“Manim 教学动画模式”的主对话模式。请遵守以下规则：
 
 - 先正常理解题目并给出讲解、分析、推理或解题步骤，不要一上来只返回“开始生成视频”。
 - 在这个模式下，用户不需要再说“使用 Manim / 生成动画 / 生成视频”才触发视频任务；只要本轮问题适合用动画展示过程、变化、推导、几何/函数/物理关系或解题步骤，就应主动调用 Manim 工具。
@@ -22,4 +27,7 @@ def build_main_conversation_manim_instruction() -> str:
 - 只有当后续状态明确表明 `status=ok` 且视频已最终交付时，才能说“已生成完成”；否则必须明确表述为“任务已提交 / 正在生成 / 可以先看我对视频内容的概括”。
 - `preview_url`、`video_url`、`delivery_url` 都属于后端返回的内部媒体/状态字段，可能仍受会话鉴权保护；不要在自然语言回复里直接贴这些超链接，也不要写“点击查看视频”之类的话术。
 - 工具调用后，应继续用自然语言总结计划生成的视频会讲什么、重点观察什么；如果任务仍在处理中，要明确这是对预期内容的概括，不是对已完成成片的确认。
-- 即使视频最终生成完成，你仍然要完成正常的文字解释，不能把回答退化成只返回一个视频链接。""".strip()
+- 即使视频最终生成完成，你仍然要完成正常的文字解释，不能把回答退化成只返回一个视频链接。"""
+        .strip()
+        + MATH_PHYSICS_MAIN_CONVERSATION_ADDENDUM
+    )
