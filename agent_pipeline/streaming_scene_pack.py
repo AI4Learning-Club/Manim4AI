@@ -22,7 +22,7 @@ class ScenePackStreamBuffer:
 
     def __init__(self) -> None:
         self._buffer = ""
-        self._ready_segment_ids: set[str] = set()
+        self._submitted_segment_ids: set[str] = set()
 
     @property
     def buffer(self) -> str:
@@ -30,7 +30,13 @@ class ScenePackStreamBuffer:
 
     @property
     def ready_segment_ids(self) -> tuple[str, ...]:
-        return tuple(sorted(self._ready_segment_ids))
+        return tuple(sorted(self._submitted_segment_ids))
+
+    def mark_submitted(self, segment_id: str) -> None:
+        normalized = str(segment_id or "").strip()
+        if not normalized:
+            return
+        self._submitted_segment_ids.add(normalized)
 
     def append(self, delta: str) -> ScenePackStreamSnapshot:
         if delta:
@@ -41,9 +47,8 @@ class ScenePackStreamBuffer:
         newly_ready: List[SectionReadinessSpec] = []
         for report in reports:
             segment_id = report.segment.segment_id
-            if not report.ready or segment_id in self._ready_segment_ids:
+            if not report.ready or segment_id in self._submitted_segment_ids:
                 continue
-            self._ready_segment_ids.add(segment_id)
             newly_ready.append(report)
 
         newly_ready.sort(key=lambda item: item.segment.order)
