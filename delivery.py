@@ -295,7 +295,8 @@ class TencentCosCdnPublisher:
             for path in assets
         }
         manifest_key = object_keys[manifest_path]
-        signed_at = int(time.time())
+        published_at = int(time.time())
+        signed_expires_at = published_at + int(self._delivery.cdn_auth_ttl_seconds)
 
         uploaded_keys: list[str] = []
         for path in assets:
@@ -305,7 +306,7 @@ class TencentCosCdnPublisher:
                     manifest_path=manifest_path,
                     manifest_key=manifest_key,
                     signer=self._signer,
-                    timestamp=signed_at,
+                    timestamp=signed_expires_at,
                 ).encode("utf-8")
                 self._upload_bytes(
                     key=key,
@@ -322,8 +323,15 @@ class TencentCosCdnPublisher:
                 )
             uploaded_keys.append(key)
 
-        manifest_url = self._signer.sign_url(manifest_key, timestamp=signed_at)
-        preheated = self._preheat([manifest_url] + [self._signer.sign_url(key, timestamp=signed_at) for key in uploaded_keys if key != manifest_key])
+        manifest_url = self._signer.sign_url(manifest_key, timestamp=signed_expires_at)
+        preheated = self._preheat(
+            [manifest_url]
+            + [
+                self._signer.sign_url(key, timestamp=signed_expires_at)
+                for key in uploaded_keys
+                if key != manifest_key
+            ]
+        )
         return HlsPublishedArtifact(
             delivery_type="hls",
             manifest_key=manifest_key,

@@ -343,7 +343,13 @@ def _collect_video_versions_from_events(
             event_type=event_type,
             fallback_is_final=event_type == "job_status" and event.get("status") == "ok",
         )
-    add(result, fallback_is_final=True)
+    add(
+        result,
+        fallback_is_final=bool(
+            isinstance(result, dict)
+            and str(result.get("status") or "").strip().lower() == "ok"
+        ),
+    )
 
     return [
         by_key[key]
@@ -716,6 +722,43 @@ def _probe_duration_seconds(video_path: Path) -> float | None:
         return None
 
 
+def _normalized_manim_job_timing(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if isinstance(item, bool) or item is None:
+            normalized[key] = item
+            continue
+        if isinstance(item, (int, float)):
+            normalized[key] = round(float(item), 3)
+            continue
+        if isinstance(item, str):
+            normalized[key] = item
+            continue
+        if isinstance(item, dict):
+            nested = _normalized_manim_job_timing(item)
+            if nested:
+                normalized[key] = nested
+            continue
+        if isinstance(item, list):
+            normalized_list: list[Any] = []
+            for entry in item:
+                if isinstance(entry, dict):
+                    nested = _normalized_manim_job_timing(entry)
+                    if nested:
+                        normalized_list.append(nested)
+                elif isinstance(entry, bool) or entry is None:
+                    normalized_list.append(entry)
+                elif isinstance(entry, (int, float)):
+                    normalized_list.append(round(float(entry), 3))
+                elif isinstance(entry, str):
+                    normalized_list.append(entry)
+            if normalized_list:
+                normalized[key] = normalized_list
+    return normalized or None
+
+
 def _normalize_quality_flags(quality: str) -> str | None:
     normalized = (quality or "default").strip().lower()
     if normalized not in _QUALITY_PRESETS:
@@ -779,6 +822,10 @@ def _sanitize_public_error(message: object) -> str:
     if _is_cloud_credential_error(message):
         return _PUBLIC_CLOUD_DELIVERY_ERROR_MESSAGE
     return _redact_public_text(str(message or "").strip() or "Manim render failed.")
+
+
+def _is_final_video_version(version: dict[str, Any]) -> bool:
+    return bool(version.get("is_final")) or str(version.get("kind") or "").strip().lower() == "final"
 
 
 @dataclass(slots=True)
@@ -855,7 +902,16 @@ class RenderJobState:
     def to_payload(self) -> dict[str, Any]:
         versions = _collect_video_versions_from_events(self.events, self.result)
         final_version = next((version for version in reversed(versions) if version.get("is_final")), None)
-        playable_version = final_version or (versions[-1] if versions else None)
+        terminal_error_without_final = self.status == "error" and final_version is None
+        public_versions = versions
+        if terminal_error_without_final:
+            public_versions = [version for version in versions if _is_final_video_version(version)]
+        playable_version = final_version or (public_versions[-1] if public_versions else None)
+        public_manifest_url = self.manifest_url or None
+        public_preview_ready = self.preview_ready
+        if terminal_error_without_final:
+            public_manifest_url = None
+            public_preview_ready = False
         progress_projection = _project_job_progress(
             status=self.status,
             events=self.events,
@@ -880,24 +936,24 @@ class RenderJobState:
             "run_key": self.run_key or None,
             "preview_file_name": self.preview_file_name or None,
             "delivery_type": self.delivery_type,
-            "manifest_url": self.manifest_url or None,
+            "manifest_url": public_manifest_url,
             "preview_version": self.preview_version,
-            "preview_ready": self.preview_ready,
+            "preview_ready": public_preview_ready,
             "stage": progress_projection["stage"],
             "current_stage": progress_projection["current_stage"],
             "stage_message": progress_projection["stage_message"],
             "progress": progress_projection["progress"],
             "can_retry": self.status == "error" and bool(self.request.strip()),
             "storyboard_items": storyboard_items,
-            "video_versions": versions,
+            "video_versions": public_versions,
             "video_url": final_version.get("video_url") if final_version else None,
             "playback_url": playable_version.get("playback_url") if playable_version else None,
             "preview_url": (
-                self.manifest_url
-                if self.delivery_type == "hls" and self.manifest_url and self.preview_ready
+                public_manifest_url
+                if self.delivery_type == "hls" and public_manifest_url and public_preview_ready
                 else
                 _versioned_video_url(self.preview_file_name, self.preview_version)
-                if self.preview_file_name and self.preview_ready
+                if self.preview_file_name and public_preview_ready
                 else None
             ),
             "created_at": self.created_at,
@@ -909,9 +965,29 @@ class RenderJobState:
             payload["error_code"] = self.error_code
         if self.result is not None:
             result_payload = dict(self.result)
-            if versions and "video_versions" not in result_payload:
-                result_payload["video_versions"] = versions
+            if terminal_error_without_final:
+                for key in (
+                    "video_url",
+                    "preview_url",
+                    "playback_url",
+                    "manifest_url",
+                    "manifest_key",
+                    "delivery_url",
+                    "preview_ready",
+                    "preview_file_name",
+                    "file_name",
+                    "delivery_file_name",
+                ):
+                    result_payload.pop(key, None)
+            if public_versions and "video_versions" not in result_payload:
+                result_payload["video_versions"] = public_versions
             payload["result"] = _sanitize_public_payload(result_payload)
+            timing_payload = _normalized_manim_job_timing(self.result.get("timing"))
+            if timing_payload is not None:
+                payload["timing"] = timing_payload
+            quality_flags = str(self.result.get("quality_flags") or "").strip()
+            if quality_flags:
+                payload["quality_flags"] = quality_flags
         return payload
 
     def to_snapshot(self) -> dict[str, Any]:

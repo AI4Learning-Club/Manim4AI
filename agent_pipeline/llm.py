@@ -34,6 +34,12 @@ _RESPONSES_RETRYABLE_ERROR_MARKERS = (
     "rate limit",
     "capacity limit",
     "concurrency limit",
+    "peer closed connection without sending complete message body",
+    "incomplete chunked read",
+    "incomplete read",
+    "server disconnected without sending a response",
+    "connection reset by peer",
+    "unexpected eof",
 )
 
 # HTTP/SSE client timeout (seconds) by Responses API reasoning.effort tier.
