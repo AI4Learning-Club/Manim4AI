@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from typing import List
 
 from .scene_pack import SectionReadinessSpec, inspect_section_readiness
 
@@ -13,8 +12,8 @@ from .scene_pack import SectionReadinessSpec, inspect_section_readiness
 class ScenePackStreamSnapshot:
     buffer: str
     parseable_prefix: str
-    all_reports: List[SectionReadinessSpec]
-    newly_ready: List[SectionReadinessSpec]
+    all_reports: list[SectionReadinessSpec]
+    newly_ready: list[SectionReadinessSpec]
 
 
 class ScenePackStreamBuffer:
@@ -44,7 +43,7 @@ class ScenePackStreamBuffer:
 
         parseable_prefix = extract_parseable_prefix(self._buffer)
         reports = inspect_section_readiness(parseable_prefix) if parseable_prefix.strip() else []
-        newly_ready: List[SectionReadinessSpec] = []
+        newly_ready: list[SectionReadinessSpec] = []
         for report in reports:
             segment_id = report.segment.segment_id
             if not report.ready or segment_id in self._submitted_segment_ids:
