@@ -1466,6 +1466,7 @@ def run_pipeline(
     language: Optional[str] = None,
     render_backend: str = "manim",
     quality_flags: Optional[str] = None,
+    flash: bool | None = None,
     event_callback: Callable[[ManimStreamEvent], None] | None = None,
     debug_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> Dict:
@@ -1508,7 +1509,7 @@ def run_pipeline(
 
     try:
         _pipeline_io_begin()
-        llm_configs = resolve_pipeline_llm_configs()
+        llm_configs = resolve_pipeline_llm_configs(flash=flash)
         required_stages = ("analysis", "code", "director") if render_backend == "hybrid" else ("analysis", "code")
         validate_pipeline_llm_configs(llm_configs, required_stages=required_stages)
         analysis_llm = llm_configs["analysis"]
@@ -1527,12 +1528,15 @@ def run_pipeline(
         _log(f"Render quality flags: {effective_quality_flags}")
 
         llm_routing_path = run_dir / "llm_routing.json"
+        llm_routing_payload = {
+            "analysis": analysis_llm.summary(),
+            "code": code_llm.summary(),
+        }
+        if render_backend == "hybrid":
+            llm_routing_payload["director"] = llm_configs["director"].summary()
         llm_routing_path.write_text(
             json.dumps(
-                {
-                    "analysis": analysis_llm.summary(),
-                    "code": code_llm.summary(),
-                },
+                llm_routing_payload,
                 ensure_ascii=False,
                 indent=2,
             ),

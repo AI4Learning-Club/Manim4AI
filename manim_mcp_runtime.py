@@ -839,6 +839,7 @@ class RenderJobState:
     language: str = ""
     render_backend: str = "manim"
     quality: str = "default"
+    flash: bool = True
     source_job_id: str = ""
     run_key: str = ""
     preview_file_name: str = ""
@@ -884,6 +885,7 @@ class RenderJobState:
             language=str(payload.get("language") or ""),
             render_backend=str(payload.get("render_backend") or "manim"),
             quality=str(payload.get("quality") or "default"),
+            flash=payload.get("flash") is not False,
             source_job_id=str(payload.get("source_job_id") or ""),
             run_key=str(payload.get("run_key") or ""),
             preview_file_name=str(payload.get("preview_file_name") or ""),
@@ -932,6 +934,7 @@ class RenderJobState:
             "language": self.language or None,
             "render_backend": self.render_backend,
             "quality": self.quality,
+            "flash": self.flash,
             "source_job_id": self.source_job_id or None,
             "run_key": self.run_key or None,
             "preview_file_name": self.preview_file_name or None,
@@ -1282,6 +1285,7 @@ class ManimRenderRuntime:
         quality: str,
         request: str = "",
         language: str = "",
+        flash: bool = True,
         source_job_id: str = "",
     ) -> RenderJobState:
         run_key = _new_run_key()
@@ -1296,6 +1300,7 @@ class ManimRenderRuntime:
             language=str(language or "").strip(),
             render_backend=render_backend,
             quality=quality,
+            flash=bool(flash),
             source_job_id=str(source_job_id or "").strip(),
             run_key=run_key,
             preview_file_name=preview_file_name,
@@ -1353,6 +1358,7 @@ class ManimRenderRuntime:
         run_key: str = "",
         managed_name: str = "",
         job_id: str = "",
+        flash: bool = True,
         event_callback: Any = None,
     ) -> dict[str, Any]:
         request_text = str(request or "").strip()
@@ -1548,6 +1554,7 @@ class ManimRenderRuntime:
                 language=language or None,
                 render_backend=backend,
                 quality_flags=quality_flags,
+                flash=bool(flash),
                 event_callback=_runtime_event_callback,
             )
         finally:
@@ -1663,6 +1670,7 @@ class ManimRenderRuntime:
         conversation_id: str,
         run_key: str,
         managed_name: str,
+        flash: bool,
     ) -> None:
         try:
             def _job_event_callback(event: Any) -> None:
@@ -1683,6 +1691,7 @@ class ManimRenderRuntime:
                 run_key=run_key,
                 managed_name=managed_name,
                 job_id=job_id,
+                flash=flash,
                 event_callback=_job_event_callback,
             )
             self._set_job_state_with_event(
@@ -1717,6 +1726,7 @@ class ManimRenderRuntime:
         conversation_id: str = "",
         idempotency_key: str = "",
         source_job_id: str = "",
+        flash: bool = True,
     ) -> dict[str, Any]:
         request_text = str(request or "").strip()
         if not request_text:
@@ -1741,6 +1751,7 @@ class ManimRenderRuntime:
             quality=quality_normalized,
             request=request_text,
             language=language,
+            flash=flash,
             source_job_id=source_job_id,
         )
 
@@ -1755,6 +1766,7 @@ class ManimRenderRuntime:
                 "conversation_id": str(conversation_id or "").strip(),
                 "run_key": state.run_key,
                 "managed_name": state.preview_file_name,
+                "flash": state.flash,
             },
             daemon=True,
         )
@@ -1800,6 +1812,7 @@ class ManimRenderRuntime:
         quality: str = "default",
         conversation_id: str = "",
         idempotency_key: str = "",
+        flash: bool = True,
     ) -> dict[str, Any]:
         return self._execute_render_video(
             request=request,
@@ -1808,6 +1821,7 @@ class ManimRenderRuntime:
             quality=quality,
             conversation_id=conversation_id,
             run_key=_new_run_key(),
+            flash=flash,
         )
 
 

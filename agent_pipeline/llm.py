@@ -12,6 +12,7 @@ from openai import OpenAI
 
 from plugins.manim.agent_pipeline.tool_runtime import ToolResult
 from plugins.manim.runtime_config import get_manim_settings
+from service.generation_speed import apply_generation_model_override
 from service.llm_traffic_control import llm_traffic_controller
 
 DEFAULT_OPENAI_BASE_URL = "https://api2.tabcode.cc/openai"
@@ -164,11 +165,17 @@ def _resolve_stage_config(stage: str) -> LLMConfig:
     )
 
 
-def resolve_pipeline_llm_configs() -> dict[str, LLMConfig]:
-    return {
+def resolve_pipeline_llm_configs(*, flash: bool | None = None) -> dict[str, LLMConfig]:
+    configs = {
         "analysis": _resolve_stage_config("analysis"),
         "code": _resolve_stage_config("code"),
         "director": _resolve_stage_config("director"),
+    }
+    if flash is None:
+        return configs
+    return {
+        stage: apply_generation_model_override(config, flash=flash)
+        for stage, config in configs.items()
     }
 
 

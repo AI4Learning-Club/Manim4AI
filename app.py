@@ -27,6 +27,7 @@ class Job:
     job_id: str
     request: str
     language: str = DEFAULT_OUTPUT_LANGUAGE
+    flash: bool = True
     status: str = "queued"
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     started_at: Optional[str] = None
@@ -57,7 +58,7 @@ def _run_job(job_id: str) -> None:
 
     run_dir = RUNS_DIR / f"api_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{job_id[:8]}"
     try:
-        summary = run_pipeline(job.request, run_dir=run_dir, language=job.language)
+        summary = run_pipeline(job.request, run_dir=run_dir, language=job.language, flash=job.flash)
         final_video = summary.get("final_video_with_audio") or summary.get("final_video")
         with _jobs_lock:
             job = _jobs[job_id]
@@ -187,7 +188,10 @@ class AppHandler(BaseHTTPRequestHandler):
         )
 
         job_id = uuid.uuid4().hex
-        job = Job(job_id=job_id, request=request_text, language=language)
+        flash = payload.get("flash")
+        if flash is None:
+            flash = True
+        job = Job(job_id=job_id, request=request_text, language=language, flash=flash is not False)
         with _jobs_lock:
             _jobs[job_id] = job
 
