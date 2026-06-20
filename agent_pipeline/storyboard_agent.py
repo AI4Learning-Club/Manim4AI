@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .agent_skills import build_remotion_skill_prompt
 from .llm import LLMClient, LLMConfig
-
 
 _SYSTEM_STORYBOARD = """\
 You are a creative director for educational animation.
@@ -156,7 +155,7 @@ _CONCEPT_KEYWORDS = {
 }
 
 
-def _extract_json_object(text: str) -> Dict[str, Any]:
+def _extract_json_object(text: str) -> dict[str, Any]:
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`").strip()
@@ -188,8 +187,8 @@ def _text(value: Any, default: str = "") -> str:
     return str(value).strip() or default
 
 
-def _string_list(items: Any, fallback: Optional[List[str]] = None) -> List[str]:
-    values: List[str] = []
+def _string_list(items: Any, fallback: list[str] | None = None) -> list[str]:
+    values: list[str] = []
     if isinstance(items, list):
         for item in items:
             text = _text(item)
@@ -198,7 +197,7 @@ def _string_list(items: Any, fallback: Optional[List[str]] = None) -> List[str]:
     return values or list(fallback or [])
 
 
-def _normalize_theme(raw: Any) -> Dict[str, str]:
+def _normalize_theme(raw: Any) -> dict[str, str]:
     raw = raw if isinstance(raw, dict) else {}
     return {
         "visual_tone": _text(raw.get("visual_tone"), "modern classroom explainer"),
@@ -217,7 +216,7 @@ def _keyword_score(text: str, keywords: set[str]) -> int:
     return sum(1 for keyword in keywords if keyword in lowered)
 
 
-def _default_section_backend(section: Dict[str, Any], index: int, total: int) -> str:
+def _default_section_backend(section: dict[str, Any], index: int, total: int) -> str:
     joined = " ".join(
         _text(section.get(name))
         for name in (
@@ -241,7 +240,7 @@ def _default_section_backend(section: Dict[str, Any], index: int, total: int) ->
     return "manim" if math_score > concept_score else "remotion"
 
 
-def _fallback_section_scene(section: Dict[str, Any], index: int, total: int) -> Dict[str, Any]:
+def _fallback_section_scene(section: dict[str, Any], index: int, total: int) -> dict[str, Any]:
     backend = _default_section_backend(section, index, total)
     title = _text(section.get("title"), f"Part {index + 1}")
     body = (
@@ -273,11 +272,11 @@ def _fallback_section_scene(section: Dict[str, Any], index: int, total: int) -> 
     }
 
 
-def _fallback_scenes(teaching_plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _fallback_scenes(teaching_plan: dict[str, Any]) -> list[dict[str, Any]]:
     sections = teaching_plan.get("sections") if isinstance(teaching_plan.get("sections"), list) else []
     highlights = [_text(section.get("title")) for section in sections[:3] if _text(section.get("title"))]
     closing = teaching_plan.get("closing") if isinstance(teaching_plan.get("closing"), dict) else {}
-    scenes: List[Dict[str, Any]] = [
+    scenes: list[dict[str, Any]] = [
         {
             "id": "intro_card",
             "backend": "remotion",
@@ -317,7 +316,7 @@ def _fallback_scenes(teaching_plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     return scenes
 
 
-def _normalize_scene(item: Dict[str, Any], index: int) -> Dict[str, Any]:
+def _normalize_scene(item: dict[str, Any], index: int) -> dict[str, Any]:
     scene_type = _text(item.get("type"), "title_card")
     backend = _text(item.get("backend"), "remotion").lower()
     if scene_type == "manim_chunk":
@@ -341,7 +340,7 @@ def _normalize_scene(item: Dict[str, Any], index: int) -> Dict[str, Any]:
     }
 
 
-def _ensure_manim_scene(scenes: List[Dict[str, Any]], teaching_plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _ensure_manim_scene(scenes: list[dict[str, Any]], teaching_plan: dict[str, Any]) -> list[dict[str, Any]]:
     if any(scene["type"] == "manim_chunk" for scene in scenes):
         return scenes
     sections = teaching_plan.get("sections") if isinstance(teaching_plan.get("sections"), list) else []
@@ -356,7 +355,7 @@ def _ensure_manim_scene(scenes: List[Dict[str, Any]], teaching_plan: Dict[str, A
     return scenes
 
 
-def _normalize_scenes(raw: Any, teaching_plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _normalize_scenes(raw: Any, teaching_plan: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return _ensure_manim_scene(_fallback_scenes(teaching_plan), teaching_plan)
 
@@ -369,7 +368,7 @@ def _normalize_scenes(raw: Any, teaching_plan: Dict[str, Any]) -> List[Dict[str,
     middle = [scene for scene in normalized if scene["type"] not in {"title_card", "summary_card"}]
     fallback = _fallback_scenes(teaching_plan)
 
-    scenes: List[Dict[str, Any]] = [intro or fallback[0]]
+    scenes: list[dict[str, Any]] = [intro or fallback[0]]
     if middle:
         scenes.extend(middle)
     else:
@@ -378,7 +377,7 @@ def _normalize_scenes(raw: Any, teaching_plan: Dict[str, Any]) -> List[Dict[str,
     return _ensure_manim_scene(scenes, teaching_plan)
 
 
-def _normalize_storyboard(raw: Dict[str, Any], teaching_plan: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_storyboard(raw: dict[str, Any], teaching_plan: dict[str, Any]) -> dict[str, Any]:
     subtitle_raw = raw.get("subtitle_plan") if isinstance(raw.get("subtitle_plan"), dict) else {}
     assembly_raw = raw.get("assembly") if isinstance(raw.get("assembly"), dict) else {}
     sections = teaching_plan.get("sections") if isinstance(teaching_plan.get("sections"), list) else []
@@ -412,7 +411,7 @@ class StoryboardAgent:
     def __init__(self, llm_config: LLMConfig):
         self.client = LLMClient(llm_config)
 
-    def plan(self, request_text: str, teaching_plan: Dict[str, Any]) -> Dict[str, Any]:
+    def plan(self, request_text: str, teaching_plan: dict[str, Any]) -> dict[str, Any]:
         user_prompt = (
             f"## Student request\n{request_text}\n\n"
             f"## Teaching plan\n{json.dumps(teaching_plan, ensure_ascii=False, indent=2)}\n\n"

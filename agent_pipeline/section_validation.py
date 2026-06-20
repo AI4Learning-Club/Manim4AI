@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
-
+from typing import Any
 
 _SEVERITY_ORDER = {
     "error": 0,
@@ -27,7 +27,7 @@ class ValidationIssue:
     symbol: str = ""
 
     @classmethod
-    def from_dict(cls, raw: Mapping[str, Any]) -> "ValidationIssue":
+    def from_dict(cls, raw: Mapping[str, Any]) -> ValidationIssue:
         line_raw = raw.get("line")
         line = int(line_raw) if isinstance(line_raw, int) or (isinstance(line_raw, str) and line_raw.isdigit()) else None
         severity = str(raw.get("severity") or "error").strip().lower() or "error"
@@ -55,7 +55,7 @@ class ValidationReport:
     issues: tuple[ValidationIssue, ...]
 
     @classmethod
-    def from_dict(cls, raw: Mapping[str, Any]) -> "ValidationReport":
+    def from_dict(cls, raw: Mapping[str, Any]) -> ValidationReport:
         issues_raw = raw.get("issues")
         issues = tuple(
             issue if isinstance(issue, ValidationIssue) else ValidationIssue.from_dict(issue)
@@ -269,6 +269,9 @@ def validate_and_fix_streaming_scene_file(
             )
             if not isinstance(updated_code, str) or not updated_code.strip():
                 raise ValueError("Scene-file validation fix did not return updated file content.")
+            from .renderer import _sanitize_bad_spoken_quotes
+
+            updated_code = _sanitize_bad_spoken_quotes(updated_code)
             scene_file.write_text(updated_code, encoding="utf-8")
             _write_text_debug(
                 validation_dir / f"scene_file_after_fix_{validation_attempts}.py",

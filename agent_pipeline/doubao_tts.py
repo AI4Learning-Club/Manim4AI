@@ -104,7 +104,7 @@ async def _synthesize_async(
         while True:
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=_RECV_TIMEOUT_S)
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise RuntimeError(
                     f"Doubao TTS recv timeout ({_RECV_TIMEOUT_S:.0f}s): no server frame received"
                 ) from exc

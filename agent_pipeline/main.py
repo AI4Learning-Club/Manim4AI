@@ -8,6 +8,8 @@ Flow:
      and the Manim video is wrapped with chapter cards / transitions.
 """
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -16,14 +18,15 @@ import json
 import logging
 import os
 import queue
-import subprocess
 import shutil
+import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, TextIO
+from typing import Any, TextIO
 
 # Sentinel to stop the pipeline background IO worker (same-process only).
 _PIPELINE_IO_SHUTDOWN = object()
@@ -34,10 +37,12 @@ from interface.plugins.manim import (
     ManimStreamEventType,
     make_manim_stream_event,
 )
+from plugins.manim.runtime_config import get_manim_runs_dir, get_manim_settings
 
 from .asset_resolver import resolve_local_assets
 from .code_eval import CodeEvalAgent
 from .code_gen import CodeGenAgent
+from .concurrency_runtime import SectionPipelineCoordinator
 from .fast_paths import (
     build_fast_path_plan_and_code_for_category,
     maybe_build_fast_path_plan_and_code,
@@ -58,15 +63,13 @@ from .renderer import (
     write_streaming_scene_pack_segment_file,
 )
 from .scene_pack import parse_scene_pack
-from .streaming_scene_pack import ScenePackStreamBuffer, sanitize_streaming_code
-from .storyboard_agent import StoryboardAgent
-from .teaching_planner import TeachingPlannerAgent
-from .style_selector import ExplanationStyleSelector
 from .section_validation import validate_and_fix_streaming_scene_file
+from .storyboard_agent import StoryboardAgent
+from .streaming_scene_pack import ScenePackStreamBuffer, sanitize_streaming_code
+from .style_selector import ExplanationStyleSelector
+from .teaching_planner import TeachingPlannerAgent
 from .theme_resolver import resolve_theme
 from .tts import has_audio_stream, voice_for_language
-from .concurrency_runtime import SectionPipelineCoordinator
-from plugins.manim.runtime_config import get_manim_runs_dir, get_manim_settings
 
 # =====================================================================
 # Configuration constants
@@ -1354,10 +1357,10 @@ def _validate_ready_streaming_section(
     }
 
 
-def _segment_infos(render: RenderResult) -> List[Dict[str, Any]]:
-    infos: List[Dict[str, Any]] = []
+def _segment_infos(render: RenderResult) -> list[dict[str, Any]]:
+    infos: list[dict[str, Any]] = []
     for segment in sorted(render.segments, key=lambda item: item.order):
-        info: Dict[str, Any] = {
+        info: dict[str, Any] = {
             "order": segment.order,
             "segment_id": segment.segment_id,
             "scene_name": segment.scene_name,
@@ -1371,7 +1374,7 @@ def _segment_infos(render: RenderResult) -> List[Dict[str, Any]]:
     return infos
 
 
-def _round_info(n: int, render: RenderResult, report: Optional[Dict]) -> Dict:
+def _round_info(n: int, render: RenderResult, report: dict | None) -> dict:
     info = {
         "round": n,
         "render_success": render.success,
@@ -1387,13 +1390,13 @@ def _round_info(n: int, render: RenderResult, report: Optional[Dict]) -> Dict:
 
 def _build_eval_meta(
     *,
-    render_at_1: Optional[bool],
-    render_at_final: Optional[bool],
+    render_at_1: bool | None,
+    render_at_final: bool | None,
     repair_rounds: int,
-    time_total_sec: Optional[float],
-    time_per_stage: Dict[str, float],
-) -> Dict[str, Any]:
-    meta: Dict[str, Any] = {
+    time_total_sec: float | None,
+    time_per_stage: dict[str, float],
+) -> dict[str, Any]:
+    meta: dict[str, Any] = {
         "render_at_1": render_at_1,
         "render_at_final": render_at_final,
         "time_total_sec": time_total_sec,
@@ -1406,9 +1409,9 @@ def _build_eval_meta(
 
 
 def _build_manim_teaching_plan(
-    teaching_plan: Dict[str, Any],
-    storyboard: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
+    teaching_plan: dict[str, Any],
+    storyboard: dict[str, Any] | None,
+) -> dict[str, Any]:
     if not storyboard:
         return teaching_plan
 
@@ -1461,15 +1464,15 @@ def _build_manim_teaching_plan(
 
 def run_pipeline(
     request_text: str,
-    image_path: Optional[Path] = None,
-    run_dir: Optional[Path] = None,
-    language: Optional[str] = None,
+    image_path: Path | None = None,
+    run_dir: Path | None = None,
+    language: str | None = None,
     render_backend: str = "manim",
-    quality_flags: Optional[str] = None,
+    quality_flags: str | None = None,
     flash: bool | None = None,
     event_callback: Callable[[ManimStreamEvent], None] | None = None,
     debug_callback: Callable[[dict[str, Any]], None] | None = None,
-) -> Dict:
+) -> dict:
     """Execute the single-round generate-render pipeline.
 
     Args:
@@ -1477,7 +1480,7 @@ def run_pipeline(
             Remotion-wrapped delivery with chapter cards and transitions.
     """
     _configure_pipeline_http_logging()
-    stage_times: Dict[str, float] = {}
+    stage_times: dict[str, float] = {}
     output_language = normalize_output_language(language, DEFAULT_OUTPUT_LANGUAGE)
 
     if run_dir is None:
@@ -1486,7 +1489,7 @@ def run_pipeline(
     run_dir.mkdir(parents=True, exist_ok=True)
     run_id = run_dir.name
     pipeline_started_at = time.time()
-    stream_timing: Dict[str, float] = {}
+    stream_timing: dict[str, float] = {}
     analysis_debug_char_count = 0
     code_debug_char_count = 0
     analysis_stream_path = run_dir / "analysis_stream.txt"
@@ -1509,7 +1512,12 @@ def run_pipeline(
 
     try:
         _pipeline_io_begin()
-        llm_configs = resolve_pipeline_llm_configs(flash=flash)
+        try:
+            llm_configs = resolve_pipeline_llm_configs(flash=flash)
+        except TypeError as exc:
+            if "unexpected keyword argument 'flash'" not in str(exc):
+                raise
+            llm_configs = resolve_pipeline_llm_configs()
         required_stages = ("analysis", "code", "director") if render_backend == "hybrid" else ("analysis", "code")
         validate_pipeline_llm_configs(llm_configs, required_stages=required_stages)
         analysis_llm = llm_configs["analysis"]
@@ -1586,8 +1594,8 @@ def run_pipeline(
         fast_path_used = False
         fast_path_template_id = ""
         fast_path_reference_code = ""
-        teaching_plan: Dict[str, Any]
-        selected_theme: Dict[str, Any] | None = None
+        teaching_plan: dict[str, Any]
+        selected_theme: dict[str, Any] | None = None
         skip_deterministic_fast_path = should_skip_fast_path_for_request(request_text)
         if MANIM_SETTINGS.render.deterministic_fast_path_enabled and not skip_deterministic_fast_path:
             selected_theme = {"theme_id": "mist_blue_focus", "display_name": "Mist Blue Focus"}
@@ -1706,7 +1714,7 @@ def run_pipeline(
             extra={"theme_id": selected_theme["theme_id"]},
         )
 
-        assets_info: Dict[str, Any] = {
+        assets_info: dict[str, Any] = {
             "enabled": USE_LOCAL_ICONS,
             "icon_dir": str((ROOT_DIR / "icon").resolve()),
             "available_icon_count": 0,
@@ -1770,10 +1778,10 @@ def run_pipeline(
             encoding="utf-8",
         )
 
-        storyboard: Optional[Dict[str, Any]] = None
-        storyboard_path: Optional[Path] = None
+        storyboard: dict[str, Any] | None = None
+        storyboard_path: Path | None = None
         manim_teaching_plan = teaching_plan
-        manim_plan_path: Optional[Path] = None
+        manim_plan_path: Path | None = None
         if render_backend == "hybrid":
             _emit_stage_started(
                 event_callback,
@@ -1810,7 +1818,7 @@ def run_pipeline(
                 extra={"scene_count": len(storyboard.get("scenes", []))},
             )
 
-        summary: Dict[str, Any] = {
+        summary: dict[str, Any] = {
             "request": request_text,
             "output_language": output_language,
             "render_backend": render_backend,
@@ -2427,9 +2435,9 @@ def run_pipeline(
 def _apply_delivery_assets(
     run_dir: Path,
     request_text: str,
-    teaching_plan: Dict[str, Any],
-    storyboard: Optional[Dict[str, Any]],
-    summary: Dict[str, Any],
+    teaching_plan: dict[str, Any],
+    storyboard: dict[str, Any] | None,
+    summary: dict[str, Any],
     *,
     event_callback: Callable[[ManimStreamEvent], None] | None = None,
     run_id: str = "",
@@ -2484,7 +2492,7 @@ def _apply_delivery_assets(
         )
 
 
-def _save_summary(run_dir: Path, summary: Dict[str, Any]) -> None:
+def _save_summary(run_dir: Path, summary: dict[str, Any]) -> None:
     path = run_dir / "summary.json"
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     _log(f"Summary saved: {path}")

@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
-
 
 # ---------------------------------------------------------------------------
 # Layer 1 – Classic CV feature extraction
@@ -151,8 +149,8 @@ class VLMConfig:
 
     provider: str = "openai"                # openai | zhipu | local
     model: str = "gpt-5.4"
-    api_key: Optional[str] = None           # will be filled at runtime / CLI
-    base_url: Optional[str] = "https://api2.tabcode.cc/openai"  # custom endpoint
+    api_key: str | None = None           # will be filled at runtime / CLI
+    base_url: str | None = "https://api2.tabcode.cc/openai"  # custom endpoint
     temperature: float = 0.0
     reasoning_effort: str = "high"
     max_segments: int = 0                   # 0 = no limit
@@ -205,20 +203,20 @@ class ExternalMeta:
     """
 
     # Executability
-    render_at_1: Optional[bool] = None          # code rendered on first attempt
-    render_at_final: Optional[bool] = None      # code rendered after iterative repair
+    render_at_1: bool | None = None          # code rendered on first attempt
+    render_at_final: bool | None = None      # code rendered after iterative repair
 
     # Efficiency
-    token_usage_mean: Optional[float] = None    # mean tokens consumed
-    token_usage_std: Optional[float] = None
-    token_cost_usd: Optional[float] = None      # estimated cost
-    time_total_sec: Optional[float] = None      # end-to-end generation time
-    time_per_stage: Optional[Dict[str, float]] = None  # per-stage breakdown
+    token_usage_mean: float | None = None    # mean tokens consumed
+    token_usage_std: float | None = None
+    token_cost_usd: float | None = None      # estimated cost
+    time_total_sec: float | None = None      # end-to-end generation time
+    time_per_stage: dict[str, float] | None = None  # per-stage breakdown
 
     # Repairability
-    score_delta: Optional[float] = None         # quality score improvement (ΔS)
-    fix_rate: Optional[float] = None            # fix rate after iterative refinement
-    repair_rounds: Optional[int] = None         # number of repair rounds
+    score_delta: float | None = None         # quality score improvement (ΔS)
+    fix_rate: float | None = None            # fix rate after iterative refinement
+    repair_rounds: int | None = None         # number of repair rounds
 
     # Task Correctness – topic/prompt for VLM review
     topic: str = ""                             # original teaching topic

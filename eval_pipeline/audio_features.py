@@ -15,15 +15,14 @@ Scoring dimensions fed to fusion:
 from __future__ import annotations
 
 import json
-import subprocess
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import numpy as np
 
-PCMResult = Tuple[np.ndarray, int]
+PCMResult = tuple[np.ndarray, int]
 
 
 # =====================================================================
@@ -61,8 +60,8 @@ class AlignmentMetrics:
     """Temporal alignment between speech activity and video motion."""
 
     has_audio: bool = False
-    speech_segments: List[Tuple[float, float]] = field(default_factory=list)
-    motion_segments: List[Tuple[float, float]] = field(default_factory=list)
+    speech_segments: list[tuple[float, float]] = field(default_factory=list)
+    motion_segments: list[tuple[float, float]] = field(default_factory=list)
     speech_total_sec: float = 0.0
     motion_total_sec: float = 0.0
     overlap_sec: float = 0.0
@@ -82,7 +81,7 @@ def _has_ffprobe() -> bool:
     return shutil.which("ffprobe") is not None
 
 
-def _probe_durations(video_path: Path) -> Tuple[float, float]:
+def _probe_durations(video_path: Path) -> tuple[float, float]:
     """Return (audio_duration_sec, video_duration_sec) via ffprobe.
 
     Returns (0.0, video_dur) if no audio stream exists.
@@ -122,7 +121,7 @@ def _probe_durations(video_path: Path) -> Tuple[float, float]:
 def _extract_audio_pcm(
     video_path: Path,
     sample_rate: int = 16000,
-) -> Optional[PCMResult]:
+) -> PCMResult | None:
     """Extract audio as mono float32 PCM using ffmpeg.
 
     Returns (samples_array, sample_rate) or None if no audio.
@@ -166,7 +165,7 @@ def _detect_silence(
     min_duration_sec: float = 0.3,
     window_sec: float = 0.1,
     hop_sec: float = 0.05,
-) -> List[Tuple[float, float]]:
+) -> list[tuple[float, float]]:
     """Find silent intervals in audio.
 
     Computes RMS energy in sliding windows. Frames below *threshold_db*
@@ -188,7 +187,7 @@ def _detect_silence(
             is_silent[i] = True
 
     # Merge consecutive silent frames into intervals
-    intervals: List[Tuple[float, float]] = []
+    intervals: list[tuple[float, float]] = []
     in_silence = False
     seg_start = 0.0
 
@@ -230,7 +229,7 @@ def _detect_clipping(samples: np.ndarray, clip_threshold: float = 0.99) -> float
 def _estimate_snr(
     samples: np.ndarray,
     sr: int,
-    silence_intervals: List[Tuple[float, float]],
+    silence_intervals: list[tuple[float, float]],
     snr_cap: float = 60.0,
 ) -> float:
     """Estimate SNR in dB using silent intervals as noise floor.
@@ -238,7 +237,7 @@ def _estimate_snr(
     Returns *snr_cap* if no noise detected.
     """
     # Collect noise samples from silent intervals
-    noise_samples: List[np.ndarray] = []
+    noise_samples: list[np.ndarray] = []
     for s, e in silence_intervals:
         i_start = int(s * sr)
         i_end = int(e * sr)
@@ -292,7 +291,7 @@ def _spectral_flatness(
     n_frames = max(1, (len(samples) - frame_len) // hop_len + 1)
 
     energy_threshold = 10.0 ** (-40.0 / 20.0)
-    flatness_values: List[float] = []
+    flatness_values: list[float] = []
 
     for i in range(n_frames):
         start = i * hop_len
@@ -330,7 +329,7 @@ def _detect_speech_segments(
     merge_gap_sec: float = 0.3,
     window_sec: float = 0.1,
     hop_sec: float = 0.05,
-) -> List[Tuple[float, float]]:
+) -> list[tuple[float, float]]:
     """Detect speech activity segments based on energy envelope.
 
     Frames above *energy_threshold_db* are speech. Short gaps are merged.
@@ -352,7 +351,7 @@ def _detect_speech_segments(
             is_active[i] = True
 
     # Convert to intervals
-    raw_intervals: List[Tuple[float, float]] = []
+    raw_intervals: list[tuple[float, float]] = []
     in_speech = False
     seg_start = 0.0
 
@@ -369,7 +368,7 @@ def _detect_speech_segments(
         raw_intervals.append((seg_start, (n_frames - 1) * hop_sec + window_sec))
 
     # Merge gaps shorter than merge_gap_sec
-    merged: List[Tuple[float, float]] = []
+    merged: list[tuple[float, float]] = []
     for s, e in raw_intervals:
         if merged and s - merged[-1][1] < merge_gap_sec:
             merged[-1] = (merged[-1][0], e)
@@ -390,7 +389,7 @@ def _motion_to_segments(
     motion_threshold: int = 30,
     min_duration_sec: float = 0.2,
     merge_gap_sec: float = 0.3,
-) -> List[Tuple[float, float]]:
+) -> list[tuple[float, float]]:
     """Convert per-frame motion_pixels into active-motion interval list.
 
     Takes the already-extracted FrameFeatures list from cv_features
@@ -400,7 +399,7 @@ def _motion_to_segments(
         return []
 
     # Build active frame list
-    raw_intervals: List[Tuple[float, float]] = []
+    raw_intervals: list[tuple[float, float]] = []
     in_motion = False
     seg_start = 0.0
 
@@ -419,7 +418,7 @@ def _motion_to_segments(
         raw_intervals.append((seg_start, last_t))
 
     # Merge gaps
-    merged: List[Tuple[float, float]] = []
+    merged: list[tuple[float, float]] = []
     for s, e in raw_intervals:
         if merged and s - merged[-1][1] < merge_gap_sec:
             merged[-1] = (merged[-1][0], e)
@@ -434,9 +433,9 @@ def _motion_to_segments(
 # =====================================================================
 
 def _interval_iou(
-    intervals_a: List[Tuple[float, float]],
-    intervals_b: List[Tuple[float, float]],
-) -> Tuple[float, float, float]:
+    intervals_a: list[tuple[float, float]],
+    intervals_b: list[tuple[float, float]],
+) -> tuple[float, float, float]:
     """Compute temporal IoU between two sets of intervals.
 
     Returns (overlap_sec, iou, coverage_of_a_by_b).
@@ -446,12 +445,12 @@ def _interval_iou(
         return 0.0, 0.0, 0.0
 
     # Build event list: +1 for interval start, -1 for interval end
-    events_a: List[Tuple[float, int]] = []
+    events_a: list[tuple[float, int]] = []
     for s, e in intervals_a:
         events_a.append((s, 1))
         events_a.append((e, -1))
 
-    events_b: List[Tuple[float, int]] = []
+    events_b: list[tuple[float, int]] = []
     for s, e in intervals_b:
         events_b.append((s, 1))
         events_b.append((e, -1))
@@ -464,7 +463,7 @@ def _interval_iou(
         return 0.0, 0.0, 0.0
 
     # Merge all events and sweep
-    all_events: List[Tuple[float, str, int]] = []
+    all_events: list[tuple[float, str, int]] = []
     for t, delta in events_a:
         all_events.append((t, "a", delta))
     for t, delta in events_b:
@@ -557,7 +556,7 @@ def _compute_audio_metrics_from_pcm(
     return metrics
 
 
-def extract_audio_metrics_with_pcm(video_path: Path, cfg) -> Tuple[AudioMetrics, Optional[PCMResult]]:
+def extract_audio_metrics_with_pcm(video_path: Path, cfg) -> tuple[AudioMetrics, PCMResult | None]:
     """Full audio quality analysis plus reusable decoded PCM.
 
     Returns `(metrics, pcm_result)`. If no audio stream exists, pcm_result is None
@@ -602,7 +601,7 @@ def extract_alignment_metrics(
     fps: float,
     cfg,
     *,
-    pcm_result: Optional[PCMResult] = None,
+    pcm_result: PCMResult | None = None,
 ) -> AlignmentMetrics:
     """Compute audio-visual alignment.
 

@@ -11,13 +11,13 @@ import base64
 import json
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any
 
 from plugins.manim.runtime_config import get_manim_settings
 
 from .agent_skills import build_manim_skill_prompt
-from .math_physics_visualization import MATH_PHYSICS_CODEGEN_DIRECTOR_PROMPT
 from .llm import LLMClient, LLMConfig, LLMDeltaCallback, LLMEventCallback, StreamTerminated
+from .math_physics_visualization import MATH_PHYSICS_CODEGEN_DIRECTOR_PROMPT
 from .output_language import normalize_output_language, output_language_name
 from .scene_pack import parse_scene_pack, recover_scene_pack_skeleton
 from .streaming_scene_pack import extract_parseable_prefix, sanitize_streaming_code
@@ -760,11 +760,14 @@ STEP 1 - CHOOSE AND EXECUTE THE OPENING ARCHITECTURE (5-10 seconds):
     - comparison-led: contrast two cases and explain the difference;
     - story-led: use a tiny scenario when it genuinely helps.
   If the request is a concrete exercise, proof, calculation, geometry problem,
-  or image-based problem, keep the题面 safety line: the first spoken beat MUST
-  read `problem_intake.restatement` in concise student-friendly language, and
-  the first visual beat MUST mark the givens, target, and key relation before
-  solving. After that, cash out `opening.hook_line` according to the selected
-  architecture.
+  or image-based problem, keep the题面 safety line: the first spoken beat MUST read
+  `problem_intake.restatement` in concise student-friendly language, and the first visual beat MUST be a problem-intake beat that helps the student
+  restate or analyze the problem before solving. Mark the givens, the target question,
+  and the key relation before the first derivation. If the prompt expands into multiple sub-questions,
+  the compact reconstructed题面 card must cover every sub-question before structural explanation begins.
+  Only after the concise read-in and marking setup should you cash out `opening.hook_line`
+  according to the selected architecture. Do NOT open with meta commentary,
+  generic motivation, or strategy slogans before that read-in.
   For non-problem lessons, `opening.hook_line` is the chosen opening beat. It
   may be a question, a direct teaching sentence, a concrete example, a result
   preview, or a visual instruction. Do not turn it into a question unless the
@@ -1556,7 +1559,7 @@ def _extract_code(text: str) -> str:
     return text.strip()
 
 
-def _extract_json_object(text: str) -> Dict:
+def _extract_json_object(text: str) -> dict:
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`").strip()
@@ -1578,19 +1581,19 @@ def _image_to_data_url(path: Path) -> str:
     return f"data:{mime};base64,{b64}"
 
 
-def _build_actionable_feedback(eval_report: Dict) -> str:
+def _build_actionable_feedback(eval_report: dict) -> str:
     """Translate the new eval_pipeline report into concrete repair guidance."""
 
-    def _as_float(value) -> Optional[float]:
+    def _as_float(value) -> float | None:
         if isinstance(value, bool):
             return 1.0 if value else 0.0
         if isinstance(value, (int, float)):
             return float(value)
         return None
 
-    def _metric_map(dimension: Dict) -> Dict[str, Dict]:
+    def _metric_map(dimension: dict) -> dict[str, dict]:
         metrics = dimension.get("metrics", [])
-        result: Dict[str, Dict] = {}
+        result: dict[str, dict] = {}
         if not isinstance(metrics, list):
             return result
         for metric in metrics:
@@ -1601,13 +1604,13 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
                 result[name] = metric
         return result
 
-    def _metric_note(metric: Dict) -> str:
+    def _metric_note(metric: dict) -> str:
         details = str(metric.get("details", "") or "").strip()
         if details:
             return details
         return str(metric.get("description", "") or "").strip()
 
-    lines: List[str] = []
+    lines: list[str] = []
     score = float(eval_report.get("overall_score", 0) or 0)
     lines.append(
         f"Overall score: {score:.2f} / 1.00 - "
@@ -1615,7 +1618,7 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
     )
 
     dimensions = eval_report.get("dimensions", [])
-    dimension_map: Dict[str, Dict] = {}
+    dimension_map: dict[str, dict] = {}
     if isinstance(dimensions, list):
         for dim in dimensions:
             if not isinstance(dim, dict):
@@ -1790,7 +1793,7 @@ def _build_actionable_feedback(eval_report: Dict) -> str:
     return "\n".join(lines)
 
 
-def _build_local_asset_prompt(teaching_plan: Optional[Dict]) -> str:
+def _build_local_asset_prompt(teaching_plan: dict | None) -> str:
     if not teaching_plan:
         return (
             "## Local icons\n"
@@ -1815,7 +1818,7 @@ def _build_local_asset_prompt(teaching_plan: Optional[Dict]) -> str:
     )
 
 
-def _build_opening_prompt(teaching_plan: Optional[Dict]) -> str:
+def _build_opening_prompt(teaching_plan: dict | None) -> str:
     if not teaching_plan:
         return ""
 
@@ -1852,6 +1855,7 @@ def _build_opening_prompt(teaching_plan: Optional[Dict]) -> str:
     if is_problem_solving:
         prompt += (
             "- Because this is a problem-solving lesson, `opening.hook_line` belongs AFTER the concise read-in and opening marking beat.\n"
+            "- If `opening.style` is question_first, treat `opening.hook_line` as the second narration question beat, not the first spoken line.\n"
             "- Treat `opening.hook_line` as the next opening beat, not necessarily a question.\n"
             "- Do NOT lead with a meta strategy slogan or hook before the concise read-in.\n"
         )
@@ -1860,7 +1864,7 @@ def _build_opening_prompt(teaching_plan: Optional[Dict]) -> str:
     return prompt
 
 
-def _build_problem_intake_prompt(teaching_plan: Optional[Dict]) -> str:
+def _build_problem_intake_prompt(teaching_plan: dict | None) -> str:
     if not teaching_plan:
         return ""
 
@@ -1886,7 +1890,7 @@ def _build_problem_intake_prompt(teaching_plan: Optional[Dict]) -> str:
         + "- If `is_problem_solving` is true, show a compact problem card or reconstructed题面 card before solving.\n"
         + "- If `is_problem_solving` is true and the problem has multiple sub-questions, the compact reconstructed题面 card must cover each sub-question before structural explanation begins.\n"
         + "- If `is_problem_solving` is true, visually mark givens, target, key terms, variables, or diagram relations before the first derivation.\n"
-        + "- If `is_problem_solving` is true, the opening order is: concise restatement -> visual marking -> chosen `opening.hook_line` beat -> roadmap/structure.\n"
+        + "- If `is_problem_solving` is true, the opening order is: concise restatement -> visual marking -> `opening.hook_line` -> roadmap/structure.\n"
         + "- If `is_problem_solving` is false, use this only as a short topic-intake: restate the learner's central question and highlight key terms without inventing a fake exercise.\n"
         + "- Use sequential circles/ellipses, outline boxes, underlines, arrows, braces, color highlights, or callout labels.\n"
         + "- Keep markings attached to the exact text, formula part, or diagram relation they explain; do not place decorative floating marks.\n"
@@ -1894,7 +1898,7 @@ def _build_problem_intake_prompt(teaching_plan: Optional[Dict]) -> str:
     )
 
 
-def _build_selected_theme_prompt(teaching_plan: Optional[Dict]) -> str:
+def _build_selected_theme_prompt(teaching_plan: dict | None) -> str:
     if not teaching_plan:
         return ""
 
@@ -1944,11 +1948,11 @@ def _build_selected_theme_prompt(teaching_plan: Optional[Dict]) -> str:
     )
 
 
-def _build_codegen_teaching_context(teaching_plan: Optional[Dict]) -> Dict[str, object]:
+def _build_codegen_teaching_context(teaching_plan: dict | None) -> dict[str, object]:
     if not isinstance(teaching_plan, dict):
         return {}
 
-    context: Dict[str, object] = {}
+    context: dict[str, object] = {}
 
     for key in ("lesson_goal", "big_idea"):
         value = teaching_plan.get(key)
@@ -2040,7 +2044,7 @@ def _build_codegen_teaching_context(teaching_plan: Optional[Dict]) -> Dict[str, 
     return context
 
 
-def _build_fast_path_reference_prompt(teaching_plan: Optional[Dict]) -> str:
+def _build_fast_path_reference_prompt(teaching_plan: dict | None) -> str:
     if not isinstance(teaching_plan, dict):
         return ""
     fast_path = teaching_plan.get("fast_path")
@@ -2189,9 +2193,9 @@ class CodeGenAgent:
                     base_url=base_url,
                 ),
             )
-        self._last_tool_fix_meta: Dict[str, Any] = {}
+        self._last_tool_fix_meta: dict[str, Any] = {}
 
-    def get_last_tool_fix_meta(self) -> Dict[str, Any]:
+    def get_last_tool_fix_meta(self) -> dict[str, Any]:
         return dict(self._last_tool_fix_meta)
 
     def _call(
@@ -2241,8 +2245,8 @@ class CodeGenAgent:
         output_language: str,
         repair_kind: str,
         error_context: str,
-        code_eval_report: Optional[Dict] = None,
-    ) -> Optional[str]:
+        code_eval_report: dict | None = None,
+    ) -> str | None:
         """Patch-first repair via read/search/apply_patch under run_dir. None => use full-file fix."""
         ms = get_manim_settings()
         if not getattr(ms, "tool_fix_enabled", False):
@@ -2273,8 +2277,8 @@ class CodeGenAgent:
         output_language: str,
         repair_kind: str,
         error_context: str,
-        code_eval_report: Optional[Dict] = None,
-    ) -> Optional[str]:
+        code_eval_report: dict | None = None,
+    ) -> str | None:
         ms = get_manim_settings()
         if not getattr(ms, "tool_fix_enabled", False):
             return None
@@ -2288,7 +2292,7 @@ class CodeGenAgent:
 
         runtime = ManimToolRuntime(run_dir)
         patch_count = 0
-        meta: Dict[str, Any] = {
+        meta: dict[str, Any] = {
             "stopped_reason": "not_started",
             "fallback_required": False,
             "finish_summary": "",
@@ -2298,7 +2302,7 @@ class CodeGenAgent:
         max_patches = max(1, int(getattr(ms, "tool_fix_max_patches", 12)))
         max_patch_bytes = max(1024, int(getattr(ms, "tool_fix_max_patch_bytes", 256_000)))
 
-        def dispatch(name: str, args: Dict[str, Any]) -> ToolResult:
+        def dispatch(name: str, args: dict[str, Any]) -> ToolResult:
             nonlocal patch_count
             requested_path = str(args.get("path", ""))
             if name in {"read_file", "search_file", "apply_patch"} and requested_path != target_file:
@@ -2392,8 +2396,8 @@ class CodeGenAgent:
     def generate(
         self,
         request_text: str,
-        image_path: Optional[Path] = None,
-        teaching_plan: Optional[Dict] = None,
+        image_path: Path | None = None,
+        teaching_plan: dict | None = None,
         output_language: str = "en",
         *,
         on_delta: LLMDeltaCallback | None = None,
@@ -2498,7 +2502,12 @@ class CodeGenAgent:
             if recovered is not None:
                 return recovered
             return extracted
-        return sanitized if spec.manifest else extracted
+        if spec.manifest:
+            return sanitized
+        recovered = recover_scene_pack_skeleton(sanitized)
+        if recovered is not None:
+            return recovered
+        return extracted
 
     def fix(self, code: str, error_log: str, output_language: str = "en") -> str:
         """Fix code that failed to render, given the error output."""
@@ -2519,7 +2528,7 @@ class CodeGenAgent:
     def fix_from_code_eval(
         self,
         code: str,
-        code_eval_report: Dict,
+        code_eval_report: dict,
         output_language: str = "en",
     ) -> str:
         """Fix code based on the pre-render code-eval report."""
@@ -2547,7 +2556,7 @@ class CodeGenAgent:
         manifest_source: str,
         wrapper_scene_source: str,
         section_method_source: str,
-        helper_method_sources: List[str],
+        helper_method_sources: list[str],
         error_log: str,
         output_language: str = "en",
     ) -> str:
@@ -2595,8 +2604,8 @@ class CodeGenAgent:
         manifest_source: str,
         wrapper_scene_source: str,
         section_method_source: str,
-        helper_method_sources: List[str],
-        validation_report: Dict,
+        helper_method_sources: list[str],
+        validation_report: dict,
         output_language: str = "en",
     ) -> str:
         """Repair one section method from validation diagnostics and return the replacement def block."""
@@ -2637,7 +2646,7 @@ class CodeGenAgent:
             raise ValueError("Validation fix response did not include `updated_method_code`.")
         return updated_method_code
 
-    def narrate(self, code: str, request_text: str, output_language: str = "en") -> List[str]:
+    def narrate(self, code: str, request_text: str, output_language: str = "en") -> list[str]:
         """Generate a narration script (list of paragraphs) for the video."""
         language = normalize_output_language(output_language)
         language_name = output_language_name(language)
@@ -2688,9 +2697,9 @@ class CodeGenAgent:
     def improve(
         self,
         code: str,
-        eval_report: Dict,
-        keyframe_paths: Optional[List[Path]] = None,
-        teaching_plan: Optional[Dict] = None,
+        eval_report: dict,
+        keyframe_paths: list[Path] | None = None,
+        teaching_plan: dict | None = None,
         output_language: str = "en",
     ) -> str:
         """Improve code based on evaluation feedback + optional keyframe images."""

@@ -1,5 +1,4 @@
 from .ai4learning_theme import (
-    AI4LearningBaseScene,
     CHARCOAL_BOARD,
     DEEP_SPACE_BOARD,
     DEFAULT_THEME,
@@ -12,8 +11,9 @@ from .ai4learning_theme import (
     PALETTE_USAGE_NOTES,
     SLATE_MIST,
     SOFT_GLASS_WHITE,
-    THEMES,
     TEXT_MAIN,
+    THEMES,
+    AI4LearningBaseScene,
     get_theme,
 )
 from .narrated_scene import NarratedScene

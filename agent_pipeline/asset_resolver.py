@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
-from .llm import LLMClient, LLMConfig
 from plugins.manim.runtime_config import get_manim_settings
 
+from .llm import LLMClient, LLMConfig
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ICON_DIR = ROOT_DIR / "icon"
@@ -45,7 +45,7 @@ Return ONLY valid JSON in this exact shape:
 """
 
 
-def _extract_json_object(text: str) -> Dict[str, Any]:
+def _extract_json_object(text: str) -> dict[str, Any]:
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`").strip()
@@ -72,9 +72,9 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     return {"selected_assets": []}
 
 
-def _summarize_sections(teaching_plan: Dict[str, Any]) -> List[Dict[str, str]]:
+def _summarize_sections(teaching_plan: dict[str, Any]) -> list[dict[str, str]]:
     sections = teaching_plan.get("sections", [])
-    summarized: List[Dict[str, str]] = []
+    summarized: list[dict[str, str]] = []
     for section in sections:
         if not isinstance(section, dict):
             continue
@@ -90,7 +90,7 @@ def _summarize_sections(teaching_plan: Dict[str, Any]) -> List[Dict[str, str]]:
     return summarized
 
 
-def list_local_icons(icon_dir: Path = ICON_DIR) -> List[str]:
+def list_local_icons(icon_dir: Path = ICON_DIR) -> list[str]:
     if not icon_dir.exists():
         return []
     return sorted(
@@ -102,14 +102,14 @@ def list_local_icons(icon_dir: Path = ICON_DIR) -> List[str]:
 
 def _call_asset_selector(
     request_text: str,
-    teaching_plan: Dict[str, Any],
-    available_icons: List[str],
+    teaching_plan: dict[str, Any],
+    available_icons: list[str],
     *,
     api_key: str,
     base_url: str,
     model: str,
     max_retries: int = 2,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not api_key or not available_icons:
         return {"selected_assets": []}
 
@@ -150,10 +150,10 @@ def _call_asset_selector(
 def _validate_selected_assets(
     raw_assets: Any,
     *,
-    available_icons: List[str],
-    teaching_plan: Dict[str, Any],
+    available_icons: list[str],
+    teaching_plan: dict[str, Any],
     icon_dir: Path,
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     if not isinstance(raw_assets, list):
         return []
 
@@ -163,7 +163,7 @@ def _validate_selected_assets(
         if isinstance(section, dict)
     }
     available_set = set(available_icons)
-    validated: List[Dict[str, str]] = []
+    validated: list[dict[str, str]] = []
     used_filenames: set[str] = set()
 
     for item in raw_assets:
@@ -193,14 +193,14 @@ def _validate_selected_assets(
 
 def resolve_local_assets(
     request_text: str,
-    teaching_plan: Dict[str, Any],
+    teaching_plan: dict[str, Any],
     *,
     llm_config: LLMConfig | None = None,
     api_key: str = "",
     base_url: str = "",
     model: str = "",
     icon_dir: Path = ICON_DIR,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if llm_config is not None:
         api_key = llm_config.api_key
         base_url = llm_config.base_url

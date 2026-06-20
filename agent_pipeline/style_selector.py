@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .fast_paths import list_fast_path_categories
 from .llm import LLMClient, LLMConfig, LLMDeltaCallback, LLMEventCallback
-
 
 _SYSTEM_STYLE_SELECT = """\
 You are selecting the best explanation-style template for an educational animation request.
@@ -35,7 +34,7 @@ Return:
 """
 
 
-def _extract_json_object(text: str) -> Dict[str, Any]:
+def _extract_json_object(text: str) -> dict[str, Any]:
     raw = (text or "").strip()
     if raw.startswith("```"):
         raw = raw.strip("`").strip()
@@ -84,9 +83,9 @@ class ExplanationStyleSelector:
         *,
         on_delta: LLMDeltaCallback | None = None,
         on_event: LLMEventCallback | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         categories = list_fast_path_categories()
-        content: List[Dict[str, str]] = [
+        content: list[dict[str, str]] = [
             {
                 "type": "input_text",
                 "text": (

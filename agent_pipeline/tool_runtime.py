@@ -9,14 +9,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
 class ToolResult:
     ok: bool
     message: str
-    payload: Dict[str, Any]
+    payload: dict[str, Any]
 
 
 def _normalize_rel_path(raw: str) -> str:
@@ -60,8 +60,8 @@ class ManimToolRuntime:
         self,
         path: str,
         *,
-        start_line: Optional[int] = None,
-        end_line: Optional[int] = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
     ) -> ToolResult:
         try:
             target = _safe_join(self._root, path)
@@ -106,7 +106,7 @@ class ManimToolRuntime:
                 return ToolResult(False, f"not a file: {path}", {"path": path})
             text = target.read_text(encoding="utf-8")
             lines = text.splitlines()
-            matches: List[Dict[str, Any]] = []
+            matches: list[dict[str, Any]] = []
             if use_regex:
                 rx = re.compile(pattern)
                 for i, line in enumerate(lines, start=1):
@@ -196,7 +196,7 @@ class ManimToolRuntime:
         except Exception as exc:
             return ToolResult(False, str(exc), {"path": path})
 
-    def dispatch(self, name: str, arguments: Dict[str, Any]) -> ToolResult:
+    def dispatch(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         if name == "read_file":
             return self.read_file(
                 str(arguments.get("path", "")),
@@ -229,7 +229,7 @@ class ManimToolRuntime:
         return ToolResult(False, f"unknown tool: {name}", {})
 
 
-def build_openai_tool_schemas(max_patch_bytes: int) -> List[Dict[str, Any]]:
+def build_openai_tool_schemas(max_patch_bytes: int) -> list[dict[str, Any]]:
     return [
         {
             "type": "function",

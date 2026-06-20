@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 A4L_BG = "#0F2748"
 A4L_TEXT_MAIN = "#EDF5FF"
 A4L_TEXT_SUB = "#D9E7F7"

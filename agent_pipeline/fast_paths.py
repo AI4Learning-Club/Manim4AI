@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from textwrap import indent
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -631,7 +632,7 @@ def _make_category(
             explanation_style=style_axis,
             explanation_depth="medium",
             pacing="steady",
-            hook=f"如果内容没变，只是讲法换了，理解体验会差多少？",
+            hook="如果内容没变，只是讲法换了，理解体验会差多少？",
             big_idea=f"{display_name}的核心不是多讲内容，而是用合适的讲法把理解路径变短。",
             section_specs=[
                 (

@@ -9,7 +9,6 @@ from .themes import (
     SOFT_GLASS_WHITE,
 )
 
-
 THEMES: dict[str, ThemePack] = {
     theme.theme_id: theme
     for theme in (

@@ -112,8 +112,73 @@ def sanitize_streaming_code(code: str) -> str:
     if out:
         out += "\n"
     if seen_restart:
-        return out
-    return out
+        return _sanitize_bad_spoken_quotes(out)
+    return _sanitize_bad_spoken_quotes(out)
+
+
+def _sanitize_bad_spoken_quotes(code: str) -> str:
+    had_trailing_newline = code.endswith("\n")
+    lines = code.splitlines()
+    sanitized_lines: list[str] = []
+    for line in lines:
+        if (
+            "self.speak(" not in line
+            and "self.speak_with_subtitle(" not in line
+            and "self.show_page_title_chip(" not in line
+        ):
+            sanitized_lines.append(line)
+            continue
+
+        call_markers = (
+            "self.speak(",
+            "self.speak_with_subtitle(",
+            "self.show_page_title_chip(",
+        )
+        call_start = min(
+            index for index in (line.find(marker) for marker in call_markers) if index >= 0
+        )
+        open_paren = line.find("(", call_start)
+        if open_paren < 0:
+            sanitized_lines.append(line)
+            continue
+
+        quote_start = -1
+        quote_char = ""
+        for index in range(open_paren + 1, len(line)):
+            if line[index] in {'"', "'"}:
+                quote_start = index
+                quote_char = line[index]
+                break
+        if quote_start < 0:
+            sanitized_lines.append(line)
+            continue
+
+        comma_index = line.find(",", quote_start + 1)
+        close_paren_index = line.find(")", quote_start + 1)
+        candidate_end = comma_index if comma_index >= 0 else close_paren_index
+        if candidate_end is None or candidate_end < 0:
+            sanitized_lines.append(line)
+            continue
+
+        quote_end = line.rfind(quote_char, quote_start + 1, candidate_end)
+        if quote_end <= quote_start:
+            sanitized_lines.append(line)
+            continue
+
+        inner = line[quote_start + 1:quote_end]
+        escaped_inner_chars: list[str] = []
+        for index, char in enumerate(inner):
+            if char == quote_char and (index == 0 or inner[index - 1] != "\\"):
+                escaped_inner_chars.append("\\")
+            escaped_inner_chars.append(char)
+        escaped_inner = "".join(escaped_inner_chars)
+        sanitized_lines.append(
+            line[:quote_start + 1] + escaped_inner + line[quote_end:]
+        )
+    result = "\n".join(sanitized_lines)
+    if had_trailing_newline:
+        result += "\n"
+    return result
 
 
 def _syntax_ok(code: str) -> bool:

@@ -1,7 +1,6 @@
 from manim import *
 
 from plugins.manim.colortest.ai4learning_theme import (
-    AI4LearningBaseScene,
     BLUE_100,
     BLUE_300,
     BLUE_500,
@@ -14,6 +13,7 @@ from plugins.manim.colortest.ai4learning_theme import (
     PURPLE_400,
     RED_500,
     YELLOW_300,
+    AI4LearningBaseScene,
 )
 
 

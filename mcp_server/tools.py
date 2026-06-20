@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
+
+from mcp.types import TextContent, Tool
 
 from config.logger_config import get_mcp_logger
-from mcp.types import TextContent, Tool
 
 _logger = get_mcp_logger("manim_http")
 

@@ -11,12 +11,11 @@ from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from agent_pipeline.main import DEFAULT_OUTPUT_LANGUAGE, RUNS_DIR, run_pipeline
 from agent_pipeline.output_language import normalize_output_language
-
 
 HOST = os.environ.get("APP_HOST", "0.0.0.0")
 PORT = int(os.environ.get("APP_PORT", "8000"))
@@ -30,18 +29,18 @@ class Job:
     flash: bool = True
     status: str = "queued"
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
-    run_dir: Optional[str] = None
-    summary: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    run_dir: str | None = None
+    summary: dict[str, Any] | None = None
+    error: str | None = None
 
 
-_jobs: Dict[str, Job] = {}
+_jobs: dict[str, Job] = {}
 _jobs_lock = threading.Lock()
 
 
-def _job_to_response(job: Job, base_url: str) -> Dict[str, Any]:
+def _job_to_response(job: Job, base_url: str) -> dict[str, Any]:
     payload = asdict(job)
     summary = job.summary or {}
     video_path = summary.get("final_video_with_audio") or summary.get("final_video")
@@ -86,12 +85,12 @@ class AppHandler(BaseHTTPRequestHandler):
         host = self.headers.get("Host") or f"{HOST}:{PORT}"
         return f"http://{host}"
 
-    def _read_json(self) -> Dict[str, Any]:
+    def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length) if length > 0 else b"{}"
         return json.loads(raw.decode("utf-8"))
 
-    def _send_json(self, payload: Dict[str, Any], status: int = HTTPStatus.OK) -> None:
+    def _send_json(self, payload: dict[str, Any], status: int = HTTPStatus.OK) -> None:
         raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")

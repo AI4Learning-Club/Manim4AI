@@ -34,7 +34,8 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import List, Optional
+
+from plugins.manim.runtime_config import get_manim_settings
 
 from .audio_features import extract_alignment_metrics, extract_audio_metrics_with_pcm
 from .config import AudioConfig, CVConfig, ExternalMeta, FusionConfig, PipelineConfig, VLMConfig
@@ -49,28 +50,26 @@ from .cv_features import (
     save_frame_csv,
     save_segment_csv,
 )
+from .fusion import compute_report, print_report, save_report_json
 from .vlm_judge import (
     AnchorBindingVerdict,
     AVAlignmentVerdict,
     OverlapReviewVerdict,
-    WholeVideoMediaCache,
-    WholeVideoVisualReviewResult,
     SemanticCoherenceVerdict,
     TaskCorrectnessVerdict,
     VisualCoverageVerdict,
     VLMVerdict,
+    WholeVideoMediaCache,
+    WholeVideoVisualReviewResult,
     prepare_whole_video_media_cache,
     review_av_alignment,
-    review_whole_video_visual_keyframes,
     review_segments,
     review_semantic_coherence,
     review_task_correctness,
     review_visual_coverage,
+    review_whole_video_visual_keyframes,
     save_verdicts_jsonl,
 )
-from .fusion import compute_report, print_report, save_report_json
-from plugins.manim.runtime_config import get_manim_settings
-
 
 MANIM_SETTINGS = get_manim_settings()
 DEFAULT_VLM_SETTINGS = MANIM_SETTINGS.llm.eval
@@ -303,7 +302,7 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
         raw_segments = merge_candidate_frames(features, fps, cfg.cv)
         print(f"  Raw segments: {len(raw_segments)}")
 
-        segment_features_list: List[SegmentFeatures] = []
+        segment_features_list: list[SegmentFeatures] = []
         for idx, (s, e) in enumerate(raw_segments, start=1):
             seg_id = f"seg_{idx:04d}"
             sf = compute_segment_features(seg_id, s, e, fps, features, cfg.cv)
@@ -376,7 +375,7 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
     # ------------------------------------------------------------------
     # Layer 2: VLM semantic judgment
     # ------------------------------------------------------------------
-    verdicts: List[VLMVerdict] = []
+    verdicts: list[VLMVerdict] = []
 
     if cfg.skip_vlm:
         print("\n[Layer 2] VLM skipped (--skip-vlm)")
@@ -405,8 +404,8 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
     # ------------------------------------------------------------------
     # Layer 2b: Task Correctness VLM review (whole-video)
     # ------------------------------------------------------------------
-    task_correctness: Optional[TaskCorrectnessVerdict] = None
-    tc_kf_paths: List[Path] = []   # shared with later layers
+    task_correctness: TaskCorrectnessVerdict | None = None
+    tc_kf_paths: list[Path] = []   # shared with later layers
     skip_tc = getattr(cfg, "_skip_task_correctness", False) or cfg.skip_vlm
     topic = cfg.meta.topic if cfg.meta else ""
     tc_keyframes_count = getattr(cfg, "_tc_keyframes", 8)
@@ -452,7 +451,7 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
         import cv2 as _cv2
         tc_frames_dir = out_dir / "tc_keyframes"
         tc_frames_dir.mkdir(parents=True, exist_ok=True)
-        tc_kf_paths: List[Path] = []
+        tc_kf_paths: list[Path] = []
 
         cap = _cv2.VideoCapture(str(video_path))
         tc_total = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
@@ -490,12 +489,12 @@ def evaluate_video(video_path: Path, cfg: PipelineConfig) -> dict:
                     tc_kf_paths.append(p)
         cap.release()
 
-    overlap_review: Optional[OverlapReviewVerdict] = None
-    anchor_binding_review: Optional[AnchorBindingVerdict] = None
+    overlap_review: OverlapReviewVerdict | None = None
+    anchor_binding_review: AnchorBindingVerdict | None = None
     whole_video_visual_review_raw_response: str = ""
-    visual_coverage: Optional[VisualCoverageVerdict] = None
-    semantic_coherence: Optional[SemanticCoherenceVerdict] = None
-    av_alignment_verdict: Optional[AVAlignmentVerdict] = None
+    visual_coverage: VisualCoverageVerdict | None = None
+    semantic_coherence: SemanticCoherenceVerdict | None = None
+    av_alignment_verdict: AVAlignmentVerdict | None = None
     has_audio_stream = audio_metrics is not None and audio_metrics.has_audio
     whole_video_media = WholeVideoMediaCache()
 
@@ -686,7 +685,7 @@ def main() -> int:
     args = parser.parse_args()
     cfg = build_config(args)
 
-    results: List[dict] = []
+    results: list[dict] = []
     for video_path in args.inputs:
         if not video_path.exists():
             print(f"WARNING: {video_path} not found, skipping.", file=sys.stderr)

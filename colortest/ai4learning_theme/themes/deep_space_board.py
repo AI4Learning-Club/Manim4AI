@@ -4,7 +4,6 @@ from pathlib import Path
 
 from ..schema import ThemeBackground, ThemeBehavior, ThemePack
 
-
 BACKGROUND_DIR = Path(__file__).resolve().parent.parent / "backgrounds"
 
 

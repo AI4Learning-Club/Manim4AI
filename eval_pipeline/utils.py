@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 import httpx
 from openai import OpenAI
 
-
-_DNS_OVERRIDE: Dict[str, str] = {
+_DNS_OVERRIDE: dict[str, str] = {
     "api.tabcode.cc": "154.44.10.152",
 }
 
 
 class _PatchedTransport(httpx.HTTPTransport):
-    def __init__(self, dns_map: Dict[str, str], **kwargs):
+    def __init__(self, dns_map: dict[str, str], **kwargs):
         kwargs.pop("verify", None)
         super().__init__(verify=False, **kwargs)
         self._dns_map = dns_map
@@ -37,9 +34,9 @@ class _PatchedTransport(httpx.HTTPTransport):
 
 def make_openai_client(
     api_key: str,
-    base_url: Optional[str],
+    base_url: str | None,
     timeout: float = 180.0,
-    dns_override: Optional[Dict[str, str]] = None,
+    dns_override: dict[str, str] | None = None,
 ) -> OpenAI:
     """Create an OpenAI client that bypasses local DNS hijacking."""
     override = _DNS_OVERRIDE if dns_override is None else dns_override

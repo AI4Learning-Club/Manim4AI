@@ -19,12 +19,13 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
-from typing import Any, Callable, List, Optional
+from typing import Any
 
 from plugins.manim.runtime_config import get_manim_settings
 
@@ -53,7 +54,7 @@ STREAMING_REUSE_ONLY_SEGMENT_ID = "__streaming_reuse_only__"
 
 
 def _render_progress(
-    cb: Optional[Callable[[str], None]],
+    cb: Callable[[str], None] | None,
     msg: str,
 ) -> None:
     if cb is not None:
@@ -61,7 +62,7 @@ def _render_progress(
 
 
 def _render_event(
-    cb: Optional[Callable[[dict[str, Any]], None]],
+    cb: Callable[[dict[str, Any]], None] | None,
     payload: dict[str, Any],
 ) -> None:
     if cb is not None:
@@ -76,7 +77,7 @@ def _segment_tts_timeout_seconds(text_count: int) -> float:
     return max(0.01, min(configured_job_timeout, default_tts_timeout))
 
 
-def _resolved_manim_cli_config_path() -> Optional[Path]:
+def _resolved_manim_cli_config_path() -> Path | None:
     raw = (get_manim_settings().manim_cli_config_file or "").strip()
     if not raw:
         return None
@@ -93,7 +94,7 @@ class SegmentRenderResult:
     order: int
     output_dir: Path
     success: bool
-    video_path: Optional[Path] = None
+    video_path: Path | None = None
     error_log: str = ""
     render_attempts: int = 1
     render_repair_rounds: int = 0
@@ -102,22 +103,22 @@ class SegmentRenderResult:
 @dataclass
 class RenderResult:
     success: bool
-    video_path: Optional[Path] = None
+    video_path: Path | None = None
     error_log: str = ""
     scene_name: str = ""
-    segments: List[SegmentRenderResult] = field(default_factory=list)
+    segments: list[SegmentRenderResult] = field(default_factory=list)
 
 
 @dataclass
 class SegmentTTSPreparationResult:
     segment_id: str
     scene_name: str
-    texts: List[str]
+    texts: list[str]
     ok: bool
     generated_count: int = 0
     reused_round_count: int = 0
     reused_global_count: int = 0
-    failed_texts: List[str] = field(default_factory=list)
+    failed_texts: list[str] = field(default_factory=list)
 
 
 def _sanitize_chinese_in_latex(code: str) -> str:
@@ -273,7 +274,7 @@ def _pregenererate_tts(
     output_dir: Path,
     *,
     tts_voice: str | None = None,
-    event_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    event_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     """Extract narration texts and pre-generate TTS audio once per round."""
     texts: list[str] = []
@@ -386,7 +387,7 @@ def prepare_segment_tts_assets(
     *,
     segment_id: str | None = None,
     tts_voice: str | None = None,
-    event_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    event_callback: Callable[[dict[str, Any]], None] | None = None,
     generate_audio_fn: Callable[[str, Path, str, str], bool] = generate_audio,
     copy_file_fn: Callable[[str, str], Any] = shutil.copy2,
     path_exists_fn: Callable[[Path], bool] | None = None,
@@ -545,6 +546,58 @@ def _collect_unique_speak_texts(code: str) -> list[str]:
     return list(dict.fromkeys(texts))
 
 
+def _sanitize_bad_spoken_quotes(code: str) -> str:
+    lines = code.splitlines()
+    sanitized_lines: list[str] = []
+    for line in lines:
+        if "self.speak(" not in line and "self.speak_with_subtitle(" not in line:
+            sanitized_lines.append(line)
+            continue
+
+        call_start = line.find("self.speak(")
+        if call_start < 0:
+            call_start = line.find("self.speak_with_subtitle(")
+        open_paren = line.find("(", call_start)
+        if open_paren < 0:
+            sanitized_lines.append(line)
+            continue
+
+        quote_start = -1
+        quote_char = ""
+        for index in range(open_paren + 1, len(line)):
+            if line[index] in {'"', "'"}:
+                quote_start = index
+                quote_char = line[index]
+                break
+        if quote_start < 0:
+            sanitized_lines.append(line)
+            continue
+
+        comma_index = line.find(",", quote_start + 1)
+        close_paren_index = line.find(")", quote_start + 1)
+        candidate_end = comma_index if comma_index >= 0 else close_paren_index
+        if candidate_end is None or candidate_end < 0:
+            sanitized_lines.append(line)
+            continue
+
+        quote_end = line.rfind(quote_char, quote_start + 1, candidate_end)
+        if quote_end <= quote_start:
+            sanitized_lines.append(line)
+            continue
+
+        inner = line[quote_start + 1:quote_end]
+        escaped_inner_chars: list[str] = []
+        for index, char in enumerate(inner):
+            if char == quote_char and (index == 0 or inner[index - 1] != "\\"):
+                escaped_inner_chars.append("\\")
+            escaped_inner_chars.append(char)
+        escaped_inner = "".join(escaped_inner_chars)
+        sanitized_lines.append(
+            line[:quote_start + 1] + escaped_inner + line[quote_end:]
+        )
+    return "\n".join(sanitized_lines)
+
+
 def _coerce_path(value: Any) -> Path:
     return value if isinstance(value, Path) else Path(str(value))
 
@@ -553,8 +606,8 @@ def _segment_results_from_dual(
     raw: list[dict[str, Any]],
     *,
     output_dir: Path,
-) -> List[SegmentRenderResult]:
-    out: List[SegmentRenderResult] = []
+) -> list[SegmentRenderResult]:
+    out: list[SegmentRenderResult] = []
     for item in raw:
         if "error" in item:
             seg_id = str(item.get("segment_id") or "unknown")
@@ -712,7 +765,7 @@ def _run_subprocess_streaming(
         bufsize=1,
     )
 
-    queue: Queue[Optional[str]] = Queue()
+    queue: Queue[str | None] = Queue()
     output_chunks: list[str] = []
     last_output_at = time.monotonic()
     saw_terminal_failure = False
@@ -800,9 +853,9 @@ def render_scene_pack(
     quality_flags: str = "-ql --fps 30",
     enable_tts: bool = True,
     tts_voice: str | None = None,
-    selected_segment_ids: Optional[set[str]] = None,
-    progress_callback: Optional[Callable[[str], None]] = None,
-    event_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    selected_segment_ids: set[str] | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+    event_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> RenderResult:
     """
     Render a Scene Pack from source code.
@@ -847,7 +900,7 @@ def render_scene_pack(
         and bool(scene_pack.manifest)
     )
 
-    segment_results: List[SegmentRenderResult] = []
+    segment_results: list[SegmentRenderResult] = []
 
     if enable_tts:
         voice = tts_voice or voice_for_language("en")
@@ -1075,7 +1128,7 @@ def render_streaming_scene_pack_segment_with_repair(
     output_language: str = "en",
     max_render_fix_attempts: int | None = None,
     max_validation_fix_attempts: int | None = None,
-    event_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    event_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> SegmentRenderResult:
     from .section_validation import (
         build_render_failure_validation_report,
@@ -1261,6 +1314,7 @@ def write_streaming_scene_pack_segment_file(
     """Materialize a single ready segment into ``streaming_scene_files`` immediately."""
     segment_code = build_segment_scene_source(code, segment_id)
     segment_code = _sanitize_chinese_in_latex(segment_code)
+    segment_code = _sanitize_bad_spoken_quotes(segment_code)
     scene_pack = parse_scene_pack(segment_code)
     segment = next((item for item in scene_pack.manifest if item.segment_id == segment_id), None)
     if segment is None:
@@ -1332,20 +1386,20 @@ def _write_debug_text(path: Path, text: str) -> None:
 
 def _render_segments(
     *,
-    manifest: List[SegmentSpec],
+    manifest: list[SegmentSpec],
     scene_file: Path,
     output_dir: Path,
     quality_flags: str,
-    selected_segment_ids: Optional[set[str]],
-    progress_callback: Optional[Callable[[str], None]] = None,
-    event_callback: Optional[Callable[[dict[str, Any]], None]] = None,
-) -> List[SegmentRenderResult]:
+    selected_segment_ids: set[str] | None,
+    progress_callback: Callable[[str], None] | None = None,
+    event_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> list[SegmentRenderResult]:
     selected = set(selected_segment_ids or [])
     reuse_only = STREAMING_REUSE_ONLY_SEGMENT_ID in selected
     selected.discard(STREAMING_REUSE_ONLY_SEGMENT_ID)
     total = len(manifest)
     if reuse_only or selected:
-        out: List[SegmentRenderResult] = []
+        out: list[SegmentRenderResult] = []
         completed = 0
         for segment in manifest:
             should = segment.segment_id in selected
@@ -1394,7 +1448,7 @@ def _render_segments(
         max_workers = min(max_workers, cap)
 
     if max_workers <= 1:
-        results_seq: List[SegmentRenderResult] = []
+        results_seq: list[SegmentRenderResult] = []
         completed = 0
         for segment in manifest:
             _render_progress(
@@ -1436,7 +1490,7 @@ def _render_segments(
             )
         return results_seq
 
-    results: List[SegmentRenderResult] = []
+    results: list[SegmentRenderResult] = []
     completed = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
@@ -1588,7 +1642,7 @@ def _segment_output_dir(output_dir: Path, segment: SegmentSpec) -> Path:
 def _existing_segment_result(
     segment: SegmentSpec,
     segment_dir: Path,
-) -> Optional[SegmentRenderResult]:
+) -> SegmentRenderResult | None:
     final_segment_video = segment_dir / "video.mp4"
     if not final_segment_video.exists():
         return None
@@ -1603,8 +1657,8 @@ def _existing_segment_result(
 
 
 def _contiguous_prefix_segment_results(
-    segment_results: List[SegmentRenderResult],
-) -> List[SegmentRenderResult]:
+    segment_results: list[SegmentRenderResult],
+) -> list[SegmentRenderResult]:
     ordered = sorted(segment_results, key=lambda item: item.order)
     prefix: list[SegmentRenderResult] = []
     expected_order = 0
@@ -1619,7 +1673,7 @@ def _contiguous_prefix_segment_results(
 
 
 def build_incremental_preview_video(
-    segment_results: List[SegmentRenderResult],
+    segment_results: list[SegmentRenderResult],
     output_path: Path,
 ) -> tuple[int, str]:
     prefix = _contiguous_prefix_segment_results(segment_results)
@@ -1629,7 +1683,7 @@ def build_incremental_preview_video(
 
 
 def build_incremental_hls_preview(
-    segment_results: List[SegmentRenderResult],
+    segment_results: list[SegmentRenderResult],
     hls_root: Path,
     *,
     preview_version: int,
@@ -1684,7 +1738,7 @@ def build_hls_video_file(
 
 
 def _build_hls_manifest_from_segment_results(
-    segment_results: List[SegmentRenderResult],
+    segment_results: list[SegmentRenderResult],
     hls_root: Path,
     *,
     manifest_name: str,
@@ -1851,7 +1905,7 @@ def _write_combined_hls_manifest(
 
 
 def _concat_segment_videos(
-    segment_results: List[SegmentRenderResult],
+    segment_results: list[SegmentRenderResult],
     output_path: Path,
 ) -> str:
     if not segment_results:
@@ -1942,7 +1996,7 @@ def _concat_list_line(path: Path) -> str:
     return f"file '{normalized}'\n"
 
 
-def _format_segment_failures(failed_segments: List[SegmentRenderResult]) -> str:
+def _format_segment_failures(failed_segments: list[SegmentRenderResult]) -> str:
     chunks = []
     for segment in failed_segments:
         header = f"[{segment.order:02d}:{segment.segment_id} -> {segment.scene_name}]"
@@ -1953,9 +2007,9 @@ def _format_segment_failures(failed_segments: List[SegmentRenderResult]) -> str:
 
 def _write_round_render_log(
     output_dir: Path,
-    segment_results: List[SegmentRenderResult],
+    segment_results: list[SegmentRenderResult],
     *,
-    final_video: Optional[Path] = None,
+    final_video: Path | None = None,
     final_error: str = "",
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1991,7 +2045,7 @@ def _sanitize_segment_id(segment_id: str) -> str:
     return cleaned or "segment"
 
 
-def _find_video(media_dir: Path, scene_name: str) -> Optional[Path]:
+def _find_video(media_dir: Path, scene_name: str) -> Path | None:
     """Search for the rendered .mp4 under media_dir."""
     if not media_dir.exists():
         return None

@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .audio_features import AlignmentMetrics, AudioMetrics
 from .config import ExternalMeta, FusionConfig
@@ -36,7 +36,6 @@ from .vlm_judge import (
     VisualCoverageVerdict,
     VLMVerdict,
 )
-
 
 # =====================================================================
 # Metric containers
@@ -57,10 +56,10 @@ class MetricResult:
 class DimensionResult:
     """One dimension grouping multiple metrics."""
     name: str
-    metrics: List[MetricResult] = field(default_factory=list)
+    metrics: list[MetricResult] = field(default_factory=list)
     # Optional aggregate score for dimensions with CV-based continuous metrics
-    aggregate_score: Optional[float] = None
-    aggregate_passed: Optional[bool] = None
+    aggregate_score: float | None = None
+    aggregate_passed: bool | None = None
 
 
 @dataclass
@@ -73,27 +72,27 @@ class EvalReport:
     fps: float = 0.0
 
     # Paper Table 1 dimensions
-    dimensions: List[DimensionResult] = field(default_factory=list)
+    dimensions: list[DimensionResult] = field(default_factory=list)
 
     # Legacy flat dimension scores (for backward compat)
-    dimension_scores: List[Dict] = field(default_factory=list)
+    dimension_scores: list[dict] = field(default_factory=list)
 
     # Overall
     overall_score: float = 0.0
     overall_passed: bool = False
 
     # Issue inventory
-    issues: List[Dict] = field(default_factory=list)
+    issues: list[dict] = field(default_factory=list)
 
     # Raw model diagnostics for debugging / repair prompts
-    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 # =====================================================================
 # CV scoring helpers (unchanged logic, new wrappers)
 # =====================================================================
 
-def _score_overlap(g: GlobalCVMetrics, segments: List[SegmentFeatures]) -> float:
+def _score_overlap(g: GlobalCVMetrics, segments: list[SegmentFeatures]) -> float:
     ratio_penalty = min(1.0, g.overlap_frame_ratio / 0.50)
     fail_penalty = min(1.0, g.cv_fail_count / 10.0)
     dur_penalty = min(1.0, g.cv_fail_duration_sec / (g.duration_sec * 0.18 + 1e-6))
@@ -151,7 +150,7 @@ def _score_audio_signal(audio: AudioMetrics) -> float:
 
 def _score_av_alignment(
     align: AlignmentMetrics,
-    audio: Optional[AudioMetrics] = None,
+    audio: AudioMetrics | None = None,
 ) -> float:
     """Score temporal alignment + pacing (duration mismatch, silence distribution)."""
     if not align.has_audio or align.speech_total_sec < 0.5:
@@ -182,7 +181,7 @@ def _score_av_alignment(
 # VLM-based visual review score
 # =====================================================================
 
-def _vlm_review_score(verdicts: List[VLMVerdict]) -> float:
+def _vlm_review_score(verdicts: list[VLMVerdict]) -> float:
     """Score from VLM overlap/rendering review. 1.0 if skipped."""
     if not verdicts:
         return 1.0
@@ -202,10 +201,10 @@ def _vlm_review_score(verdicts: List[VLMVerdict]) -> float:
 # =====================================================================
 
 def _collect_issues(
-    segments: List[SegmentFeatures],
-    verdicts: List[VLMVerdict],
-) -> List[Dict]:
-    issues: List[Dict] = []
+    segments: list[SegmentFeatures],
+    verdicts: list[VLMVerdict],
+) -> list[dict]:
+    issues: list[dict] = []
     vlm_map = {v.segment_id: v for v in verdicts}
 
     for seg in segments:
@@ -213,7 +212,7 @@ def _collect_issues(
             continue
 
         vlm_v = vlm_map.get(seg.segment_id)
-        base_issue: Dict[str, Any] = {
+        base_issue: dict[str, Any] = {
             "segment_id": seg.segment_id,
             "time_range": f"{seg.start_sec:.2f}s -> {seg.end_sec:.2f}s",
             "cv_label": seg.label,
@@ -291,12 +290,12 @@ def _collect_issues(
 
 
 def _collect_anchor_binding_issues(
-    anchor_binding_review: Optional[AnchorBindingVerdict],
-) -> List[Dict]:
+    anchor_binding_review: AnchorBindingVerdict | None,
+) -> list[dict]:
     if not anchor_binding_review:
         return []
 
-    issues: List[Dict] = []
+    issues: list[dict] = []
     severity_map = {
         "minor": ("soft_layout_note", "low", 0.65),
         "moderate": ("hard_bug", "medium", 0.8),
@@ -344,12 +343,12 @@ def _collect_anchor_binding_issues(
 
 
 def _collect_overlap_review_issues(
-    overlap_review: Optional[OverlapReviewVerdict],
-) -> List[Dict]:
+    overlap_review: OverlapReviewVerdict | None,
+) -> list[dict]:
     if not overlap_review:
         return []
 
-    issues: List[Dict] = []
+    issues: list[dict] = []
     severity_map = {
         "minor": ("soft_layout_note", "low", 0.65),
         "moderate": ("hard_bug", "medium", 0.82),
@@ -403,19 +402,19 @@ def _collect_overlap_review_issues(
 def compute_report(
     video_name: str,
     global_cv: GlobalCVMetrics,
-    segments: List[SegmentFeatures],
-    verdicts: List[VLMVerdict],
+    segments: list[SegmentFeatures],
+    verdicts: list[VLMVerdict],
     fusion_cfg: FusionConfig,
-    audio_metrics: Optional[AudioMetrics] = None,
-    alignment_metrics: Optional[AlignmentMetrics] = None,
-    task_correctness: Optional[TaskCorrectnessVerdict] = None,
-    av_alignment_verdict: Optional[AVAlignmentVerdict] = None,
+    audio_metrics: AudioMetrics | None = None,
+    alignment_metrics: AlignmentMetrics | None = None,
+    task_correctness: TaskCorrectnessVerdict | None = None,
+    av_alignment_verdict: AVAlignmentVerdict | None = None,
     whole_video_visual_review_raw_response: str = "",
-    anchor_binding_review: Optional[AnchorBindingVerdict] = None,
-    overlap_review: Optional[OverlapReviewVerdict] = None,
-    visual_coverage: Optional[VisualCoverageVerdict] = None,
-    semantic_coherence: Optional[SemanticCoherenceVerdict] = None,
-    meta: Optional[ExternalMeta] = None,
+    anchor_binding_review: AnchorBindingVerdict | None = None,
+    overlap_review: OverlapReviewVerdict | None = None,
+    visual_coverage: VisualCoverageVerdict | None = None,
+    semantic_coherence: SemanticCoherenceVerdict | None = None,
+    meta: ExternalMeta | None = None,
 ) -> EvalReport:
     """Compute the final evaluation report structured per paper Table 1."""
 
@@ -812,7 +811,7 @@ def compute_report(
         + _collect_anchor_binding_issues(anchor_binding_review)
     )
 
-    diagnostics: Dict[str, Any] = {}
+    diagnostics: dict[str, Any] = {}
     if task_correctness and task_correctness.raw_response:
         diagnostics["task_correctness"] = {
             "raw_response": task_correctness.raw_response,
@@ -850,7 +849,7 @@ def compute_report(
 # Report output
 # =====================================================================
 
-def _serialize_metric(m: MetricResult) -> Dict:
+def _serialize_metric(m: MetricResult) -> dict:
     return {
         "name": m.name,
         "scale": m.scale,

@@ -12,10 +12,11 @@ import multiprocessing as mp
 import shutil
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from plugins.manim.runtime_config import get_manim_settings
 

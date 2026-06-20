@@ -20,7 +20,6 @@ import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -57,12 +56,12 @@ class FrameFeatures:
     motion_pixels: int = 0
 
     # Overlap centroid & bbox
-    cx: Optional[float] = None
-    cy: Optional[float] = None
-    bbox_x1: Optional[int] = None
-    bbox_y1: Optional[int] = None
-    bbox_x2: Optional[int] = None
-    bbox_y2: Optional[int] = None
+    cx: float | None = None
+    cy: float | None = None
+    bbox_x1: int | None = None
+    bbox_y1: int | None = None
+    bbox_x2: int | None = None
+    bbox_y2: int | None = None
 
     # Layout density
     layout_max_density: float = 0.0
@@ -163,14 +162,14 @@ def _ensure_odd(k: int) -> int:
     return k if k % 2 == 1 else k + 1
 
 
-def _mask_centroid(mask: np.ndarray) -> Tuple[Optional[float], Optional[float]]:
+def _mask_centroid(mask: np.ndarray) -> tuple[float | None, float | None]:
     ys, xs = np.where(mask)
     if xs.size == 0:
         return None, None
     return float(xs.mean()), float(ys.mean())
 
 
-def _mask_bbox(mask: np.ndarray) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+def _mask_bbox(mask: np.ndarray) -> tuple[int | None, int | None, int | None, int | None]:
     ys, xs = np.where(mask)
     if xs.size == 0:
         return None, None, None, None
@@ -178,8 +177,8 @@ def _mask_bbox(mask: np.ndarray) -> Tuple[Optional[int], Optional[int], Optional
 
 
 def _bbox_iou_from_coords(
-    a: Tuple[Optional[int], Optional[int], Optional[int], Optional[int]],
-    b: Tuple[Optional[int], Optional[int], Optional[int], Optional[int]],
+    a: tuple[int | None, int | None, int | None, int | None],
+    b: tuple[int | None, int | None, int | None, int | None],
 ) -> float:
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
@@ -280,7 +279,7 @@ class _FrameEvalContext:
 def _build_frame_eval_context(
     frame: np.ndarray,
     cfg: CVConfig,
-    bg_gray: Optional[np.ndarray],
+    bg_gray: np.ndarray | None,
 ) -> _FrameEvalContext:
     """Compute and share all reusable per-frame CV intermediates."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -326,7 +325,7 @@ def _color_histogram(ctx: _FrameEvalContext, bins: int) -> np.ndarray:
     return hist.flatten().astype(np.float32)
 
 
-def _layout_density(ctx: _FrameEvalContext, cfg: CVConfig) -> Tuple[float, int]:
+def _layout_density(ctx: _FrameEvalContext, cfg: CVConfig) -> tuple[float, int]:
     """Compute grid-based foreground density."""
     if not cfg.enable_layout_density_eval:
         return 0.0, 0
@@ -359,9 +358,9 @@ def _count_components(ctx: _FrameEvalContext, min_area: int) -> int:
     return count
 
 
-def _bbox_components(ctx: _FrameEvalContext, min_area: int) -> List[_BBoxComp]:
+def _bbox_components(ctx: _FrameEvalContext, min_area: int) -> list[_BBoxComp]:
     """Extract foreground connected components as bounding boxes."""
-    comps: List[_BBoxComp] = []
+    comps: list[_BBoxComp] = []
     for i in range(1, ctx.cc_n_labels):
         area = int(ctx.cc_stats[i, cv2.CC_STAT_AREA])
         if area < min_area:
@@ -377,7 +376,7 @@ def _bbox_components(ctx: _FrameEvalContext, min_area: int) -> List[_BBoxComp]:
     return comps
 
 
-def _bbox_iou_overlap(ctx: _FrameEvalContext, cfg: CVConfig) -> Tuple[int, float]:
+def _bbox_iou_overlap(ctx: _FrameEvalContext, cfg: CVConfig) -> tuple[int, float]:
     """
     Detect overlapping foreground components via bounding-box IoU.
     Returns (num_overlapping_pairs, max_iou).
@@ -426,7 +425,7 @@ def _fg_pixel_overlap(ctx: _FrameEvalContext, cfg: CVConfig) -> int:
     if not cfg.fg_pixel_overlap_enabled:
         return 0
 
-    valid: List[int] = []
+    valid: list[int] = []
     for i in range(1, ctx.cc_n_labels):
         if int(ctx.cc_stats[i, cv2.CC_STAT_AREA]) >= cfg.bbox_min_area:
             valid.append(i)
@@ -482,7 +481,7 @@ def extract_all_frames(
     cfg: CVConfig,
     *,
     progress_callback=None,
-) -> Tuple[List[FrameFeatures], float, int]:
+) -> tuple[list[FrameFeatures], float, int]:
     """
     Process every frame of *video_path* and return:
       (frame_features_list, fps, total_frames)
@@ -499,21 +498,21 @@ def extract_all_frames(
     total_est = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     step = max(1, cfg.frame_step)
-    features: List[FrameFeatures] = []
+    features: list[FrameFeatures] = []
 
-    prev_frame: Optional[np.ndarray] = None
-    prev_solid: Optional[np.ndarray] = None
-    prev_hist: Optional[np.ndarray] = None
+    prev_frame: np.ndarray | None = None
+    prev_solid: np.ndarray | None = None
+    prev_hist: np.ndarray | None = None
     prev_components: int = 0
     frame_idx = 0
     processed = 0
-    ocr_jobs: List[Tuple[int, np.ndarray]] = []
+    ocr_jobs: list[tuple[int, np.ndarray]] = []
 
     # Use the first sampled main-canvas frame as a stable background reference.
     # This is a stopgap that works much better for textured dark themes than
     # raw grayscale thresholding, which tends to classify the whole background
     # as foreground and causes severe layout false positives.
-    bg_gray: Optional[np.ndarray] = None
+    bg_gray: np.ndarray | None = None
 
     while True:
         ok = cap.grab()
@@ -636,10 +635,10 @@ def extract_all_frames(
         raise RuntimeError("Video is empty or unreadable")
 
     if cfg.ocr_enabled and _HAS_TESSERACT and ocr_jobs:
-        results: List[Tuple[int, int, str]] = []
+        results: list[tuple[int, int, str]] = []
         max_workers = min(max(1, cfg.ocr_workers), len(ocr_jobs))
 
-        def _run_one(job_idx: int, feature_idx: int, crop: np.ndarray) -> Tuple[int, int, str]:
+        def _run_one(job_idx: int, feature_idx: int, crop: np.ndarray) -> tuple[int, int, str]:
             return job_idx, feature_idx, _ocr_crop_text(crop, cfg.ocr_lang)
 
         if max_workers <= 1:
@@ -684,10 +683,10 @@ def extract_all_frames(
 # =====================================================================
 
 def merge_candidate_frames(
-    features: List[FrameFeatures],
+    features: list[FrameFeatures],
     fps: float,
     cfg: CVConfig,
-) -> List[Tuple[int, int]]:
+) -> list[tuple[int, int]]:
     """Merge candidate frame indices into (start, end) segments.
 
     Frame indices are real video frame numbers (which may be non-contiguous
@@ -703,7 +702,7 @@ def merge_candidate_frames(
     max_gap = max(step, int(round(cfg.merge_gap_sec * fps)))
     min_len = max(1, cfg.min_segment_frames)
 
-    segments: List[Tuple[int, int]] = []
+    segments: list[tuple[int, int]] = []
     start = indices[0]
     prev = indices[0]
 
@@ -729,7 +728,7 @@ def compute_segment_features(
     start: int,
     end: int,
     fps: float,
-    features: List[FrameFeatures],
+    features: list[FrameFeatures],
     cfg: CVConfig,
 ) -> SegmentFeatures:
     """Aggregate per-frame features into a SegmentFeatures object.
@@ -810,7 +809,7 @@ def compute_segment_features(
 # Segment classification (rule-based)
 # =====================================================================
 
-def classify_segment(sf: SegmentFeatures, cfg: CVConfig) -> Tuple[str, float, str]:
+def classify_segment(sf: SegmentFeatures, cfg: CVConfig) -> tuple[str, float, str]:
     """
     Classify a segment into one of:
       cv_fail           – high confidence this is a rendering / overlap bug
@@ -941,11 +940,11 @@ class GlobalCVMetrics:
 
 
 def compute_global_cv_metrics(
-    features: List[FrameFeatures],
-    segments: List[SegmentFeatures],
+    features: list[FrameFeatures],
+    segments: list[SegmentFeatures],
     fps: float,
     cfg: CVConfig,
-    total_video_frames: Optional[int] = None,
+    total_video_frames: int | None = None,
 ) -> GlobalCVMetrics:
     """Derive video-level metrics from frame + segment features."""
 
@@ -1009,7 +1008,7 @@ def _to_hhmmss(sec: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 
-def save_frame_csv(features: List[FrameFeatures], path: Path) -> None:
+def save_frame_csv(features: list[FrameFeatures], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "frame", "sec", "hhmmss",
@@ -1051,7 +1050,7 @@ def save_frame_csv(features: List[FrameFeatures], path: Path) -> None:
             })
 
 
-def save_segment_csv(segments: List[SegmentFeatures], path: Path) -> None:
+def save_segment_csv(segments: list[SegmentFeatures], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "segment_id", "label", "score", "reason",
@@ -1088,7 +1087,7 @@ def save_segment_csv(segments: List[SegmentFeatures], path: Path) -> None:
 
 def extract_keyframes(
     video_path: Path,
-    segments: List[SegmentFeatures],
+    segments: list[SegmentFeatures],
     out_dir: Path,
     n_keyframes: int = 5,
 ) -> None:
@@ -1106,7 +1105,7 @@ def extract_keyframes(
             sf.end_frame,
             num=max(2, n_keyframes),
         )
-        ordered_frames: List[int] = []
+        ordered_frames: list[int] = []
         for value in raw_points:
             fidx = int(round(float(value)))
             if not ordered_frames or fidx != ordered_frames[-1]:

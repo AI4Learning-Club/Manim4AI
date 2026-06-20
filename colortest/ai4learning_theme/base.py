@@ -4,8 +4,8 @@ import re
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 from manim import *
+from PIL import Image
 
 from plugins.manim.colortest.narrated_scene import NarratedScene
 

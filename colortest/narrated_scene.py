@@ -7,8 +7,8 @@ import weakref
 from pathlib import Path
 
 import numpy as np
-
 from manim import *
+
 from plugins.manim.agent_pipeline.tts import (
     get_scene_tts_rate,
     get_scene_tts_voice,

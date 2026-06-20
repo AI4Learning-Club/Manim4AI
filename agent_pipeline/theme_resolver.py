@@ -7,7 +7,6 @@ from typing import Any
 
 from plugins.manim.colortest.ai4learning_theme import THEMES, get_theme
 
-
 FALLBACK_THEME_ID = "soft_glass_white"
 
 _PLAN_FIELDS = (

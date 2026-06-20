@@ -12,7 +12,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 REMOTION_PROJECT_DIR = ROOT_DIR / "remotion_renderer"
@@ -31,7 +31,7 @@ def _safe_name(path: Path) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in path.name)
 
 
-def _video_metadata(video_path: Path) -> Dict[str, float]:
+def _video_metadata(video_path: Path) -> dict[str, float]:
     cv2 = _require_cv2()
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -60,14 +60,14 @@ def _normalize_label(text: Any, default: str = "") -> str:
     return str(text).strip() or default
 
 
-def _chapter_captions(teaching_plan: Dict[str, Any], core_frames: int) -> List[Dict[str, Any]]:
+def _chapter_captions(teaching_plan: dict[str, Any], core_frames: int) -> list[dict[str, Any]]:
     sections = teaching_plan.get("sections") if isinstance(teaching_plan.get("sections"), list) else []
     cleaned = [section for section in sections if isinstance(section, dict)]
     if not cleaned:
         return [{"start": 0, "end": core_frames, "text": "Core explanation"}]
 
     step = max(1, core_frames // len(cleaned))
-    captions: List[Dict[str, Any]] = []
+    captions: list[dict[str, Any]] = []
     for index, section in enumerate(cleaned):
         start = index * step
         end = core_frames if index == len(cleaned) - 1 else min(core_frames, (index + 1) * step)
@@ -83,7 +83,7 @@ def _chapter_captions(teaching_plan: Dict[str, Any], core_frames: int) -> List[D
     return captions
 
 
-def _find_scene(storyboard: Dict[str, Any], scene_id: str) -> Optional[Dict[str, Any]]:
+def _find_scene(storyboard: dict[str, Any], scene_id: str) -> dict[str, Any] | None:
     scenes = storyboard.get("scenes") if isinstance(storyboard.get("scenes"), list) else []
     for scene in scenes:
         if isinstance(scene, dict) and scene.get("id") == scene_id:
@@ -91,7 +91,7 @@ def _find_scene(storyboard: Dict[str, Any], scene_id: str) -> Optional[Dict[str,
     return None
 
 
-def _find_scene_by_type(storyboard: Dict[str, Any], scene_type: str) -> Optional[Dict[str, Any]]:
+def _find_scene_by_type(storyboard: dict[str, Any], scene_type: str) -> dict[str, Any] | None:
     scenes = storyboard.get("scenes") if isinstance(storyboard.get("scenes"), list) else []
     for scene in scenes:
         if isinstance(scene, dict) and scene.get("type") == scene_type:
@@ -120,7 +120,7 @@ def _runtime_asset_dir(run_dir: Path) -> Path:
     return REMOTION_RUNTIME_PUBLIC_DIR / _safe_name(run_dir)
 
 
-def _collect_segment_durations(run_dir: Path) -> List[Dict[str, Any]]:
+def _collect_segment_durations(run_dir: Path) -> list[dict[str, Any]]:
     """Read individual segment videos and collect their durations.
 
     This leverages the Scene Pack segment structure where each segment
@@ -131,7 +131,7 @@ def _collect_segment_durations(run_dir: Path) -> List[Dict[str, Any]]:
     if not segments_dir.exists():
         return []
 
-    segment_infos: List[Dict[str, Any]] = []
+    segment_infos: list[dict[str, Any]] = []
     for segment_dir in sorted(segments_dir.iterdir()):
         if not segment_dir.is_dir():
             continue
@@ -152,12 +152,12 @@ def _collect_segment_durations(run_dir: Path) -> List[Dict[str, Any]]:
 
 def _build_props(
     request_text: str,
-    teaching_plan: Dict[str, Any],
-    storyboard: Dict[str, Any],
+    teaching_plan: dict[str, Any],
+    storyboard: dict[str, Any],
     source_video: Path,
     runtime_asset_dir: Path,
-    segment_durations: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
+    segment_durations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     metadata = _video_metadata(source_video)
     fps = 60
     core_frames = _int_frames(metadata["duration_sec"], fps)
@@ -201,7 +201,7 @@ def _build_props(
     def _clean(text: Any, fallback: str = "") -> str:
         return _strip_latex(_normalize_label(text, fallback))
 
-    def _clean_list(items: Any, fallback: Optional[List[str]] = None) -> List[str]:
+    def _clean_list(items: Any, fallback: list[str] | None = None) -> list[str]:
         if isinstance(items, list):
             result = [_strip_latex(str(b)) for b in items if isinstance(b, str) and b.strip()]
             if result:
@@ -220,7 +220,7 @@ def _build_props(
     )
     summary_bullets = [b for b in summary_bullets if b]
 
-    segments: List[Dict[str, Any]] = []
+    segments: list[dict[str, Any]] = []
 
     segments.append({
         "id": "intro_card",
@@ -331,11 +331,11 @@ def _build_props(
 def build_remotion_hybrid(
     run_dir: Path,
     request_text: str,
-    teaching_plan: Dict[str, Any],
-    storyboard: Dict[str, Any],
+    teaching_plan: dict[str, Any],
+    storyboard: dict[str, Any],
     source_video: Path,
-) -> Dict[str, Any]:
-    result: Dict[str, Any] = {
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
         "enabled": True,
         "project_dir": str(REMOTION_PROJECT_DIR),
         "rendered": False,

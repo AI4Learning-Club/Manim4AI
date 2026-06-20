@@ -16,7 +16,6 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional
 
 from plugins.manim.runtime_config import get_manim_settings, get_manim_tts_global_cache_dir
 from service.tts_account_pool import acquire_doubao_tts_account, doubao_tts_resource_cache_key
@@ -166,7 +165,7 @@ def _scene_tts_text_key(text: str) -> str:
 
 
 def _scene_tts_voice_key(text: str, voice: str, rate: str = SCENE_TTS_RATE) -> str:
-    return hashlib.md5(f"{voice}|{rate}|{text}".encode("utf-8")).hexdigest()
+    return hashlib.md5(f"{voice}|{rate}|{text}".encode()).hexdigest()
 
 
 def scene_tts_round_cache_path(
@@ -524,11 +523,11 @@ def generate_audio(
 
 
 def generate_narration(
-    script: List[str],
+    script: list[str],
     output_dir: Path,
     voice: str = VOICE_ZH,
     rate: str = "+5%",
-) -> Optional[Path]:
+) -> Path | None:
     """Generate a single narration audio file from a list of paragraphs.
 
     Joins all paragraphs with pauses and generates one continuous audio.

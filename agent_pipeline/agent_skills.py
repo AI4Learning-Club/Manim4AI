@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
-from typing import Dict, Optional
-
 
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 
@@ -14,12 +12,12 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-@lru_cache(maxsize=None)
+@cache
 def _skill_text(*parts: str) -> str:
     return _read_text(SKILLS_DIR.joinpath(*parts))
 
 
-def build_manim_skill_prompt(teaching_plan: Optional[Dict] = None) -> str:
+def build_manim_skill_prompt(teaching_plan: dict | None = None) -> str:
     parts = [
         "## Local agent skill: Math-To-Manim",
         _skill_text("math-to-manim", "SKILL.md"),

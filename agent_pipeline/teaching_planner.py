@@ -7,11 +7,9 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .llm import LLMClient, LLMConfig, LLMDeltaCallback, LLMEventCallback, StreamTerminated
-from .math_physics_visualization import build_planner_system_prompt
-
 
 OPENING_STYLES = {
     "question_first",
@@ -236,7 +234,7 @@ def _image_to_data_url(path: Path) -> str:
     return f"data:{mime};base64,{b64}"
 
 
-def _extract_json_object(text: str) -> Dict:
+def _extract_json_object(text: str) -> dict:
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`").strip()
@@ -265,7 +263,7 @@ class _FirstJsonObjectStreamGuard:
     def __init__(self, downstream: LLMDeltaCallback | None = None) -> None:
         self.downstream = downstream
         self.accepted_text: str | None = None
-        self._buffer: List[str] = []
+        self._buffer: list[str] = []
         self._started = False
         self._completed = False
         self._depth = 0
@@ -278,7 +276,7 @@ class _FirstJsonObjectStreamGuard:
         if not delta:
             return
 
-        accepted_delta: List[str] = []
+        accepted_delta: list[str] = []
         for char in delta:
             if self._completed:
                 break
@@ -334,7 +332,7 @@ def _enum_choice(value: Any, choices: set[str], default: str) -> str:
     return default
 
 
-def _string_list(value: Any, *, max_items: int = 6) -> List[str]:
+def _string_list(value: Any, *, max_items: int = 6) -> list[str]:
     if isinstance(value, list):
         items = [_text(item) for item in value]
     else:
@@ -343,7 +341,7 @@ def _string_list(value: Any, *, max_items: int = 6) -> List[str]:
     return [item for item in items if item][:max_items]
 
 
-def _normalize_opening(opening: Any, hook_fallback: str) -> Dict[str, str]:
+def _normalize_opening(opening: Any, hook_fallback: str) -> dict[str, str]:
     opening = opening if isinstance(opening, dict) else {}
     hook_line = _text(
         opening.get("hook_line"),
@@ -361,7 +359,7 @@ def _normalize_opening(opening: Any, hook_fallback: str) -> Dict[str, str]:
     }
 
 
-def _normalize_problem_intake(problem_intake: Any) -> Dict[str, Any]:
+def _normalize_problem_intake(problem_intake: Any) -> dict[str, Any]:
     problem_intake = problem_intake if isinstance(problem_intake, dict) else {}
     givens = _string_list(problem_intake.get("givens"))
     key_terms = _string_list(problem_intake.get("key_terms"))
@@ -392,8 +390,8 @@ def _normalize_problem_intake(problem_intake: Any) -> Dict[str, Any]:
     }
 
 
-def _normalize_misconceptions(items: Any) -> List[Dict[str, str]]:
-    normalized: List[Dict[str, str]] = []
+def _normalize_misconceptions(items: Any) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
     if not isinstance(items, list):
         items = []
     for idx, item in enumerate(items, start=1):
@@ -419,8 +417,8 @@ def _normalize_misconceptions(items: Any) -> List[Dict[str, str]]:
     return normalized
 
 
-def _normalize_sections(items: Any) -> List[Dict[str, str]]:
-    sections: List[Dict[str, str]] = []
+def _normalize_sections(items: Any) -> list[dict[str, str]]:
+    sections: list[dict[str, str]] = []
     if not isinstance(items, list):
         items = []
 
@@ -453,7 +451,7 @@ def _normalize_sections(items: Any) -> List[Dict[str, str]]:
     return sections
 
 
-def _normalize_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_plan(plan: dict[str, Any]) -> dict[str, Any]:
     closing_raw = plan.get("closing") if isinstance(plan.get("closing"), dict) else {}
     hook = _text(plan.get("hook"), "先用最适合本课的开场动作把学生带入。")
     opening = _normalize_opening(plan.get("opening"), hook)
@@ -548,11 +546,11 @@ class TeachingPlannerAgent:
     def plan(
         self,
         request_text: str,
-        image_path: Optional[Path] = None,
+        image_path: Path | None = None,
         *,
         on_delta: LLMDeltaCallback | None = None,
         on_event: LLMEventCallback | None = None,
-    ) -> Dict:
+    ) -> dict:
         content = [{"type": "input_text", "text": request_text}]
         if image_path and image_path.exists():
             content.append({
@@ -560,7 +558,7 @@ class TeachingPlannerAgent:
                 "image_url": _image_to_data_url(image_path),
             })
 
-        system_prompt = build_planner_system_prompt(_SYSTEM_PLAN)
+        system_prompt = _SYSTEM_PLAN
 
         for attempt in range(3):
             try:

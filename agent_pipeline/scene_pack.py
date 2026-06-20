@@ -5,8 +5,6 @@ from __future__ import annotations
 import ast
 import textwrap
 from dataclasses import dataclass
-from typing import Dict, List, Optional
-
 
 SCENE_MANIFEST_NAME = "SCENE_MANIFEST"
 LESSON_BASE_NAME = "LessonBase"
@@ -19,7 +17,7 @@ class SegmentSpec:
     scene_name: str
     method_name: str
     order: int
-    lineno: Optional[int] = None
+    lineno: int | None = None
 
 
 @dataclass(frozen=True)
@@ -33,16 +31,16 @@ class WrapperSceneSpec:
 
 @dataclass
 class ScenePackSpec:
-    manifest: List[SegmentSpec]
-    wrapper_scenes: Dict[str, WrapperSceneSpec]
-    lesson_base_name: Optional[str]
-    section_method_owners: Dict[str, str]
+    manifest: list[SegmentSpec]
+    wrapper_scenes: dict[str, WrapperSceneSpec]
+    lesson_base_name: str | None
+    section_method_owners: dict[str, str]
 
 
 @dataclass(frozen=True)
 class SectionReadinessSpec:
     segment: SegmentSpec
-    owner_class: Optional[str]
+    owner_class: str | None
     wrapper_scene_present: bool
     wrapper_construct_valid: bool
     section_method_present: bool
@@ -65,16 +63,16 @@ class MethodSnippet:
 @dataclass(frozen=True)
 class SegmentRepairContext:
     segment: SegmentSpec
-    lesson_base_name: Optional[str]
+    lesson_base_name: str | None
     wrapper_scene_name: str
     section_owner_class: str
     manifest_source: str
     wrapper_scene_source: str
     section_method: MethodSnippet
-    helper_methods: List[MethodSnippet]
+    helper_methods: list[MethodSnippet]
 
 
-def extract_manifest_order(code: str) -> List[SegmentSpec]:
+def extract_manifest_order(code: str) -> list[SegmentSpec]:
     """Return manifest entries in playback order.
 
     Raises:
@@ -87,7 +85,7 @@ def extract_manifest_order(code: str) -> List[SegmentSpec]:
     return segments
 
 
-def validate_scene_pack(code: str) -> List[str]:
+def validate_scene_pack(code: str) -> list[str]:
     """Return deterministic Scene Pack validation errors."""
     try:
         module = _parse_module(code)
@@ -111,7 +109,7 @@ def parse_scene_pack(code: str) -> ScenePackSpec:
     return spec
 
 
-def inspect_section_readiness(code: str) -> List[SectionReadinessSpec]:
+def inspect_section_readiness(code: str) -> list[SectionReadinessSpec]:
     """Return per-section readiness details for a syntactically valid Scene Pack module.
 
     A section is considered ready when:
@@ -128,9 +126,9 @@ def inspect_section_readiness(code: str) -> List[SectionReadinessSpec]:
     manifest_source = _manifest_source(code, module)
     lesson_base_name = LESSON_BASE_NAME if LESSON_BASE_NAME in class_map else None
 
-    reports: List[SectionReadinessSpec] = []
+    reports: list[SectionReadinessSpec] = []
     for segment in segments:
-        reasons: List[str] = []
+        reasons: list[str] = []
         wrapper_present = segment.scene_name in class_map
         if not wrapper_present:
             reasons.append("wrapper_scene_missing")
@@ -364,7 +362,7 @@ def build_segment_scene_source(code: str, segment_id: str) -> str:
         section_name=segment.method_name,
     )
 
-    parts: List[str] = []
+    parts: list[str] = []
     preamble = _scene_pack_preamble_source(code, module)
     if preamble:
         parts.append(preamble)
@@ -467,8 +465,8 @@ def _parse_module(code: str) -> ast.Module:
         raise ValueError(f"Python syntax invalid: {exc.msg} ({line_info})") from exc
 
 
-def _build_scene_pack_spec(module: ast.Module) -> tuple[Optional[ScenePackSpec], List[str]]:
-    errors: List[str] = []
+def _build_scene_pack_spec(module: ast.Module) -> tuple[ScenePackSpec | None, list[str]]:
+    errors: list[str] = []
     class_map, duplicate_class_errors = _collect_class_defs(module)
     errors.extend(duplicate_class_errors)
 
@@ -478,8 +476,8 @@ def _build_scene_pack_spec(module: ast.Module) -> tuple[Optional[ScenePackSpec],
     method_map, duplicate_method_errors = _collect_class_methods(class_map)
     errors.extend(duplicate_method_errors)
 
-    wrapper_scenes: Dict[str, WrapperSceneSpec] = {}
-    section_method_owners: Dict[str, str] = {}
+    wrapper_scenes: dict[str, WrapperSceneSpec] = {}
+    section_method_owners: dict[str, str] = {}
     lesson_base_name = LESSON_BASE_NAME if LESSON_BASE_NAME in class_map else None
 
     for owner_name, methods in method_map.items():
@@ -576,9 +574,9 @@ def _build_scene_pack_spec(module: ast.Module) -> tuple[Optional[ScenePackSpec],
     return spec, errors
 
 
-def _collect_class_defs(module: ast.Module) -> tuple[Dict[str, ast.ClassDef], List[str]]:
-    class_map: Dict[str, ast.ClassDef] = {}
-    errors: List[str] = []
+def _collect_class_defs(module: ast.Module) -> tuple[dict[str, ast.ClassDef], list[str]]:
+    class_map: dict[str, ast.ClassDef] = {}
+    errors: list[str] = []
     for node in module.body:
         if not isinstance(node, ast.ClassDef):
             continue
@@ -592,12 +590,12 @@ def _collect_class_defs(module: ast.Module) -> tuple[Dict[str, ast.ClassDef], Li
 
 
 def _collect_class_methods(
-    class_map: Dict[str, ast.ClassDef],
-) -> tuple[Dict[str, Dict[str, ast.FunctionDef]], List[str]]:
-    method_map: Dict[str, Dict[str, ast.FunctionDef]] = {}
-    errors: List[str] = []
+    class_map: dict[str, ast.ClassDef],
+) -> tuple[dict[str, dict[str, ast.FunctionDef]], list[str]]:
+    method_map: dict[str, dict[str, ast.FunctionDef]] = {}
+    errors: list[str] = []
     for class_name, class_def in class_map.items():
-        methods: Dict[str, ast.FunctionDef] = {}
+        methods: dict[str, ast.FunctionDef] = {}
         for stmt in class_def.body:
             if not isinstance(stmt, ast.FunctionDef):
                 continue
@@ -626,7 +624,7 @@ def _manifest_source(code: str, module: ast.Module) -> str:
 
 
 def _scene_pack_preamble_source(code: str, module: ast.Module) -> str:
-    parts: List[str] = []
+    parts: list[str] = []
     for node in module.body:
         if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef)):
             parts.append(_node_source(code, node).strip())
@@ -658,8 +656,8 @@ def _single_segment_manifest_source(segment: SegmentSpec) -> str:
     )
 
 
-def _extract_manifest_segments(module: ast.Module) -> tuple[List[SegmentSpec], List[str]]:
-    manifest_nodes: List[ast.AST] = []
+def _extract_manifest_segments(module: ast.Module) -> tuple[list[SegmentSpec], list[str]]:
+    manifest_nodes: list[ast.AST] = []
     for node in module.body:
         if isinstance(node, ast.Assign):
             if any(isinstance(target, ast.Name) and target.id == SCENE_MANIFEST_NAME for target in node.targets):
@@ -679,8 +677,8 @@ def _extract_manifest_segments(module: ast.Module) -> tuple[List[SegmentSpec], L
     if not manifest_value.elts:
         return [], [f"`{SCENE_MANIFEST_NAME}` must not be empty."]
 
-    segments: List[SegmentSpec] = []
-    errors: List[str] = []
+    segments: list[SegmentSpec] = []
+    errors: list[str] = []
     seen_ids: set[str] = set()
     seen_scenes: set[str] = set()
     seen_methods: set[str] = set()
@@ -740,7 +738,7 @@ def _extract_manifest_segments(module: ast.Module) -> tuple[List[SegmentSpec], L
     return segments, errors
 
 
-def _dict_string_value(node: ast.Dict, key_name: str) -> Optional[str]:
+def _dict_string_value(node: ast.Dict, key_name: str) -> str | None:
     for key_node, value_node in zip(node.keys, node.values):
         if not isinstance(key_node, ast.Constant) or not isinstance(key_node.value, str):
             continue
@@ -758,8 +756,8 @@ def _validate_wrapper_construct(
     scene_name: str,
     construct_def: ast.FunctionDef,
     expected_method: str,
-) -> tuple[Optional[str], List[str]]:
-    errors: List[str] = []
+) -> tuple[str | None, list[str]]:
+    errors: list[str] = []
     body = list(construct_def.body)
     if body and _is_docstring_stmt(body[0]):
         body = body[1:]
@@ -804,19 +802,19 @@ def _collect_segment_helper_methods(
     *,
     code: str,
     spec: ScenePackSpec,
-    method_map: Dict[str, Dict[str, ast.FunctionDef]],
+    method_map: dict[str, dict[str, ast.FunctionDef]],
     owner_class: str,
     section_name: str,
-) -> List[MethodSnippet]:
+) -> list[MethodSnippet]:
     manifest_method_names = {segment.method_name for segment in spec.manifest}
     search_classes = [owner_class]
     if spec.lesson_base_name and spec.lesson_base_name not in search_classes:
         search_classes.append(spec.lesson_base_name)
 
-    resolved: List[MethodSnippet] = []
+    resolved: list[MethodSnippet] = []
     seen: set[tuple[str, str]] = set()
 
-    def _resolve_owner(method_name: str) -> Optional[str]:
+    def _resolve_owner(method_name: str) -> str | None:
         for class_name in search_classes:
             if method_name in method_map.get(class_name, {}):
                 return class_name
@@ -865,8 +863,8 @@ def _collect_segment_helper_methods(
 def _segment_method_exists(
     *,
     segment: SegmentSpec,
-    lesson_base_name: Optional[str],
-    method_map: Dict[str, Dict[str, ast.FunctionDef]],
+    lesson_base_name: str | None,
+    method_map: dict[str, dict[str, ast.FunctionDef]],
 ) -> bool:
     if segment.method_name in method_map.get(segment.scene_name, {}):
         return True
@@ -878,9 +876,9 @@ def _segment_method_exists(
 def _resolve_segment_owner(
     *,
     segment: SegmentSpec,
-    lesson_base_name: Optional[str],
-    method_map: Dict[str, Dict[str, ast.FunctionDef]],
-) -> Optional[str]:
+    lesson_base_name: str | None,
+    method_map: dict[str, dict[str, ast.FunctionDef]],
+) -> str | None:
     if segment.method_name in method_map.get(segment.scene_name, {}):
         return segment.scene_name
     if lesson_base_name and segment.method_name in method_map.get(lesson_base_name, {}):
@@ -906,7 +904,7 @@ def _expr_name(node: ast.AST) -> str:
     return ""
 
 
-def _self_call_name(node: ast.AST) -> Optional[str]:
+def _self_call_name(node: ast.AST) -> str | None:
     if not isinstance(node, ast.Attribute):
         return None
     if not isinstance(node.value, ast.Name) or node.value.id != "self":
@@ -914,8 +912,8 @@ def _self_call_name(node: ast.AST) -> Optional[str]:
     return node.attr
 
 
-def _top_level_self_calls(function_def: ast.FunctionDef) -> List[str]:
-    call_names: List[str] = []
+def _top_level_self_calls(function_def: ast.FunctionDef) -> list[str]:
+    call_names: list[str] = []
     body = list(function_def.body)
     if body and _is_docstring_stmt(body[0]):
         body = body[1:]
@@ -928,8 +926,8 @@ def _top_level_self_calls(function_def: ast.FunctionDef) -> List[str]:
     return call_names
 
 
-def _self_calls_anywhere(function_def: ast.FunctionDef) -> List[str]:
-    call_names: List[str] = []
+def _self_calls_anywhere(function_def: ast.FunctionDef) -> list[str]:
+    call_names: list[str] = []
     for node in ast.walk(function_def):
         if not isinstance(node, ast.Call):
             continue
@@ -960,10 +958,10 @@ def _section_method_is_sealed(
     *,
     segment: SegmentSpec,
     owner_class: str,
-    lesson_base_name: Optional[str],
-    method_map: Dict[str, Dict[str, ast.FunctionDef]],
-    class_map: Dict[str, ast.ClassDef],
-    manifest: List[SegmentSpec],
+    lesson_base_name: str | None,
+    method_map: dict[str, dict[str, ast.FunctionDef]],
+    class_map: dict[str, ast.ClassDef],
+    manifest: list[SegmentSpec],
 ) -> bool:
     if segment.scene_name in class_map:
         return True
@@ -998,13 +996,13 @@ def _build_section_probe_source(
     *,
     code: str,
     manifest_source: str,
-    class_map: Dict[str, ast.ClassDef],
-    method_map: Dict[str, Dict[str, ast.FunctionDef]],
-    lesson_base_name: Optional[str],
+    class_map: dict[str, ast.ClassDef],
+    method_map: dict[str, dict[str, ast.FunctionDef]],
+    lesson_base_name: str | None,
     segment: SegmentSpec,
     owner_class: str,
 ) -> str:
-    parts: List[str] = [manifest_source.strip()]
+    parts: list[str] = [manifest_source.strip()]
 
     if lesson_base_name:
         lesson_base = class_map.get(lesson_base_name)
@@ -1040,18 +1038,105 @@ def recover_scene_pack_skeleton(code: str) -> str | None:
     try:
         segments = extract_manifest_order(code)
     except Exception:
+        segments = []
+    if segments:
+        for segment in segments:
+            try:
+                recovered = build_segment_scene_source(code, segment.segment_id)
+            except Exception:
+                continue
+            if recovered.strip():
+                return recovered
+
+    try:
+        module = _parse_module(code)
+        recovered = _recover_scene_pack_from_lesson_base(code, module)
+    except Exception:
+        recovered = None
+    if recovered is not None:
+        return recovered
+    return None
+
+
+def _recover_scene_pack_from_lesson_base(code: str, module: ast.Module) -> str | None:
+    class_map, _ = _collect_class_defs(module)
+    lesson_base = class_map.get(LESSON_BASE_NAME)
+    if lesson_base is None:
         return None
+
+    segments = _synthesized_segments_from_lesson_base(lesson_base)
     if not segments:
         return None
 
+    parts: list[str] = []
+    for node in module.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            parts.append(_node_source(code, node).strip())
+
+    parts.append(_manifest_source_from_segments(segments))
+    parts.append(_node_source(code, lesson_base).strip())
+
     for segment in segments:
-        try:
-            recovered = build_segment_scene_source(code, segment.segment_id)
-        except Exception:
+        wrapper_def = class_map.get(segment.scene_name)
+        if wrapper_def is not None:
+            parts.append(_node_source(code, wrapper_def).strip())
+        else:
+            parts.append(
+                _synthesized_wrapper_scene_source(
+                    segment=segment,
+                    lesson_base_name=LESSON_BASE_NAME,
+                ).strip()
+            )
+
+    recovered = "\n\n".join(part for part in parts if part).strip() + "\n"
+    return recovered if _module_syntax_ok(recovered) else None
+
+
+def _synthesized_segments_from_lesson_base(class_def: ast.ClassDef) -> list[SegmentSpec]:
+    methods: list[str] = []
+    for stmt in class_def.body:
+        if not isinstance(stmt, ast.FunctionDef):
             continue
-        if recovered.strip():
-            return recovered
-    return None
+        name = stmt.name
+        if name == "opening_page" or name == "closing_page" or name.startswith("section_"):
+            methods.append(name)
+
+    segments: list[SegmentSpec] = []
+    for index, method_name in enumerate(methods):
+        segment_id, scene_label = _segment_identity_from_method(method_name)
+        segments.append(
+            SegmentSpec(
+                segment_id=segment_id,
+                scene_name=f"Segment{index:02d}{scene_label}Scene",
+                method_name=method_name,
+                order=index,
+            )
+        )
+    return segments
+
+
+def _segment_identity_from_method(method_name: str) -> tuple[str, str]:
+    if method_name == "opening_page":
+        return "opening", "Opening"
+    if method_name == "closing_page":
+        return "closing", "Closing"
+
+    stem = method_name.removeprefix("section_").strip("_") or method_name
+    words = [word for word in stem.split("_") if word]
+    scene_label = "".join(word.capitalize() for word in words) or "Section"
+    return stem, scene_label
+
+
+def _manifest_source_from_segments(segments: list[SegmentSpec]) -> str:
+    lines = [f"{SCENE_MANIFEST_NAME} = ["]
+    for segment in segments:
+        lines.append("    {")
+        lines.append(f'        "id": {segment.segment_id!r},')
+        lines.append(f'        "scene": {segment.scene_name!r},')
+        lines.append(f'        "method": {segment.method_name!r},')
+        lines.append("    },")
+    lines.append("]")
+    return "\n".join(lines)
 
 
 def _synthesized_wrapper_scene_source(
@@ -1114,7 +1199,7 @@ def _minimal_class_source(
         header += f"({', '.join(bases)})"
     header += ":"
 
-    body_lines: List[str] = []
+    body_lines: list[str] = []
     for stmt in class_def.body:
         if isinstance(stmt, ast.FunctionDef):
             if stmt.name in selected_method_names:
@@ -1176,7 +1261,7 @@ def _normalize_method_block(source: str) -> str:
     return "\n".join(normalized)
 
 
-def _format_errors(errors: List[str]) -> str:
+def _format_errors(errors: list[str]) -> str:
     if not errors:
         return "Invalid Scene Pack."
     return "Invalid Scene Pack:\n- " + "\n- ".join(errors)
@@ -1186,7 +1271,7 @@ def extract_speak_texts_for_segment(
     code: str,
     segment: SegmentSpec,
     spec: ScenePackSpec,
-) -> List[str]:
+) -> list[str]:
     """Return literal strings passed to ``speak`` / ``speak_with_subtitle`` in the section method."""
     module = _parse_module(code)
     class_map, _ = _collect_class_defs(module)
@@ -1197,7 +1282,7 @@ def extract_speak_texts_for_segment(
     method_def = method_map.get(owner, {}).get(segment.method_name)
     if method_def is None:
         return []
-    texts: List[str] = []
+    texts: list[str] = []
     for node in ast.walk(method_def):
         if not isinstance(node, ast.Call):
             continue

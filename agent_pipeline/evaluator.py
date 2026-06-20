@@ -7,12 +7,13 @@ schema produced by eval_pipeline.
 Uses a fixed frame sampling rate by default: process every 10th frame.
 """
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -24,9 +25,9 @@ from plugins.manim.eval_pipeline.run import evaluate_video
 DEFAULT_FRAME_STEP = 10
 
 
-def collect_keyframes(eval_dir: Path) -> List[Path]:
+def collect_keyframes(eval_dir: Path) -> list[Path]:
     """Gather all keyframe images from the eval output directory."""
-    keyframes: List[Path] = []
+    keyframes: list[Path] = []
     payload = eval_dir / "vlm_payload" / "frames"
     if not payload.exists():
         # Try the stem-based subdir structure
@@ -49,13 +50,13 @@ def evaluate(
     api_key: str,
     base_url: str = "https://api2.tabcode.cc/openai",
     model: str = "gpt-5.4",
-    frame_step: Optional[int] = None,
+    frame_step: int | None = None,
     skip_vlm: bool = False,
     skip_audio: bool = False,
     ocr_enabled: bool = True,
-    meta: Optional[Dict] = None,
-    topic: Optional[str] = None,
-) -> Dict:
+    meta: dict | None = None,
+    topic: str | None = None,
+) -> dict:
     """
     Run the full evaluation pipeline on *video_path*.
 

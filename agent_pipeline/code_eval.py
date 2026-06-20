@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 from .llm import LLMClient, LLMConfig
 
@@ -197,7 +197,7 @@ Output requirements:
 """
 
 
-def _extract_json_object(text: str) -> Dict[str, Any]:
+def _extract_json_object(text: str) -> dict[str, Any]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`").strip()
@@ -210,7 +210,7 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     return json.loads(cleaned[left : right + 1])
 
 
-def _normalize_issue(issue: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_issue(issue: dict[str, Any]) -> dict[str, Any]:
     severity = str(issue.get("severity", "error")).strip().lower()
     if severity not in {"error", "warning"}:
         severity = "error"
@@ -241,7 +241,7 @@ def _normalize_issue(issue: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _normalize_report(data: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_report(data: dict[str, Any]) -> dict[str, Any]:
     issues_raw = data.get("issues") if isinstance(data.get("issues"), list) else []
     issues = [_normalize_issue(issue) for issue in issues_raw if isinstance(issue, dict)]
     passed = bool(data.get("passed", not issues))
@@ -276,7 +276,7 @@ class CodeEvalAgent:
                 )
             )
 
-    def _call(self, system: str, user_content: List[Dict[str, Any]], max_retries: int = 3) -> str:
+    def _call(self, system: str, user_content: list[dict[str, Any]], max_retries: int = 3) -> str:
         for attempt in range(max_retries):
             try:
                 text = self.client.generate_text(system, user_content, max_retries=1)
@@ -289,7 +289,7 @@ class CodeEvalAgent:
                 time.sleep(5 * (attempt + 1))
         raise RuntimeError("LLM call failed")
 
-    def review(self, code: str) -> Dict[str, Any]:
+    def review(self, code: str) -> dict[str, Any]:
         llm_report = {
             "passed": True,
             "summary": "LLM checks skipped",

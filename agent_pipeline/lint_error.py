@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from .section_validation import ValidationIssue, ValidationReport
-
 
 _BODY_NAME_RE = re.compile(r"body\d+$")
 _SECTION_METHOD_RE = re.compile(r"^(opening_page|closing_page|section_[a-z0-9_]+)$")

@@ -1,4 +1,5 @@
 from manim import *
+
 from plugins.manim.colortest.ai4learning_theme import AI4LearningBaseScene
 
 SCENE_MANIFEST = [
