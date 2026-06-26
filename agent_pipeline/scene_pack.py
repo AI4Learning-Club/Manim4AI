@@ -3,12 +3,48 @@
 from __future__ import annotations
 
 import ast
+import re
 import textwrap
 from dataclasses import dataclass
 
 SCENE_MANIFEST_NAME = "SCENE_MANIFEST"
 LESSON_BASE_NAME = "LessonBase"
 ALLOWED_WRAPPER_BASES = {"LessonBase", "AI4LearningBaseScene"}
+SAFE_SEGMENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
+_FORBIDDEN_IMPORT_ROOTS = {
+    "asyncio",
+    "builtins",
+    "ctypes",
+    "ftplib",
+    "glob",
+    "importlib",
+    "marshal",
+    "multiprocessing",
+    "os",
+    "paramiko",
+    "pathlib",
+    "pickle",
+    "requests",
+    "shutil",
+    "socket",
+    "subprocess",
+    "sys",
+    "threading",
+    "urllib",
+}
+_FORBIDDEN_CALL_NAMES = {
+    "__import__",
+    "compile",
+    "eval",
+    "exec",
+    "input",
+    "open",
+}
+_FORBIDDEN_ATTRIBUTE_CALL_ROOTS = {
+    "os",
+    "pathlib",
+    "subprocess",
+}
 
 
 @dataclass(frozen=True)
@@ -467,6 +503,7 @@ def _parse_module(code: str) -> ast.Module:
 
 def _build_scene_pack_spec(module: ast.Module) -> tuple[ScenePackSpec | None, list[str]]:
     errors: list[str] = []
+    errors.extend(_validate_generated_code_security(module))
     class_map, duplicate_class_errors = _collect_class_defs(module)
     errors.extend(duplicate_class_errors)
 
@@ -698,6 +735,11 @@ def _extract_manifest_segments(module: ast.Module) -> tuple[list[SegmentSpec], l
             errors.append(
                 f"`{SCENE_MANIFEST_NAME}` entry #{index} is missing a non-empty string `id`."
             )
+        elif not SAFE_SEGMENT_ID_RE.fullmatch(segment_id):
+            errors.append(
+                f"`{SCENE_MANIFEST_NAME}` entry #{index} has unsafe id `{segment_id}`; "
+                "use only letters, numbers, `_`, and `-`."
+            )
         if scene_name is None:
             errors.append(
                 f"`{SCENE_MANIFEST_NAME}` entry #{index} is missing a non-empty string `scene`."
@@ -736,6 +778,49 @@ def _extract_manifest_segments(module: ast.Module) -> tuple[list[SegmentSpec], l
         )
 
     return segments, errors
+
+
+def _validate_generated_code_security(module: ast.Module) -> list[str]:
+    errors: list[str] = []
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                if root in _FORBIDDEN_IMPORT_ROOTS:
+                    errors.append(
+                        f"Forbidden generated-code import `{alias.name}` on line {node.lineno}."
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            module_name = node.module or ""
+            root = module_name.split(".", 1)[0]
+            if root in _FORBIDDEN_IMPORT_ROOTS:
+                errors.append(
+                    f"Forbidden generated-code import `{module_name}` on line {node.lineno}."
+                )
+        elif isinstance(node, ast.Call):
+            call_name = _call_name(node.func)
+            if not call_name:
+                continue
+            if call_name in _FORBIDDEN_CALL_NAMES:
+                errors.append(
+                    f"Forbidden generated-code call `{call_name}()` on line {node.lineno}."
+                )
+                continue
+            root = call_name.split(".", 1)[0]
+            if root in _FORBIDDEN_ATTRIBUTE_CALL_ROOTS:
+                errors.append(
+                    f"Forbidden generated-code call `{call_name}()` on line {node.lineno}."
+                )
+    return errors
+
+
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _call_name(node.value)
+        return f"{base}.{node.attr}" if base else node.attr
+    return ""
 
 
 def _dict_string_value(node: ast.Dict, key_name: str) -> str | None:

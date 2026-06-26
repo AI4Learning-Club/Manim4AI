@@ -18,6 +18,7 @@ from starlette.routing import Mount, Route
 from starlette.types import Receive, Scope, Send
 
 _JOB_STREAM_SUPPRESSED_EVENT_TYPES = frozenset({"analysis_delta", "code_delta"})
+_MANIM_JOB_KEY_HEADER = "X-Manim-Job-Key"
 
 
 class StreamableHTTPASGIApp:
@@ -96,6 +97,7 @@ def create_streamable_http_app(
     json_response: bool = False,
     stateless: bool = False,
     debug: bool = False,
+    job_api_key: str = "",
 ) -> Starlette:
     http_session_manager = StreamableHTTPSessionManager(
         app=server,
@@ -112,7 +114,16 @@ def create_streamable_http_app(
             return JSONResponse({"error": "video not found"}, status_code=404)
         return FileResponse(target, media_type="video/mp4", filename=target.name)
 
+    def _job_auth_error(request: Request) -> JSONResponse | None:
+        expected = str(job_api_key or "").strip()
+        supplied = str(request.headers.get(_MANIM_JOB_KEY_HEADER) or "").strip()
+        if not expected or supplied != expected:
+            return JSONResponse({"error": "job endpoint unauthorized"}, status_code=403)
+        return None
+
     async def serve_job_status(request: Request):
+        if auth_error := _job_auth_error(request):
+            return auth_error
         if get_job_status is None:
             return JSONResponse({"error": "job endpoint not configured"}, status_code=404)
         job_id = str(request.path_params.get("job_id") or "").strip()
@@ -125,6 +136,8 @@ def create_streamable_http_app(
         return JSONResponse(payload, status_code=200)
 
     async def submit_job_request(request: Request):
+        if auth_error := _job_auth_error(request):
+            return auth_error
         if submit_job is None:
             return JSONResponse({"error": "job submission endpoint not configured"}, status_code=404)
         try:
@@ -140,6 +153,8 @@ def create_streamable_http_app(
         return JSONResponse(result, status_code=202)
 
     async def stream_job_events(request: Request):
+        if auth_error := _job_auth_error(request):
+            return auth_error
         if get_job_events is None:
             return JSONResponse({"error": "job stream endpoint not configured"}, status_code=404)
         job_id = str(request.path_params.get("job_id") or "").strip()
@@ -218,6 +233,7 @@ def run_streamable_http_server(
     debug: bool = False,
     log_level: str = "info",
     allow_non_loopback_host: bool = False,
+    job_api_key: str = "",
 ) -> None:
     if not allow_non_loopback_host and not _is_loopback_host(host):
         raise RuntimeError(
@@ -234,6 +250,7 @@ def run_streamable_http_server(
         json_response=json_response,
         stateless=stateless,
         debug=debug,
+        job_api_key=job_api_key,
     )
     uvicorn.run(
         app,

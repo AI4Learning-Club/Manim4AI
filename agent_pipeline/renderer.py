@@ -51,6 +51,22 @@ from .tts import (
 TTS_MAX_WORKERS = max(1, get_manim_settings().tts_workers)
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
 STREAMING_REUSE_ONLY_SEGMENT_ID = "__streaming_reuse_only__"
+_SAFE_RENDER_ENV_KEYS = {
+    "FONTCONFIG_FILE",
+    "FONTCONFIG_PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "MPLCONFIGDIR",
+    "PATH",
+    "PYTHONIOENCODING",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "XDG_CACHE_HOME",
+}
 
 
 def _render_progress(
@@ -85,6 +101,22 @@ def _resolved_manim_cli_config_path() -> Path | None:
     if not path.is_absolute():
         path = BACKEND_ROOT / path
     return path if path.is_file() else None
+
+
+def _render_subprocess_env() -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _SAFE_RENDER_ENV_KEYS and value
+    }
+    existing_pythonpath = str(os.environ.get("PYTHONPATH") or "").strip()
+    backend_root_str = str(BACKEND_ROOT)
+    env["PYTHONPATH"] = (
+        backend_root_str
+        if not existing_pythonpath
+        else os.pathsep.join([backend_root_str, existing_pythonpath])
+    )
+    return env
 
 
 @dataclass
@@ -1586,14 +1618,7 @@ def _render_or_reuse_segment(
             str(media_dir.resolve()),
         ]
     )
-    render_env = dict(os.environ)
-    existing_pythonpath = render_env.get("PYTHONPATH", "").strip()
-    backend_root_str = str(BACKEND_ROOT)
-    render_env["PYTHONPATH"] = (
-        backend_root_str
-        if not existing_pythonpath
-        else os.pathsep.join([backend_root_str, existing_pythonpath])
-    )
+    render_env = _render_subprocess_env()
 
     returncode, combined_output = _run_subprocess_streaming(
         cmd=cmd,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 
 from config.logger_config import get_mcp_logger
+from config.settings import settings
 from plugins.manim.manim_mcp_runtime import create_manim_runtime, get_managed_videos_dir
 from plugins.manim.mcp_server import run_streamable_http_server
 from plugins.manim.runtime_config import get_manim_service_bind
@@ -72,6 +73,7 @@ def main() -> None:
         debug=args.debug,
         log_level=args.log_level,
         allow_non_loopback_host=args.allow_non_loopback,
+        job_api_key=settings.manim.service.job_api_key,
     )
 
 
