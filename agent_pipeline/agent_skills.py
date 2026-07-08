@@ -9,6 +9,18 @@ from typing import Dict, Optional
 
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 
+MANIM_VISUAL_PATTERN_REFERENCES = (
+    ("visual-patterns", "arrows.md"),
+    ("visual-patterns", "labels.md"),
+    ("visual-patterns", "highlights.md"),
+    ("visual-patterns", "cards-boxes.md"),
+    ("visual-patterns", "equation-focus.md"),
+    ("visual-patterns", "coordinate-systems.md"),
+    ("visual-patterns", "motion-transitions.md"),
+    ("visual-patterns", "problem-intake-marking.md"),
+    ("visual-patterns", "graph-dynamics.md"),
+)
+
 
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
@@ -25,6 +37,10 @@ def build_manim_skill_prompt(teaching_plan: Optional[Dict] = None) -> str:
         _skill_text("math-to-manim", "SKILL.md"),
         _skill_text("math-to-manim", "references", "routing.md"),
     ]
+    parts.extend(
+        _skill_text("math-to-manim", "references", *reference)
+        for reference in MANIM_VISUAL_PATTERN_REFERENCES
+    )
     if teaching_plan:
         routes = teaching_plan.get("hybrid_routes") if isinstance(teaching_plan.get("hybrid_routes"), dict) else {}
         manim_sections = routes.get("manim_section_ids") if isinstance(routes.get("manim_section_ids"), list) else []

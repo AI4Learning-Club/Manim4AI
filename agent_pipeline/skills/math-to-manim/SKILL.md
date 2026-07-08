@@ -15,3 +15,17 @@ Use a reverse-knowledge-tree mindset.
 - When a section is routed to Manim, make the animation do the hard logical work.
 - Couple every important formula with a visible object, graph, geometric relation, or state change.
 - If a section is mostly motivational, summary-like, or verbal, it probably should not stay in Manim.
+
+Use the visual-pattern references when code generation needs reusable Manim idioms rather than broad lesson advice:
+
+- `references/visual-patterns/arrows.md`
+- `references/visual-patterns/labels.md`
+- `references/visual-patterns/highlights.md`
+- `references/visual-patterns/cards-boxes.md`
+- `references/visual-patterns/equation-focus.md`
+- `references/visual-patterns/coordinate-systems.md`
+- `references/visual-patterns/motion-transitions.md`
+- `references/visual-patterns/problem-intake-marking.md`
+- `references/visual-patterns/graph-dynamics.md`
+
+Treat those references as local patterns to migrate into `LessonBase(AI4LearningBaseScene)`, then adapt names, narration, and teaching content to the current Scene Pack.
