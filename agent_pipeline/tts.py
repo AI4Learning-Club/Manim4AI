@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import List, Optional
 
 from plugins.manim.runtime_config import get_manim_settings, get_manim_tts_global_cache_dir
-from service.tts_account_pool import acquire_doubao_tts_account, doubao_tts_resource_cache_key
 
 from .output_language import normalize_output_language
 
@@ -59,6 +58,8 @@ def _effective_voice_for_cache(voice: str) -> str:
     ms = get_manim_settings()
     if ms.tts_provider != "doubao":
         return voice
+    from service.tts_account_pool import doubao_tts_resource_cache_key
+
     v = (voice or "").strip()
     if v.startswith("zh") or v == VOICE_ZH or "zh-" in v.lower():
         return f"doubao:{ms.doubao_tts_speaker_zh}|{doubao_tts_resource_cache_key()}"
@@ -382,6 +383,7 @@ def generate_audio(
 
     if ms.tts_provider == "doubao":
         from plugins.manim.agent_pipeline.doubao_tts import synthesize_doubao_mp3
+        from service.tts_account_pool import acquire_doubao_tts_account
 
         last_exc: Exception | None = None
         speech_rate = max(
