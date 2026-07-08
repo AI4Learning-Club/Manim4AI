@@ -1,5 +1,9 @@
 # Arrow Skill
 
+> Restored verbatim from the former math-to-manim visual-pattern reference.
+
+# Arrow Skill
+
 Use inside `LessonBase(AI4LearningBaseScene)` when a student must see direction, dependency, flow, feedback, or a formula-to-object connection.
 
 ## When to use
@@ -51,4 +55,3 @@ def section_arrow_flow_example(self):
     self.play(GrowArrow(arrow_a), FadeIn(rule), run_time=0.5)
     self.play(GrowArrow(arrow_b), FadeIn(result), run_time=0.5)
 ```
-

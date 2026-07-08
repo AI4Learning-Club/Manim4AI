@@ -1,5 +1,9 @@
 # Coordinate System Skill
 
+> Restored verbatim from the former math-to-manim visual-pattern reference.
+
+# Coordinate System Skill
+
 Use inside `LessonBase(AI4LearningBaseScene)` for axes, graphs, coordinate transforms, geometry, optimization trajectories, tangents, secants, shaded regions, and point projections.
 
 ## When to use
@@ -62,4 +66,3 @@ def section_coordinate_example(self):
     self.play(Create(axes), Create(curve), run_time=0.75)
     self.play(FadeIn(point), Create(projection), FadeIn(note), run_time=0.6)
 ```
-

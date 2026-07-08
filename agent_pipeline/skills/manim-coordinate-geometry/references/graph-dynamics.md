@@ -1,5 +1,9 @@
 # Graph Dynamics Skill
 
+> Restored verbatim from the former math-to-manim visual-pattern reference.
+
+# Graph Dynamics Skill
+
 Use inside `LessonBase(AI4LearningBaseScene)` for dynamic function and physics visuals: moving points, secant-to-tangent transitions, parameter sliders, accumulated area, trajectory traces, and function-family changes.
 
 ## When to use
@@ -80,4 +84,3 @@ def section_graph_dynamics_example(self):
     self.play(FadeIn(fixed_dot), FadeIn(moving_dot), Create(secant), run_time=0.65)
     self.play(FadeOut(secant), FadeOut(moving_dot), Create(tangent), FadeIn(note), run_time=0.85)
 ```
-

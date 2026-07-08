@@ -1,5 +1,9 @@
 # Card / Box Skill
 
+> Restored verbatim from the former math-to-manim visual-pattern reference.
+
+# Card / Box Skill
+
 Use inside `LessonBase(AI4LearningBaseScene)` for concept cards, formula boxes, step boxes, definition boxes, conclusion strips, and compact comparison panels.
 
 ## When to use
@@ -52,4 +56,3 @@ def section_card_box_example(self):
         self.play(FadeIn(card, shift=DOWN * 0.12), run_time=0.35)
     self.play(FadeIn(summary), run_time=0.35)
 ```
-

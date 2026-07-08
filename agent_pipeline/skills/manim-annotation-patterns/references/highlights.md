@@ -1,5 +1,9 @@
 # Highlight Skill
 
+> Restored verbatim from the former math-to-manim visual-pattern reference.
+
+# Highlight Skill
+
 Use inside `LessonBase(AI4LearningBaseScene)` when attention must move to a current term, region, step, object, or misconception.
 
 ## When to use
@@ -49,4 +53,3 @@ def section_highlight_example(self):
     self.play(Write(formula), run_time=0.5)
     self.play(Create(focus), Circumscribe(formula), FadeIn(note), run_time=0.8)
 ```
-

@@ -1,5 +1,9 @@
 # Problem Intake / Marking Skill
 
+> Restored verbatim from the former math-to-manim visual-pattern reference.
+
+# Problem Intake / Marking Skill
+
 Use inside `LessonBase(AI4LearningBaseScene)` for problem-solving openings: restate the task, separate givens from target, mark key variables or diagram relations, then move into the solution.
 
 ## When to use
@@ -60,4 +64,3 @@ def section_problem_intake_example(self):
     self.speak_with_subtitle("这一行是目标问题。", Create(target_box), run_time=0.55)
     self.speak_with_subtitle("最后圈出关键符号。", Create(variable_box), FadeIn(prompt), run_time=0.7)
 ```
-

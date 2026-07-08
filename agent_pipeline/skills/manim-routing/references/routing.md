@@ -1,3 +1,7 @@
+# Manim Hybrid Routing Skill
+
+> Restored verbatim from the former math-to-manim routing reference.
+
 # Routing Heuristics
 
 Use Manim when at least one of these is central to the section:

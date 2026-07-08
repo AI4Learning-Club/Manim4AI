@@ -36,6 +36,7 @@ from interface.plugins.manim import (
 )
 
 from .asset_resolver import resolve_local_assets
+from .agent_skills import build_selected_skills_manifest
 from .code_eval import CodeEvalAgent
 from .code_gen import CodeGenAgent
 from .fast_paths import (
@@ -1852,6 +1853,8 @@ def run_pipeline(
                 "history": [],
                 "last_error": None,
             },
+            "prompt_audit_file": None,
+            "selected_skills_file": None,
             "codegen_warnings": [],
         }
 
@@ -2165,7 +2168,29 @@ def run_pipeline(
                         f"{report.segment.segment_id} - {exc}"
                     )
 
+        def _persist_codegen_prompt_audit(prompt_audit: Any) -> None:
+            if not isinstance(prompt_audit, dict) or not prompt_audit:
+                return
+            prompt_audit_path = run_dir / "prompt_audit.json"
+            prompt_audit_path.write_text(
+                json.dumps(prompt_audit, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            summary["prompt_audit_file"] = str(prompt_audit_path)
+            selected_skills_path = run_dir / "selected_skills.json"
+            selected_skills_path.write_text(
+                json.dumps(
+                    build_selected_skills_manifest(prompt_audit),
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            summary["selected_skills_file"] = str(selected_skills_path)
+
         def _code_llm_event(payload: dict[str, Any]) -> None:
+            if str(payload.get("type") or "") == "codegen_skill_selection":
+                _persist_codegen_prompt_audit(payload.get("prompt_audit"))
             _emit_debug_observation(debug_callback, payload)
 
         if fast_path_used and fast_path_reference_code:
@@ -2183,6 +2208,8 @@ def run_pipeline(
             on_delta=_code_delta_bridge,
             on_event=_code_llm_event,
         )
+        prompt_audit = agent.get_last_prompt_audit() if hasattr(agent, "get_last_prompt_audit") else {}
+        _persist_codegen_prompt_audit(prompt_audit)
         expected_segment_count: int | None = None
         sanitized_code = sanitize_streaming_code(code)
         codegen_failure_reason = ""

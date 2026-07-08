@@ -1,3 +1,7 @@
+# Teacher Script Core
+
+> Migrated verbatim from the former CodeGen prompt contract.
+
 ---
 name: math-to-manim
 description: Use for mathematically dense educational animation generation. Applies when the agent needs to create or repair Manim lesson segments involving equations, graphs, geometry, derivations, coordinate systems, or precise visual reasoning.

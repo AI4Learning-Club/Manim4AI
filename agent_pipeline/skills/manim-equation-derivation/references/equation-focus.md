@@ -1,5 +1,9 @@
 # Equation Focus Skill
 
+> Restored verbatim from the former math-to-manim visual-pattern reference.
+
+# Equation Focus Skill
+
 Use inside `LessonBase(AI4LearningBaseScene)` when formulas need local explanation, term-by-term reveal, transformation, or a link back to a visible diagram.
 
 ## When to use
@@ -61,4 +65,3 @@ def section_equation_brace_example(self):
     self.play(Write(formula), run_time=0.5)
     self.play(Create(brace_note[0]), FadeIn(brace_note[1]), run_time=0.5)
 ```
-
