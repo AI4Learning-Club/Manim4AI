@@ -18,6 +18,8 @@ This file owns progressive reveal, narration chunking, and subtitle alignment. M
 ## Narration And Subtitles
 
 - Prefer `self.speak_with_subtitle(...)` for explanation beats.
+- TTS extraction contract: every spoken beat must directly call `self.speak_with_subtitle("literal text", ...)` or `self.speak("literal text", ...)` inside the section method.
+- Do not wrap TTS in helper methods such as `narrate`, `say`, `_say`, or `voiceover`; do not pass variables, f-strings, constants, or helper-returned strings as the first argument.
 - Subtitle text must match the spoken TTS content for that beat; do not paraphrase it into different wording.
 - Use one natural clause per narration/subtitle beat when possible.
 - Keep subtitles single-line when possible. If narration is too long, split it into multiple beats instead of forcing dense multi-line subtitles.

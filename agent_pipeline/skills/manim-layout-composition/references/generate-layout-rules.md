@@ -77,6 +77,7 @@ SECTION / SUBTITLE / DENSITY RULES:
 
 - Keep section titles short and informative.
 - Prefer `self.speak_with_subtitle(...)` for explanation beats.
+- TTS calls must be direct and extractable: use `self.speak_with_subtitle("literal text", ...)` or `self.speak("literal text", ...)` in the section method; do not hide TTS behind `narrate`/`say` helpers or variable first arguments.
 - Use one natural clause per subtitle beat; split long explanations instead of forcing dense multi-line subtitles.
 - Nothing except subtitles may occupy the subtitle band.
 - Do not cram explanation text onto one page. If the page loses a clear focal structure, split it.

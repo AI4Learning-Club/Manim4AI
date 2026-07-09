@@ -1440,6 +1440,7 @@ class CodeGenAgent:
                 "- `SCENE_MANIFEST` covers the teaching-plan section ids in order.\n"
                 "- `LessonBase.theme_id` matches the selected theme when one is provided.\n"
                 "- Problem-solving lessons start with the problem-intake read-in and visual marking before solving.\n"
+                "- Every spoken beat uses a direct extractable call such as `self.speak_with_subtitle(\"literal text\", ...)` or `self.speak(\"literal text\", ...)`; do not wrap TTS in `narrate`/`say` helpers or pass variables as the first argument.\n"
                 "- Do not use local icons, raw image paths, or URLs when no local assets were selected.",
             )
         )

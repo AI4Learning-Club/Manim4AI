@@ -16,6 +16,7 @@ VOICE NARRATION (audio-synced pacing):
 
 - New code must follow the selected Scene Pack contract.
 - Renderable wrapper scenes should inherit from `LessonBase`, and each wrapper `construct()` should call its one section method.
+- Keep TTS calls extractable: use direct string-literal calls in the section method, not helper wrappers like `self.narrate(...)`, `self.say(...)`, or `self._say(...)`.
 - Let `self.speak(...)` or `self.speak_with_subtitle(...)` return the duration that drives the matching animation:
 ```python
 dur = self.speak("short narration")
