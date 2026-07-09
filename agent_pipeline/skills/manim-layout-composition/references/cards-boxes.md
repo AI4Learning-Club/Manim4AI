@@ -4,7 +4,7 @@
 
 # Card / Box Skill
 
-Use inside `LessonBase(AI4LearningBaseScene)` for concept cards, formula boxes, step boxes, definition boxes, conclusion strips, and compact comparison panels.
+Use inside `LessonBase` section methods for concept cards, formula boxes, step boxes, definition boxes, conclusion strips, and compact comparison panels.
 
 ## When to use
 

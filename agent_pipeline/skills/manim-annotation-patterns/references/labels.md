@@ -4,7 +4,7 @@
 
 # Label Skill
 
-Use inside `LessonBase(AI4LearningBaseScene)` when points, variables, graph parts, formula terms, or diagram states need readable names.
+Use inside `LessonBase` section methods when points, variables, graph parts, formula terms, or diagram states need readable names.
 
 ## When to use
 

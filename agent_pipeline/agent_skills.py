@@ -126,6 +126,12 @@ _PACKAGE_REGISTRY: tuple[SkillPackage, ...] = (
         stages=_ALL_STAGES,
     ),
     SkillPackage(
+        id="manim-camera-movement",
+        path=("manim-camera-movement", "SKILL.md"),
+        description="MovingCameraScene, camera.frame, zoom, pan, viewport focus, magnification, and camera movement safety.",
+        stages=_ALL_STAGES,
+    ),
+    SkillPackage(
         id="manim-repair-diagnostics",
         path=("manim-repair-diagnostics", "SKILL.md"),
         description="Render, code-eval, section-validation, and QA improvement repair discipline.",
@@ -347,6 +353,24 @@ _REFERENCE_REGISTRY: tuple[SkillReference, ...] = (
         use_when="The scene needs transition, timing, speak/subtitle pacing, or animation continuity guidance.",
     ),
     SkillReference(
+        id="camera-movement",
+        package_id="manim-camera-movement",
+        path=("references", "camera-movement.md"),
+        tags=(
+            "camera",
+            "zoom",
+            "pan",
+            "move camera",
+            "viewport",
+            "focus",
+            "magnify",
+            "MovingCameraScene",
+            "camera.frame",
+        ),
+        stages=_ALL_STAGES,
+        use_when="The scene needs MovingCameraScene, camera.frame, zoom, pan, magnification, close-up focus, or viewport repair.",
+    ),
+    SkillReference(
         id="repair-render",
         package_id="manim-repair-diagnostics",
         path=("references", "render-fix.md"),
@@ -521,6 +545,23 @@ def _scan_code_features(code: Optional[str]) -> Dict[str, Any]:
             names.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source))
 
     tokens = names | calls | attrs
+    has_camera_movement = bool(tokens & {"MovingCameraScene", "MovingCamera"}) or (
+        "camera" in tokens and "frame" in tokens
+    )
+    has_object_animation_safety = bool(
+        tokens
+        & {
+            "Group",
+            "VGroup",
+            "Create",
+            "Write",
+            "GrowArrow",
+            "FadeIn",
+            "FadeOut",
+            "make_panel",
+            "fit_body",
+        }
+    )
     return {
         "tokens": sorted(tokens),
         "has_axes": bool(tokens & {"Axes", "ThreeDAxes", "NumberPlane", "FunctionGraph"}),
@@ -529,7 +570,21 @@ def _scan_code_features(code: Optional[str]) -> Dict[str, Any]:
         "has_annotations": bool(tokens & {"Arrow", "CurvedArrow", "DoubleArrow", "Brace", "SurroundingRectangle"}),
         "has_images": bool(tokens & {"ImageMobject", "load_local_icon"}),
         "has_groups": bool(tokens & {"Group", "VGroup", "make_panel", "fit_body"}),
-        "has_callbacks": bool(tokens & {"always_redraw", "add_updater", "plot", "FunctionGraph", "ParametricFunction"}),
+        "has_object_animation_safety": has_object_animation_safety,
+        "has_callbacks": bool(
+            tokens
+            & {
+                "always_redraw",
+                "add_updater",
+                "updater",
+                "plot",
+                "FunctionGraph",
+                "ParametricFunction",
+                "deepcopy",
+                "pickle",
+            }
+        ),
+        "has_camera_movement": has_camera_movement,
     }
 
 
@@ -711,6 +766,36 @@ def select_manim_references(
     diagnostic_blob = " ".join(_iter_diagnostic_terms(diagnostics)).lower()
     code_features = _scan_code_features(code)
 
+    camera_terms = (
+        "camera",
+        "camera movement",
+        "camera frame",
+        "moving camera",
+        "movingcamerascene",
+        "zoom",
+        "zoom in",
+        "zoom out",
+        "pan",
+        "viewport",
+        "magnify",
+        "magnification",
+        "close-up",
+        "close up",
+        "focus into",
+        "focus on a point",
+        "viewport focus",
+        "相机",
+        "镜头",
+        "放大",
+        "缩小",
+        "平移",
+        "视角",
+    )
+    if _has_any(plan_text, *camera_terms) or code_features["has_camera_movement"]:
+        add("strong", "camera-movement", "planner_or_code_feature", "structured plan/code contains camera, zoom, pan, or viewport movement")
+    elif _has_any(request_blob, *camera_terms):
+        add("candidate", "camera-movement", "request_semantic", "student request mentions camera, zoom, pan, or viewport movement")
+
     graph_terms = ("graph", "axes", "axis", "plot", "curve", "function", "derivative", "integral", "slope")
     if _has_any(plan_text, *graph_terms) or code_features["has_axes"]:
         for ref_id in ("coordinate-systems", "graph-dynamics", "labels"):
@@ -786,8 +871,35 @@ def select_manim_references(
         add("strong", "runtime-api-core", "diagnostics_taxonomy", "diagnostics mention unsupported Manim API")
         add("strong", "runtime-language-api", "diagnostics_taxonomy", "diagnostics mention unsupported Manim API or label usage")
 
+    if _has_any(
+        diagnostic_blob,
+        "pickle",
+        "deepcopy",
+        "thread.lock",
+        "_thread.lock",
+        "always_redraw",
+        "updater",
+        "add_updater",
+        "callback",
+    ):
+        add("strong", "runtime-callback-safety", "diagnostics_taxonomy", "diagnostics mention callback, updater, deepcopy, or thread-lock safety")
+
     if _has_any(diagnostic_blob, "animation_continuity", "pacing", "transition", "motion", "temporal alignment"):
         add("strong", "motion-transitions", "diagnostics_taxonomy", "diagnostics mention pacing, transition, or motion continuity")
+
+    if _has_any(
+        diagnostic_blob,
+        "camera movement",
+        "camera frame",
+        "movingcamerascene",
+        "viewport",
+        "zoom jerky",
+        "jerky zoom",
+        "camera zoom",
+        "focus too fast",
+        "viewport focus",
+    ):
+        add("strong", "camera-movement", "diagnostics_taxonomy", "diagnostics mention camera movement, viewport, or zoom/focus problems")
 
     if _has_any(diagnostic_blob, "tool_loop", "apply_patch", "read_file", "search_file", "finish_repair"):
         add("strong", "repair-tool-loop", "diagnostics_taxonomy", "tool-based repair requires patch-first workflow guidance")
@@ -795,12 +907,16 @@ def select_manim_references(
     if code_features["has_groups"]:
         add("candidate", "layout-page-body", "code_feature_scan", "code contains Group/VGroup/panel/body layout constructs")
         add("candidate", "runtime-object-safety", "code_feature_scan", "code contains mixed object/layout containers")
+    if normalized_stage in _REPAIR_STAGES and code_features["has_object_animation_safety"]:
+        add("strong", "runtime-object-safety", "code_feature_scan", "repair code contains object containers, panels, or reveal animations")
     if code_features["has_callbacks"]:
         add("strong", "runtime-callback-safety", "code_feature_scan", "code contains graph/updater/callback-like constructs")
     if code_features["has_images"]:
         add("strong", "runtime-theme-assets", "code_feature_scan", "code touches icons or image mobjects")
     if code_features["has_3d"]:
         add("strong", "math-physics-director", "code_feature_scan", "code contains 3D/spatial Manim constructs")
+    if code_features["has_camera_movement"]:
+        add("strong", "camera-movement", "code_feature_scan", "code contains MovingCameraScene or camera.frame constructs")
 
     selected = _ordered_unique((*buckets["mandatory"].keys(), *buckets["strong"].keys()))
     candidates = _ordered_unique(reference_id for reference_id in buckets["candidate"] if reference_id not in selected)

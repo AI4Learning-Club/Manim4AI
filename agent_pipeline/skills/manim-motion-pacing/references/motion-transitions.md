@@ -19,7 +19,8 @@ ANIMATION / STABILITY / REVEAL RULES:
 
 VOICE NARRATION (audio-synced pacing):
 - New code MUST follow the Scene Pack contract.
-- Define `class LessonBase(AI4LearningBaseScene):`.
+- Use the `LessonBase` inheritance required by the selected Scene Pack/runtime
+  skills, preserving any mixins required by selected skills.
 - Renderable wrapper scenes must inherit from `LessonBase`, and each wrapper
   `construct()` should simply call its one section method.
 - Use `dur = self.speak("旁白文本")` to play TTS audio.
@@ -92,5 +93,3 @@ PACING RULES:
 - Let `self.speak()` / `self.speak_with_subtitle(...)` drive timing.
 - Keep transitions short and mostly silent.
 - Let key insight beats breathe long enough to read and hear clearly.
-
-Output ONLY the Python code inside a ```python``` block.

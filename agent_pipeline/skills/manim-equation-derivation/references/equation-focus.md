@@ -4,7 +4,7 @@
 
 # Equation Focus Skill
 
-Use inside `LessonBase(AI4LearningBaseScene)` when formulas need local explanation, term-by-term reveal, transformation, or a link back to a visible diagram.
+Use inside `LessonBase` section methods when formulas need local explanation, term-by-term reveal, transformation, or a link back to a visible diagram.
 
 ## When to use
 

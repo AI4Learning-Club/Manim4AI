@@ -4,7 +4,7 @@
 
 # Arrow Skill
 
-Use inside `LessonBase(AI4LearningBaseScene)` when a student must see direction, dependency, flow, feedback, or a formula-to-object connection.
+Use inside `LessonBase` section methods when a student must see direction, dependency, flow, feedback, or a formula-to-object connection.
 
 ## When to use
 

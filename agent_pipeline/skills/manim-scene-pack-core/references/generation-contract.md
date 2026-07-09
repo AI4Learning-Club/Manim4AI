@@ -7,8 +7,10 @@ SCENE PACK CONTRACT:
 - The file MUST define a top-level `SCENE_MANIFEST` list in final playback order.
 - Every manifest `id` MUST be a stable snake_case identifier such as
   `opening`, `task_difference`, `linear_regression`, or `closing`.
-- The file MUST define exactly one shared base class named
-  `LessonBase(AI4LearningBaseScene)`.
+- The file MUST define exactly one shared base class named `LessonBase`.
+- Normal scenes should use `class LessonBase(AI4LearningBaseScene):`.
+- If a selected skill requires an additional mixin, keep `AI4LearningBaseScene`
+  first in the inheritance list and follow that selected skill's exact class signature.
 - Put shared helpers and section methods on `LessonBase`.
 - The file MUST define renderable wrapper scenes named
   `Segment00...Scene`, `Segment01...Scene`, and so on through the final segment.

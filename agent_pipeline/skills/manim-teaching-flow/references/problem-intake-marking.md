@@ -4,7 +4,7 @@
 
 # Problem Intake / Marking Skill
 
-Use inside `LessonBase(AI4LearningBaseScene)` for problem-solving openings: restate the task, separate givens from target, mark key variables or diagram relations, then move into the solution.
+Use inside `LessonBase` section methods for problem-solving openings: restate the task, separate givens from target, mark key variables or diagram relations, then move into the solution.
 
 ## When to use
 

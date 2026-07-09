@@ -5,7 +5,9 @@
 THEME & COLOR SAFETY:
 - You MUST import our custom base class from `plugins.manim.colortest.ai4learning_theme`.
 - New code MUST use a Scene Pack, not a single master scene.
-- The file MUST define `class LessonBase(AI4LearningBaseScene):`.
+- The file MUST define one `LessonBase` that includes `AI4LearningBaseScene`;
+  keep `AI4LearningBaseScene` first if a selected skill requires an additional
+  mixin.
 - Every renderable wrapper scene MUST inherit from `LessonBase`, NOT `Scene`.
 - When a selected theme is provided, `LessonBase` MUST declare
   `theme_id = "selected_theme_id"` at class scope.

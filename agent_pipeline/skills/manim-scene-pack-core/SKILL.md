@@ -8,7 +8,9 @@ description: Scene Pack contract for Manim CodeGen. Use when generating or repai
 Use this skill for the structural contract of every generated or repaired Manim file.
 
 - Generate or preserve one Python Scene Pack file.
-- Keep one shared `LessonBase(AI4LearningBaseScene)`.
+- Keep one shared `LessonBase` based on `AI4LearningBaseScene`.
+- Follow the selected generation or repair reference for the exact `LessonBase`
+  inheritance contract.
 - Keep top-level `SCENE_MANIFEST` in final playback order.
 - Keep wrapper scenes thin: each wrapper `construct()` calls exactly one section method.
 - Put shared helpers and section methods on `LessonBase`.

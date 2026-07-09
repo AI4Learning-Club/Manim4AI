@@ -4,7 +4,7 @@
 
 # Graph Dynamics Skill
 
-Use inside `LessonBase(AI4LearningBaseScene)` for dynamic function and physics visuals: moving points, secant-to-tangent transitions, parameter sliders, accumulated area, trajectory traces, and function-family changes.
+Use inside `LessonBase` section methods for dynamic function and physics visuals: moving points, secant-to-tangent transitions, parameter sliders, accumulated area, trajectory traces, and function-family changes.
 
 ## When to use
 

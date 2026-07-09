@@ -4,7 +4,7 @@
 
 # Highlight Skill
 
-Use inside `LessonBase(AI4LearningBaseScene)` when attention must move to a current term, region, step, object, or misconception.
+Use inside `LessonBase` section methods when attention must move to a current term, region, step, object, or misconception.
 
 ## When to use
 

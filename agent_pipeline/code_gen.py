@@ -45,8 +45,8 @@ Hard contract:
 - Target Manim Community v0.20.1.
 - Follow the selected skill context exactly; do not apply examples or long-form
   procedures from skills that were not loaded for this run.
-- Generate or preserve a Scene Pack with `SCENE_MANIFEST`, one
-  `LessonBase(AI4LearningBaseScene)`, and thin wrapper scenes.
+- Generate or preserve a Scene Pack with `SCENE_MANIFEST`, one shared
+  `LessonBase` based on `AI4LearningBaseScene`, and thin wrapper scenes.
 - Use the selected theme and selected local assets exactly when provided.
 - If no local assets were selected, do not invent image paths, raw URLs, or
   external assets.

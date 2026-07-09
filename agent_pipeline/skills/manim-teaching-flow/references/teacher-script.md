@@ -32,4 +32,4 @@ Use the visual-pattern references when code generation needs reusable Manim idio
 - `references/visual-patterns/problem-intake-marking.md`
 - `references/visual-patterns/graph-dynamics.md`
 
-Treat those references as local patterns to migrate into `LessonBase(AI4LearningBaseScene)`, then adapt names, narration, and teaching content to the current Scene Pack.
+Treat those references as local patterns to migrate into `LessonBase` section methods, then adapt names, narration, and teaching content to the current Scene Pack.
