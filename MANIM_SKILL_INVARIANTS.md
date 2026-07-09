@@ -10,7 +10,7 @@ This file is the canonical checklist for slimming Manim CodeGen skill references
 - Generation-time layout heuristics, vector diagram choices, density limits, and helper inventory are owned by `manim-layout-composition/references/generate-layout-rules.md`.
 - Anchor lifecycle for dependent geometry is owned by `manim-coordinate-geometry/references/anchor-lifecycle.md`.
 - Coordinate-system and graph-specific construction details are owned by the coordinate geometry references.
-- Formula focus, formula highlighting, and equation staging are owned by the equation/formula references.
+- Formula API safety is owned by runtime safety; formula highlighting is owned by annotation highlights; equation staging stays in teaching-flow guidance.
 - Reveal order, narration chunks, and subtitle synchronization are owned by `manim-teaching-flow/references/reveal-narration.md`.
 - Motion timing, transitions, graph annotation pointers, and pacing are owned by `manim-motion-pacing/references/motion-transitions.md`.
 - Pedagogical structure, examples, misconceptions, and teacher-script choices are owned by the teaching-flow pedagogy references.

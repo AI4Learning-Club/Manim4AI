@@ -455,6 +455,20 @@ def _build_problem_intake_prompt(teaching_plan: Optional[Dict]) -> str:
     )
 
 
+def _build_camera_execution_prompt(selection: SkillSelection) -> str:
+    if "camera-movement" not in selection.reference_ids:
+        return ""
+
+    return (
+        "## Camera movement execution\n"
+        "- Because `camera-movement` is selected, plan camera beats explicitly in the implementation; do not output a prose camera plan.\n"
+        "- Do not satisfy camera movement only with a single zoom-in/restore when the visual has a moving point, path, trajectory, process, or region comparison.\n"
+        "- Use at least one non-zoom camera motion when the lesson has those opportunities: pan between semantic targets, follow/track a moving target, or track along a curve/path.\n"
+        "- For multi-section lessons with camera opportunities, prefer 2-4 deliberate camera beats across the full video; each beat must serve a distinct teaching intent.\n"
+        "- A follow beat may use `frame.add_updater(lambda f: f.move_to(target.get_center()))` while the target moves; clear the updater immediately and call `Restore(frame)` before unrelated content.\n"
+    )
+
+
 def _build_selected_theme_prompt(teaching_plan: Optional[Dict]) -> str:
     if not teaching_plan:
         return ""
@@ -916,22 +930,6 @@ def _build_output_language_prompt(output_language: str) -> str:
     )
 
 
-def _build_selected_skill_prompt(
-    stage: str,
-    *,
-    teaching_plan: Optional[Dict] = None,
-    diagnostics: Any = None,
-    code: Optional[str] = None,
-) -> str:
-    selection = select_manim_references(
-        stage,
-        teaching_plan=teaching_plan,
-        diagnostics=diagnostics,
-        code=code,
-    )
-    return build_manim_skill_context(selection)
-
-
 # ---------------------------------------------------------------------------
 # Tool-based repair (patch-first)
 # ---------------------------------------------------------------------------
@@ -1381,6 +1379,12 @@ class CodeGenAgent:
                     "## Teaching plan\n" + _compact_json_text(codegen_context),
                 )
             )
+            opening_prompt = _build_opening_prompt(teaching_plan)
+            if opening_prompt:
+                user_sections.append(PromptSection("opening_plan", opening_prompt))
+            problem_intake_prompt = _build_problem_intake_prompt(teaching_plan)
+            if problem_intake_prompt:
+                user_sections.append(PromptSection("problem_intake_plan", problem_intake_prompt))
             user_sections.append(
                 PromptSection(
                     "selected_skill_refs",
@@ -1410,6 +1414,9 @@ class CodeGenAgent:
                     build_manim_skill_context(selection),
                 )
             )
+        camera_execution_prompt = _build_camera_execution_prompt(selection)
+        if camera_execution_prompt:
+            user_sections.append(PromptSection("camera_movement_execution", camera_execution_prompt))
         user_sections.append(PromptSection("output_structure", "## Output structure\nFollow the Scene Pack contract exactly."))
         user_sections.append(
             PromptSection(

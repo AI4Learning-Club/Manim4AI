@@ -114,12 +114,6 @@ _PACKAGE_REGISTRY: tuple[SkillPackage, ...] = (
         stages=_ALL_STAGES,
     ),
     SkillPackage(
-        id="manim-equation-derivation",
-        path=("manim-equation-derivation", "SKILL.md"),
-        description="Formula focus, equation derivation, MathTex staging, and symbolic part highlighting.",
-        stages=_ALL_STAGES,
-    ),
-    SkillPackage(
         id="manim-motion-pacing",
         path=("manim-motion-pacing", "SKILL.md"),
         description="Motion transitions, animation continuity, speak/subtitle pacing, and temporal alignment repair.",
@@ -128,7 +122,7 @@ _PACKAGE_REGISTRY: tuple[SkillPackage, ...] = (
     SkillPackage(
         id="manim-camera-movement",
         path=("manim-camera-movement", "SKILL.md"),
-        description="MovingCameraScene, camera.frame, zoom, pan, viewport focus, magnification, and camera movement safety.",
+        description="MovingCameraScene, camera.frame, zoom, pan, follow/track shots, viewport focus, magnification, and camera movement safety.",
         stages=_ALL_STAGES,
     ),
     SkillPackage(
@@ -329,14 +323,6 @@ _REFERENCE_REGISTRY: tuple[SkillReference, ...] = (
         use_when="The scene needs visual emphasis, marked problem information, formula/text highlights, or correction moments.",
     ),
     SkillReference(
-        id="equation-focus",
-        package_id="manim-equation-derivation",
-        path=("references", "equation-focus.md"),
-        tags=("formula", "formulas", "equation", "equations", "derivation", "symbolic", "mathtex"),
-        stages=_ALL_STAGES,
-        use_when="The scene needs formula focus, symbolic derivation, equation-part emphasis, or MathTex staging.",
-    ),
-    SkillReference(
         id="motion-transitions",
         package_id="manim-motion-pacing",
         path=("references", "motion-transitions.md"),
@@ -352,6 +338,9 @@ _REFERENCE_REGISTRY: tuple[SkillReference, ...] = (
             "camera",
             "zoom",
             "pan",
+            "follow",
+            "track",
+            "trajectory",
             "move camera",
             "viewport",
             "focus",
@@ -783,10 +772,49 @@ def select_manim_references(
         "平移",
         "视角",
     )
+    camera_opportunity_terms = (
+        "moving point",
+        "moving dot",
+        "motion path",
+        "trajectory",
+        "trace",
+        "follow the point",
+        "follow a point",
+        "track the point",
+        "track a point",
+        "follow the motion",
+        "track the motion",
+        "path-following",
+        "region comparison",
+        "compare graph regions",
+        "local graph behavior",
+        "macro-to-micro",
+        "micro-to-macro",
+        "spatial relation",
+        "3d surface",
+        "vector field",
+        "force motion",
+        "移动点",
+        "运动点",
+        "轨迹",
+        "路径跟随",
+        "跟随",
+        "追踪",
+        "局部变化",
+        "区域对比",
+        "空间关系",
+        "曲面",
+        "向量场",
+        "受力运动",
+    )
     if _has_any(plan_text, *camera_terms) or code_features["has_camera_movement"]:
         add("strong", "camera-movement", "planner_or_code_feature", "structured plan/code contains camera, zoom, pan, or viewport movement")
+    elif _has_any(plan_text, *camera_opportunity_terms):
+        add("strong", "camera-movement", "planner_semantic", "structured plan contains a camera opportunity such as a moving target, trajectory, or region comparison")
     elif _has_any(request_blob, *camera_terms):
         add("candidate", "camera-movement", "request_semantic", "student request mentions camera, zoom, pan, or viewport movement")
+    elif _has_any(request_blob, *camera_opportunity_terms):
+        add("candidate", "camera-movement", "request_semantic", "student request suggests a camera opportunity such as a moving target, trajectory, or region comparison")
 
     graph_terms = ("graph", "axes", "axis", "plot", "curve", "function", "derivative", "integral", "slope")
     if _has_any(plan_text, *graph_terms) or code_features["has_axes"]:
@@ -798,11 +826,9 @@ def select_manim_references(
 
     formula_terms = ("formula", "equation", "derivation", "symbolic", "mathtex", "公式", "推导")
     if _has_any(plan_text, *formula_terms) or code_features["has_mathtex"]:
-        for ref_id in ("equation-focus", "highlights"):
-            add("strong", ref_id, "planner_or_code_feature", "structured plan/code contains formula or derivation focus")
+        add("strong", "highlights", "planner_or_code_feature", "structured plan/code contains formula or derivation focus")
     elif _has_any(request_blob, *formula_terms):
-        for ref_id in ("equation-focus", "highlights"):
-            add("candidate", ref_id, "request_semantic", "student request mentions formula or derivation focus")
+        add("candidate", "highlights", "request_semantic", "student request mentions formula or derivation focus")
 
     annotation_terms = ("arrow", "connector", "brace", "vector", "force", "geometry label", "label")
     if _has_any(plan_text, *annotation_terms) or code_features["has_annotations"]:

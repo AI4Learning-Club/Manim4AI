@@ -2,12 +2,32 @@
 
 Use inside `LessonBase(AI4LearningBaseScene, MovingCameraScene)` when a lesson needs zoom, pan, viewport focus, magnification, close-up inspection, or a camera move that follows a graph or geometric idea.
 
+## Contents
+
+- When to use
+- Camera beat cadence
+- Aesthetic rule
+- Safety rule
+- Anti-patterns
+- Snippets
+
 ## When to use
 
 - Use camera movement to move from the whole page to one local object, term, point, graph region, or geometric relation.
 - Use zoom-in for a short inspection beat, then restore the full view before the next major idea.
-- Use pan only when the viewer should compare two nearby graph regions or follow a motion path.
+- Use pan/follow when the viewer should compare graph regions, track a moving point, or follow a motion path.
 - Use camera focus after the page has a stable `bodyN` and after `fit_body(...)` has fixed the layout.
+
+## Camera beat cadence
+
+If this reference is selected for a multi-section generated lesson and the content supports it, plan 2-4 deliberate camera beats across the full lesson. A camera beat is one of:
+
+- inspect: zoom from whole page to one semantic target.
+- pan: move the viewport between two stable semantic targets.
+- follow/track: keep the frame centered on a moving target while that target moves.
+- restore: return to the full fitted view before unrelated content.
+
+Do not count `Restore(frame)` alone as a teaching beat. If the lesson has a moving point, path, trajectory, process, or graph-region comparison, include at least one pan or follow/track beat unless it would make the page harder to read.
 
 ## Aesthetic rule
 
@@ -17,15 +37,17 @@ Treat the camera as the teacher's gaze. One camera move should serve one teachin
 
 Use `class LessonBase(AI4LearningBaseScene, MovingCameraScene):` and keep the inheritance order exactly this way. Build the page normally first, call one `fit_body(...)`, then use `frame = self.camera.frame`, `frame.save_state()`, `frame.animate...`, and `Restore(frame)`. Any point, label, or highlight tied to fitted geometry should still use structural ownership or `build_on_anchor(...)`.
 
+For a follow/track beat, attach the updater only to `frame`, clear it immediately after the target motion, then restore before unrelated content. Use a stable on-screen target mobject center; do not rebuild graphs, axes, labels, or panels inside the frame updater.
+
 ## Anti-patterns
 
-- Do not use rapid repeated zooms or zoom/pan loops.
+- Do not use rapid repeated zooms or purposeless camera loops; multiple camera beats are allowed when each has a distinct teaching intent.
 - Do not move the camera while a subtitle is being introduced or replaced.
 - Do not use camera movement to hide crowded layout; split or simplify the page instead.
 - Do not leave the camera zoomed in across unrelated teaching beats.
 - Do not hardcode colors, stroke colors, text colors, or panel colors.
 
-## Snippet
+## Snippets
 
 ```python
 def build_focus_box_on_object(self, target):
@@ -119,5 +141,55 @@ def section_camera_pan_graph_example(self):
         run_time=0.8,
     )
     self.play(frame.animate.move_to(right_dot.get_center()), run_time=1.0)
+    self.play(Restore(frame), run_time=0.75)
+```
+
+```python
+def section_camera_follow_tracker_example(self):
+    title = self.make_page_title("Follow the moving point, then return to the full graph", font_size=29)
+    axes = Axes(
+        x_range=[-1, 4, 1],
+        y_range=[0, 4, 1],
+        x_length=5.8,
+        y_length=3.5,
+        axis_config={"color": self.get_axis_color(), "stroke_width": 2},
+    )
+
+    def y_value(x):
+        return 0.25 * (x - 1.0) ** 2 + 0.4
+
+    curve = axes.plot(
+        y_value,
+        x_range=[-1, 4],
+        color=self.get_accent_color("secondary"),
+    )
+    x_tracker = ValueTracker(0.2)
+    moving_dot = always_redraw(
+        lambda: Dot(
+            axes.c2p(x_tracker.get_value(), y_value(x_tracker.get_value())),
+            radius=0.055,
+            color=self.get_accent_color("primary"),
+        )
+    )
+    explanation = self.make_panel(
+        self.get_secondary_text("The viewport tracks the change instead of jumping between still points.", font_size=20),
+        padding=0.18,
+    )
+    graph_block = Group(axes, curve, moving_dot)
+    body1 = Group(graph_block, explanation).arrange(RIGHT, buff=0.5, aligned_edge=UP)
+    self.fit_body(body1, max_width=11.5, center=UP * 0.05)
+
+    self.add(title)
+    self.play(Create(axes), Create(curve), FadeIn(moving_dot), FadeIn(explanation), run_time=0.9)
+
+    frame = self.camera.frame
+    frame.save_state()
+    self.play(
+        frame.animate.set(width=graph_block.width * 0.55).move_to(moving_dot.get_center()),
+        run_time=0.75,
+    )
+    frame.add_updater(lambda f: f.move_to(moving_dot.get_center()))
+    self.play(x_tracker.animate.set_value(3.2), run_time=2.0)
+    frame.clear_updaters()
     self.play(Restore(frame), run_time=0.75)
 ```

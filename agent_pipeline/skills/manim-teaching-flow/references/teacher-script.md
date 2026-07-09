@@ -13,7 +13,7 @@ Use a reverse-knowledge-tree mindset.
 
 When code generation needs reusable Manim idioms rather than broad lesson advice,
 rely on the selected specialized references from the current skill packages:
-annotation patterns, layout composition, coordinate geometry, equation
-derivation, and motion pacing. Treat those references as
+annotation patterns, layout composition, coordinate geometry, formula emphasis
+through highlights, and motion pacing. Treat those references as
 local patterns to adapt into `LessonBase` section methods with lesson-specific
 names, narration, and teaching content.
