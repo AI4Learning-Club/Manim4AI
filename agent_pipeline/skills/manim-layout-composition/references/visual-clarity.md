@@ -1,7 +1,5 @@
 # Visual Clarity / Simplicity Contract
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
 VISUAL CLARITY / SIMPLICITY CONTRACT:
 - The goal of a teaching visual is NOT maximal complexity. The goal is dynamic
   clarity, easy comprehension, and at-a-glance legibility.

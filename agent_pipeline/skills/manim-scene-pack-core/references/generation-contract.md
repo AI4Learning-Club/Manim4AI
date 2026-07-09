@@ -1,7 +1,5 @@
 # Scene Pack Contract
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
 SCENE PACK CONTRACT:
 - Output a Scene Pack in ONE Python file, not a single master scene.
 - The file MUST define a top-level `SCENE_MANIFEST` list in final playback order.

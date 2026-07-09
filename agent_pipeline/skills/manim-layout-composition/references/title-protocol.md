@@ -1,7 +1,5 @@
 # Title Protocol
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
 TITLE PROTOCOL:
 - Each page MUST choose exactly ONE page-title style:
   1. long top title via `self.make_page_title(...)` or

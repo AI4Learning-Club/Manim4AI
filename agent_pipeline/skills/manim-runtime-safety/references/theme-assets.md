@@ -1,7 +1,5 @@
 # Theme And Local Asset Safety
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
 THEME & COLOR SAFETY:
 - You MUST import our custom base class from `plugins.manim.colortest.ai4learning_theme`.
 - New code MUST use a Scene Pack, not a single master scene.

@@ -1,9 +1,5 @@
 # Label Skill
 
-> Restored verbatim from the former math-to-manim visual-pattern reference.
-
-# Label Skill
-
 Use inside `LessonBase` section methods when points, variables, graph parts, formula terms, or diagram states need readable names.
 
 ## When to use

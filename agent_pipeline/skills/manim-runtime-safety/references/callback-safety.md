@@ -1,7 +1,5 @@
 # Callback / Deepcopy Safety
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
 CALLBACK / DEEPCOPY SAFETY:
 - Never pass a bound Scene method such as `self._position_func` or
   `self.some_helper` into Manim objects that may store callbacks and later get

@@ -1,9 +1,5 @@
 # Arrow Skill
 
-> Restored verbatim from the former math-to-manim visual-pattern reference.
-
-# Arrow Skill
-
 Use inside `LessonBase` section methods when a student must see direction, dependency, flow, feedback, or a formula-to-object connection.
 
 ## When to use

@@ -1,9 +1,5 @@
 # Coordinate System Skill
 
-> Restored verbatim from the former math-to-manim visual-pattern reference.
-
-# Coordinate System Skill
-
 Use inside `LessonBase` section methods for axes, graphs, coordinate transforms, geometry, optimization trajectories, tangents, secants, shaded regions, and point projections.
 
 ## When to use

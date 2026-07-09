@@ -1,7 +1,5 @@
 # Group / VGroup / Create Safety
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
 GROUP / VGROUP / CREATE SAFETY:
 - Default to `Group(...)` for page layout containers and mixed-object layouts.
 - Use `VGroup(...)` ONLY when every child is guaranteed to be a `VMobject`

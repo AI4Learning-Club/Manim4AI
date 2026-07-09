@@ -1,7 +1,5 @@
 # Math / Physics Visualization Director
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
 ## Math/physics visualization director
 
 Apply everything below IF AND ONLY IF this lesson is primarily a mathematics or physics

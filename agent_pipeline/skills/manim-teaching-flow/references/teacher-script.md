@@ -1,14 +1,5 @@
 # Teacher Script Core
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
----
-name: math-to-manim
-description: Use for mathematically dense educational animation generation. Applies when the agent needs to create or repair Manim lesson segments involving equations, graphs, geometry, derivations, coordinate systems, or precise visual reasoning.
----
-
-# Math-To-Manim
-
 Use a reverse-knowledge-tree mindset.
 
 - Choose the opening beat that fits the concept: a real question, concrete example, visual phenomenon, result preview, direct explanation, or task read-in.
@@ -20,16 +11,9 @@ Use a reverse-knowledge-tree mindset.
 - Couple every important formula with a visible object, graph, geometric relation, or state change.
 - If a section is mostly motivational, summary-like, or verbal, it probably should not stay in Manim.
 
-Use the visual-pattern references when code generation needs reusable Manim idioms rather than broad lesson advice:
-
-- `references/visual-patterns/arrows.md`
-- `references/visual-patterns/labels.md`
-- `references/visual-patterns/highlights.md`
-- `references/visual-patterns/cards-boxes.md`
-- `references/visual-patterns/equation-focus.md`
-- `references/visual-patterns/coordinate-systems.md`
-- `references/visual-patterns/motion-transitions.md`
-- `references/visual-patterns/problem-intake-marking.md`
-- `references/visual-patterns/graph-dynamics.md`
-
-Treat those references as local patterns to migrate into `LessonBase` section methods, then adapt names, narration, and teaching content to the current Scene Pack.
+When code generation needs reusable Manim idioms rather than broad lesson advice,
+rely on the selected specialized references from the current skill packages:
+annotation patterns, layout composition, coordinate geometry, equation
+derivation, and motion pacing. Treat those references as
+local patterns to adapt into `LessonBase` section methods with lesson-specific
+names, narration, and teaching content.

@@ -1,7 +1,5 @@
 # Scene Pack Repair / Preservation Contract
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
 SCENE PACK REPAIR / PRESERVATION CONTRACT:
 - You MUST preserve the top-level `SCENE_MANIFEST`.
 - You MUST preserve the shared `LessonBase` class.

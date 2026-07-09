@@ -1,9 +1,5 @@
 # Card / Box Skill
 
-> Restored verbatim from the former math-to-manim visual-pattern reference.
-
-# Card / Box Skill
-
 Use inside `LessonBase` section methods for concept cards, formula boxes, step boxes, definition boxes, conclusion strips, and compact comparison panels.
 
 ## When to use

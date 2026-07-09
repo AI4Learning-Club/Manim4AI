@@ -1,9 +1,5 @@
 # Equation Focus Skill
 
-> Restored verbatim from the former math-to-manim visual-pattern reference.
-
-# Equation Focus Skill
-
 Use inside `LessonBase` section methods when formulas need local explanation, term-by-term reveal, transformation, or a link back to a visible diagram.
 
 ## When to use

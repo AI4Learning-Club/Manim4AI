@@ -1,7 +1,5 @@
 # Tool Loop Repair Workflow
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
 ## Mandatory workflow
 
 1) read_file(path="{sf}") - use start_line/end_line when the error cites line numbers.

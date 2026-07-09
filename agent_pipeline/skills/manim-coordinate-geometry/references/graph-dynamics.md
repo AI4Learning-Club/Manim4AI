@@ -1,9 +1,5 @@
 # Graph Dynamics Skill
 
-> Restored verbatim from the former math-to-manim visual-pattern reference.
-
-# Graph Dynamics Skill
-
 Use inside `LessonBase` section methods for dynamic function and physics visuals: moving points, secant-to-tangent transitions, parameter sliders, accumulated area, trajectory traces, and function-family changes.
 
 ## When to use

@@ -225,14 +225,6 @@ _REFERENCE_REGISTRY: tuple[SkillReference, ...] = (
         use_when="New generation must follow the original CodeGen pedagogical design, opening architecture, and teacher-like delivery contract.",
     ),
     SkillReference(
-        id="problem-intake-marking",
-        package_id="manim-teaching-flow",
-        path=("references", "problem-intake-marking.md"),
-        tags=("problem", "intake", "marking", "givens", "target", "opening"),
-        stages=_ALL_STAGES,
-        use_when="The lesson starts from a problem statement and needs read-in, givens/target marking, or task card setup.",
-    ),
-    SkillReference(
         id="reveal-narration",
         package_id="manim-teaching-flow",
         path=("references", "reveal-narration.md"),
@@ -752,8 +744,8 @@ def select_manim_references(
 
         problem_intake = teaching_plan.get("problem_intake")
         if isinstance(problem_intake, dict) and bool(problem_intake.get("is_problem_solving")):
-            for ref_id in ("problem-intake-marking", "cards-boxes", "highlights"):
-                add("strong", ref_id, "planner_structured", "problem-solving opening requires read-in and marked givens/target")
+            for ref_id in ("cards-boxes", "highlights"):
+                add("strong", ref_id, "planner_structured", "problem-solving opening may need a compact task card and marked givens/target")
 
     plan_text = _structured_plan_text(
         teaching_plan,

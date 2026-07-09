@@ -1,7 +1,5 @@
 # Language / API Safety
 
-> Migrated verbatim from the former CodeGen prompt contract.
-
 LANGUAGE / API SAFETY:
 - `from manim import *` at the top.
 - Target `Manim Community v0.20.1` compatibility. Do not rely on older blog
