@@ -20,7 +20,9 @@ Use inside `LessonBase(AI4LearningBaseScene, MovingCameraScene)` when a lesson n
 
 ## Camera beat cadence
 
-If this reference is selected for a multi-section generated lesson and the content supports it, plan 2-4 deliberate camera beats across the full lesson. A camera beat is one of:
+Implement the camera intents explicitly selected in each section's
+`representation_plan`. Do not invent additional camera beats. A planned camera
+intent may be implemented as one of:
 
 - inspect: zoom from whole page to one semantic target.
 - pan: move the viewport between two stable semantic targets.
@@ -35,7 +37,14 @@ Treat the camera as the teacher's gaze. One camera move should serve one teachin
 
 ## Safety rule
 
-Use `class LessonBase(AI4LearningBaseScene, MovingCameraScene):` and keep the inheritance order exactly this way. Build the page normally first, call one `fit_body(...)`, then use `frame = self.camera.frame`, `frame.save_state()`, `frame.animate...`, and `Restore(frame)`. Any point, label, or highlight tied to fitted geometry should still use structural ownership or `build_on_anchor(...)`.
+Follow the exact `LessonBase` signature emitted by the capability compiler. For
+the 2D moving-camera capability it is
+`class LessonBase(AI4LearningBaseScene, MovingCameraScene):`. Build the page
+normally first, call one `fit_body(...)`, then use `frame = self.camera.frame`,
+`frame.save_state()`, `frame.animate...`, and `Restore(frame)`. Do not apply
+these `camera.frame` idioms when the compiled capability is `ThreeDScene`.
+Any point, label, or highlight tied to fitted geometry should still use
+structural ownership or `build_on_anchor(...)`.
 
 For a follow/track beat, attach the updater only to `frame`, clear it immediately after the target motion, then restore before unrelated content. Use a stable on-screen target mobject center; do not rebuild graphs, axes, labels, or panels inside the frame updater.
 
@@ -68,11 +77,10 @@ def section_camera_zoom_example(self):
         self.get_secondary_text("The denominator controls the shrinking interval.", font_size=20),
         padding=0.18,
     )
-    body1 = Group(formula, note).arrange(DOWN, buff=0.32)
-    self.fit_body(body1, max_width=10.8, center=UP * 0.08)
-
     focus_box = self.build_on_anchor("build_focus_box_on_object", formula)
-    body1.add(focus_box)
+    formula_block = Group(formula, focus_box)
+    body1 = Group(formula_block, note).arrange(DOWN, buff=0.32)
+    self.fit_body(body1, max_width=10.8, center=UP * 0.08)
 
     self.add(title)
     self.play(Write(formula), run_time=0.7)
@@ -164,11 +172,12 @@ def section_camera_follow_tracker_example(self):
         color=self.get_accent_color("secondary"),
     )
     x_tracker = ValueTracker(0.2)
+    primary_color = self.get_accent_color("primary")
     moving_dot = always_redraw(
         lambda: Dot(
             axes.c2p(x_tracker.get_value(), y_value(x_tracker.get_value())),
             radius=0.055,
-            color=self.get_accent_color("primary"),
+            color=primary_color,
         )
     )
     explanation = self.make_panel(

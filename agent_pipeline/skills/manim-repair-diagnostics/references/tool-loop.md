@@ -2,9 +2,12 @@
 
 ## Mandatory workflow
 
-1) read_file(path="{sf}") - use start_line/end_line when the error cites line numbers.
-2) search_file(path="{sf}", pattern=...) - locate strings or symbols (set use_regex=true only when needed).
-3) apply_patch(path="{sf}", old_text=..., new_text=...) - old_text must match EXACTLY once in the file.
+The system prompt names the single writable target file. Use that exact path in
+every file tool call; never substitute a placeholder or another file.
+
+1) `read_file(path=<target_file>)` - use start_line/end_line when the error cites line numbers.
+2) `search_file(path=<target_file>, pattern=...)` - locate strings or symbols (set use_regex=true only when needed).
+3) `apply_patch(path=<target_file>, old_text=..., new_text=...)` - old_text must match EXACTLY once in the file.
 4) When done, call finish_repair(fallback_required=false, summary="...")
 If the problem needs a whole-file rewrite, call finish_repair(fallback_required=true).
 

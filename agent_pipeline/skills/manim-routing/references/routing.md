@@ -23,3 +23,14 @@ Avoid spending Manim time on:
 - broad concept framing
 - misconception headlines without a needed mathematical animation
 - end summaries or transition bridges
+
+## Render scope contract
+
+When a teaching plan contains `render_scope`, treat it as the hard backend
+ownership contract. Generate exactly `allowed_section_ids` in order and only
+the semantic roles whose `include_*` flag is true. `continuity_context` may
+shape a local transition, but it must not create Scene Pack entries, methods,
+visuals, or narration for content owned by Remotion.
+
+For legacy plans without `render_scope`, use `hybrid_routes.manim_section_ids`
+as the section whitelist.

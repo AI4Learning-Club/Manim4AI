@@ -73,14 +73,29 @@ class SkillSelection:
     router_input_summary: Mapping[str, Any] = field(default_factory=dict)
 
 
-_ALL_STAGES = ("generate", "fix", "segment_fix", "validation_fix", "code_eval_fix", "improve")
-_REPAIR_STAGES = ("fix", "segment_fix", "validation_fix", "code_eval_fix", "improve")
+_ALL_STAGES = (
+    "generate",
+    "fix",
+    "segment_fix",
+    "validation_fix",
+    "contract_fix",
+    "code_eval_fix",
+    "improve",
+)
+_REPAIR_STAGES = (
+    "fix",
+    "segment_fix",
+    "validation_fix",
+    "contract_fix",
+    "code_eval_fix",
+    "improve",
+)
 
 _PACKAGE_REGISTRY: tuple[SkillPackage, ...] = (
     SkillPackage(
         id="manim-teaching-flow",
         path=("manim-teaching-flow", "SKILL.md"),
-        description="Teacher-like educational flow, reverse knowledge tree, opening choices, problem intake, and reveal/narration discipline.",
+        description="Faithful execution of Planner-owned opening, section, example, board, narration, transition, and closing decisions.",
         stages=_ALL_STAGES,
     ),
     SkillPackage(
@@ -134,7 +149,7 @@ _PACKAGE_REGISTRY: tuple[SkillPackage, ...] = (
     SkillPackage(
         id="math-physics-director",
         path=("math-physics-director", "SKILL.md"),
-        description="Math/physics visualization director for 2D/3D structure, complementary representations, causality beats, and anti-PPT guidance.",
+        description="Safe Manim execution of Planner-selected 2D/3D, complementary representation, animated quantity, and causality contracts.",
         stages=("generate", "improve"),
     ),
     SkillPackage(
@@ -213,10 +228,10 @@ _REFERENCE_REGISTRY: tuple[SkillReference, ...] = (
     SkillReference(
         id="teaching-generate-contract",
         package_id="manim-teaching-flow",
-        path=("references", "generate-pedagogy.md"),
-        tags=("generate", "pedagogy", "opening", "teacher", "problem-intake", "teacher_move"),
+        path=("references", "teaching-plan-execution.md"),
+        tags=("generate", "execution", "opening", "teacher", "problem-intake", "teacher_move"),
         stages=("generate",),
-        use_when="New generation must follow the original CodeGen pedagogical design, opening architecture, and teacher-like delivery contract.",
+        use_when="New generation must faithfully execute final Planner teaching decisions in Manim.",
     ),
     SkillReference(
         id="reveal-narration",
@@ -376,6 +391,14 @@ _REFERENCE_REGISTRY: tuple[SkillReference, ...] = (
         use_when="Section-local validation found blocking issues.",
     ),
     SkillReference(
+        id="repair-contract",
+        package_id="manim-repair-diagnostics",
+        path=("references", "contract-fix.md"),
+        tags=("contract", "scene-pack", "manifest", "lessonbase", "wrapper", "full-file"),
+        stages=("contract_fix",),
+        use_when="Deterministic post-generation checks found full-file Scene Pack contract mismatches.",
+    ),
+    SkillReference(
         id="repair-code-eval",
         package_id="manim-repair-diagnostics",
         path=("references", "code-eval-fix.md"),
@@ -405,7 +428,7 @@ _REFERENCE_REGISTRY: tuple[SkillReference, ...] = (
         path=("references", "visualization-director.md"),
         tags=("math", "physics", "3d", "vector", "field", "surface", "causality"),
         stages=("generate", "improve"),
-        use_when="The lesson is primarily math or physics and needs spatial/dynamic representation decisions.",
+        use_when="A math/physics teaching plan contains spatial or dynamic representation decisions that CodeGen must implement.",
     ),
     SkillReference(
         id="routing",
@@ -435,7 +458,8 @@ def _normalize_stage(stage: str) -> str:
     value = str(stage or "generate").strip().lower()
     aliases = {
         "segment_validation_fix": "validation_fix",
-        "contract_repair": "validation_fix",
+        "contract_repair": "contract_fix",
+        "post_generation_contract_fix": "contract_fix",
     }
     return aliases.get(value, value or "generate")
 
@@ -476,8 +500,13 @@ def _structured_plan_text(teaching_plan: Optional[Dict[str, Any]], *keys: str) -
                     "title",
                     "teacher_move",
                     "student_question",
+                    "why_this_step_now",
+                    "expected_student_reaction",
+                    "concrete_example",
                     "visual_strategy",
+                    "representation_plan",
                     "board_plan",
+                    "narration_goal",
                     "key_takeaway",
                     "check_for_understanding",
                     "transition",
@@ -650,7 +679,15 @@ def build_router_input_summary(
 ) -> Dict[str, Any]:
     compact_plan: Dict[str, Any] = {}
     if isinstance(teaching_plan, dict):
-        for key in ("lesson_goal", "big_idea", "problem_intake", "opening", "hybrid_routes", "fast_path"):
+        for key in (
+            "lesson_goal",
+            "big_idea",
+            "problem_intake",
+            "opening",
+            "hybrid_routes",
+            "render_scope",
+            "fast_path",
+        ):
             if key in teaching_plan:
                 compact_plan[key] = teaching_plan[key]
         sections = teaching_plan.get("sections")
@@ -658,7 +695,16 @@ def build_router_input_summary(
             compact_plan["sections"] = [
                 {
                     name: section.get(name)
-                    for name in ("id", "title", "teacher_move", "visual_strategy", "key_takeaway")
+                    for name in (
+                        "id",
+                        "title",
+                        "teacher_move",
+                        "student_question",
+                        "concrete_example",
+                        "visual_strategy",
+                        "representation_plan",
+                        "key_takeaway",
+                    )
                     if isinstance(section, dict) and name in section
                 }
                 for section in sections[:8]
@@ -698,7 +744,7 @@ def select_manim_references(
         add("mandatory", "runtime-api-core", "stage_baseline", "new generation must target Manim Community v0.20.1")
         add("mandatory", "runtime-language-api", "stage_baseline", "new generation must keep Text/MathTex/API usage safe")
         add("mandatory", "runtime-object-safety", "stage_baseline", "new generation must avoid Group/VGroup/Create runtime failures")
-        add("strong", "teaching-generate-contract", "stage_baseline", "new generation needs the original pedagogical CodeGen contract")
+        add("strong", "teaching-generate-contract", "stage_baseline", "new generation must execute the Planner-owned teaching contract")
         add("strong", "layout-generate-rules", "stage_baseline", "new generation needs original layout/vector/density authoring rules")
         add("strong", "layout-title-protocol", "stage_baseline", "new generation needs stable page-title protocol")
         add("strong", "layout-visual-clarity", "stage_baseline", "new generation needs visual clarity guardrails")
@@ -710,6 +756,7 @@ def select_manim_references(
             "fix": "repair-render",
             "segment_fix": "repair-segment",
             "validation_fix": "repair-validation",
+            "contract_fix": "repair-contract",
             "code_eval_fix": "repair-code-eval",
             "improve": "repair-improve",
         }.get(normalized_stage)
@@ -732,7 +779,16 @@ def select_manim_references(
             add("candidate", "layout-page-body", "planner_structured", "template reference needs layout discipline during fusion")
 
         problem_intake = teaching_plan.get("problem_intake")
-        if isinstance(problem_intake, dict) and bool(problem_intake.get("is_problem_solving")):
+        render_scope = teaching_plan.get("render_scope")
+        include_problem_intake = not (
+            isinstance(render_scope, dict)
+            and render_scope.get("include_problem_intake") is False
+        )
+        if (
+            include_problem_intake
+            and isinstance(problem_intake, dict)
+            and bool(problem_intake.get("is_problem_solving"))
+        ):
             for ref_id in ("cards-boxes", "highlights"):
                 add("strong", ref_id, "planner_structured", "problem-solving opening may need a compact task card and marked givens/target")
 
@@ -746,6 +802,25 @@ def select_manim_references(
     request_blob = (request_text or "").lower()
     diagnostic_blob = " ".join(_iter_diagnostic_terms(diagnostics)).lower()
     code_features = _scan_code_features(code)
+    sections_for_representation = (
+        teaching_plan.get("sections")
+        if isinstance(teaching_plan, dict)
+        else None
+    )
+    has_representation_contract = bool(
+        isinstance(sections_for_representation, list)
+        and any(
+            isinstance(section, dict)
+            and isinstance(section.get("representation_plan"), dict)
+            for section in sections_for_representation
+        )
+    )
+    planned_camera_intents = {
+        str(representation.get("camera_intent", "")).strip().lower()
+        for section in sections_for_representation or []
+        if isinstance(section, dict)
+        and isinstance((representation := section.get("representation_plan")), dict)
+    }
 
     camera_terms = (
         "camera",
@@ -790,10 +865,6 @@ def select_manim_references(
         "local graph behavior",
         "macro-to-micro",
         "micro-to-macro",
-        "spatial relation",
-        "3d surface",
-        "vector field",
-        "force motion",
         "移动点",
         "运动点",
         "轨迹",
@@ -802,18 +873,16 @@ def select_manim_references(
         "追踪",
         "局部变化",
         "区域对比",
-        "空间关系",
-        "曲面",
-        "向量场",
-        "受力运动",
     )
-    if _has_any(plan_text, *camera_terms) or code_features["has_camera_movement"]:
+    if planned_camera_intents & {"inspect", "pan", "follow"}:
+        add("strong", "camera-movement", "planner_representation_contract", "Planner selected a 2D moving-camera intent")
+    elif _has_any(plan_text, *camera_terms) or code_features["has_camera_movement"]:
         add("strong", "camera-movement", "planner_or_code_feature", "structured plan/code contains camera, zoom, pan, or viewport movement")
-    elif _has_any(plan_text, *camera_opportunity_terms):
+    elif not has_representation_contract and _has_any(plan_text, *camera_opportunity_terms):
         add("strong", "camera-movement", "planner_semantic", "structured plan contains a camera opportunity such as a moving target, trajectory, or region comparison")
-    elif _has_any(request_blob, *camera_terms):
+    elif not has_representation_contract and _has_any(request_blob, *camera_terms):
         add("candidate", "camera-movement", "request_semantic", "student request mentions camera, zoom, pan, or viewport movement")
-    elif _has_any(request_blob, *camera_opportunity_terms):
+    elif not has_representation_contract and _has_any(request_blob, *camera_opportunity_terms):
         add("candidate", "camera-movement", "request_semantic", "student request suggests a camera opportunity such as a moving target, trajectory, or region comparison")
 
     graph_terms = ("graph", "axes", "axis", "plot", "curve", "function", "derivative", "integral", "slope")

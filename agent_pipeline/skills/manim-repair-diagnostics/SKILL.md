@@ -15,5 +15,6 @@ Use this skill only during repair/improve stages.
   - `references/render-fix.md`
   - `references/segment-fix.md`
   - `references/validation-fix.md`
+  - `references/contract-fix.md`
   - `references/code-eval-fix.md`
   - `references/improve.md`

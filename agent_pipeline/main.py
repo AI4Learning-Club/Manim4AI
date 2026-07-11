@@ -1444,6 +1444,75 @@ def _build_manim_teaching_plan(
 
     plan = dict(teaching_plan)
     plan["sections"] = filtered_sections
+    intro_scene = next(
+        (
+            scene
+            for scene in scenes
+            if isinstance(scene, dict) and scene.get("type") == "title_card"
+        ),
+        None,
+    )
+    summary_scene = next(
+        (
+            scene
+            for scene in scenes
+            if isinstance(scene, dict) and scene.get("type") == "summary_card"
+        ),
+        None,
+    )
+    include_opening = intro_scene is None
+    include_closing = summary_scene is None
+    section_boundaries: Dict[str, Dict[str, str]] = {}
+    for index, scene in enumerate(scenes):
+        if not isinstance(scene, dict) or scene.get("type") != "manim_chunk":
+            continue
+        section_id = str(scene.get("source_section_id") or "").strip()
+        if not section_id:
+            continue
+        previous_scene = scenes[index - 1] if index > 0 else None
+        next_scene = scenes[index + 1] if index + 1 < len(scenes) else None
+        section_boundaries[section_id] = {
+            "previous_beat": (
+                str(previous_scene.get("body") or previous_scene.get("title") or "").strip()
+                if isinstance(previous_scene, dict)
+                else ""
+            ),
+            "next_beat": (
+                str(next_scene.get("body") or next_scene.get("title") or "").strip()
+                if isinstance(next_scene, dict)
+                else ""
+            ),
+        }
+    plan["render_scope"] = {
+        "mode": "hybrid_subset",
+        "backend": "manim",
+        "allowed_section_ids": manim_section_ids,
+        "include_opening": include_opening,
+        "include_problem_intake": include_opening,
+        "include_closing": include_closing,
+        "forbidden_roles": [
+            role
+            for role, included in (
+                ("opening", include_opening),
+                ("problem_intake", include_opening),
+                ("closing", include_closing),
+            )
+            if not included
+        ],
+        "continuity_context": {
+            "previous_beat": (
+                str(intro_scene.get("body") or intro_scene.get("title") or "").strip()
+                if isinstance(intro_scene, dict)
+                else ""
+            ),
+            "next_beat": (
+                str(summary_scene.get("body") or summary_scene.get("title") or "").strip()
+                if isinstance(summary_scene, dict)
+                else ""
+            ),
+            "section_boundaries": section_boundaries,
+        },
+    }
     plan["hybrid_routes"] = {
         "manim_section_ids": manim_section_ids,
         "remotion_section_ids": sorted(concept_section_ids),
@@ -1828,6 +1897,7 @@ def run_pipeline(
             "storyboard_file": str(storyboard_path) if storyboard_path else None,
             "manim_teaching_plan_file": str(manim_plan_path) if manim_plan_path else str(teaching_plan_path),
             "hybrid_routes": manim_teaching_plan.get("hybrid_routes"),
+            "render_scope": manim_teaching_plan.get("render_scope"),
             "llm_routing_file": str(llm_routing_path),
             "analysis_llm": analysis_llm.summary(),
             "code_llm": code_llm.summary(),

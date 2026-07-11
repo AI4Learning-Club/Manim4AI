@@ -36,8 +36,10 @@ algorithm/theorem in motion → general rule recap.
 Physics lesson arc preference: real scene → objects/axes/units/forces or motion quantities
 → arrows for force/velocity/acceleration/field → time evolution → connect to formulas.
 
-In `visual_strategy` and `board_plan`, explicitly state: 2D vs 3D choice, which quantities
-animate over time, the likely student misconception, and which visual beat removes it.
+Encode the final visualization decision in each section's `representation_plan`:
+dimension, primary and complementary representations, core visual object, animated
+quantities, camera intent, and the semantic relationship that implementation must
+preserve. Use `visual_strategy` and `board_plan` to explain how that decision teaches.
 Do NOT wait for the student to say "use 3D"; infer it from the concept structure.
 """
 

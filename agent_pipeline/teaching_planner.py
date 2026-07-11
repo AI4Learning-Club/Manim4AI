@@ -119,6 +119,15 @@ Return EXACTLY ONE top-level JSON object with this field order and structure:
       "expected_student_reaction": "...",
       "concrete_example": "...",
       "visual_strategy": "...",
+      "representation_plan": {
+        "dimension": "2d|3d|mixed|not_applicable",
+        "primary": "...",
+        "complementary": ["...", "..."],
+        "core_visual_object": "...",
+        "animated_quantities": ["..."],
+        "camera_intent": "none|inspect|pan|follow|orbit|top_view|fixed",
+        "must_preserve": ["..."]
+      },
       "board_plan": "...",
       "narration_goal": "...",
       "key_takeaway": "...",
@@ -146,6 +155,10 @@ Field semantics:
   question.
 - For problem-solving lessons, `hook` and `opening.hook_line` come AFTER the
   student has heard the concise read-in and seen the opening marking setup.
+- `representation_plan` is a final pedagogical visualization decision for the
+  next agent to implement. Choose the lowest faithful dimension and name the
+  primary visual, complementary representations, animated quantities, camera
+  intent, and semantic relationship that must survive implementation.
 
 Rules:
 - JSON string fields must contain final teaching decisions only. Do not include
@@ -419,8 +432,32 @@ def _normalize_misconceptions(items: Any) -> List[Dict[str, str]]:
     return normalized
 
 
-def _normalize_sections(items: Any) -> List[Dict[str, str]]:
-    sections: List[Dict[str, str]] = []
+def _normalize_representation_plan(value: Any, visual_strategy: str) -> Dict[str, Any]:
+    value = value if isinstance(value, dict) else {}
+    return {
+        "dimension": _enum_choice(
+            value.get("dimension"),
+            ("2d", "3d", "mixed", "not_applicable"),
+            "2d",
+        ),
+        "primary": _text(value.get("primary"), visual_strategy),
+        "complementary": _string_list(value.get("complementary"), max_items=4),
+        "core_visual_object": _text(value.get("core_visual_object"), visual_strategy),
+        "animated_quantities": _string_list(
+            value.get("animated_quantities"),
+            max_items=6,
+        ),
+        "camera_intent": _enum_choice(
+            value.get("camera_intent"),
+            ("none", "inspect", "pan", "follow", "orbit", "top_view", "fixed"),
+            "none",
+        ),
+        "must_preserve": _string_list(value.get("must_preserve"), max_items=6),
+    }
+
+
+def _normalize_sections(items: Any) -> List[Dict[str, Any]]:
+    sections: List[Dict[str, Any]] = []
     if not isinstance(items, list):
         items = []
 
@@ -440,6 +477,10 @@ def _normalize_sections(items: Any) -> List[Dict[str, str]]:
             ),
             "concrete_example": _text(item.get("concrete_example"), "给一个具体、直观、可画出来的例子。"),
             "visual_strategy": _text(item.get("visual_strategy"), "用一个干净的图像或动画展示核心变化。"),
+            "representation_plan": _normalize_representation_plan(
+                item.get("representation_plan"),
+                _text(item.get("visual_strategy")),
+            ),
             "board_plan": _text(item.get("board_plan"), "黑板上只保留这一段最关键的图和一句结论。"),
             "narration_goal": _text(item.get("narration_goal"), "旁白要像老师在带着学生看，不是念定义。"),
             "key_takeaway": _text(item.get("key_takeaway"), "这一段结束时，学生应能用自己的话说出关键结论。"),
@@ -511,6 +552,15 @@ def _normalize_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
             "expected_student_reaction": "先看清题目给了什么、问什么，再愿意跟着老师继续往下看。",
             "concrete_example": "从题面中的关键条件、目标问题或图形关系切入。",
             "visual_strategy": "先呈现简洁题面卡，再用圆圈、描边框、下划线、箭头或颜色高亮依次标出重点信息，之后才进入 hook 和路线说明。",
+            "representation_plan": {
+                "dimension": "2d",
+                "primary": "problem card with anchored visual markings",
+                "complementary": ["key-relation board summary"],
+                "core_visual_object": "problem card",
+                "animated_quantities": [],
+                "camera_intent": "fixed",
+                "must_preserve": ["givens-target-key relation mapping"],
+            },
             "board_plan": "左侧或上方放题面卡，旁边整理“已知 / 要求 / 关键关系”，标注完成后再进入 hook 与解题路径。",
             "narration_goal": "像老师在黑板前先用1到2句读清题意、再划重点，最后提出为什么这样解。",
             "key_takeaway": "先读懂题目和解题入口，再进入正式推理。",

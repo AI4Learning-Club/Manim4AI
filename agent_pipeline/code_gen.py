@@ -7,10 +7,11 @@ streaming to handle long responses.
 
 from __future__ import annotations
 
-import base64
 import ast
+import base64
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,8 +19,8 @@ from typing import Any, Dict, List, Optional
 from plugins.manim.runtime_config import get_manim_settings
 
 from .agent_skills import (
-    SkillSelection,
     RouterDecision,
+    SkillSelection,
     build_manim_skill_audit,
     build_manim_skill_context,
     build_selected_skills_manifest,
@@ -29,6 +30,11 @@ from .agent_skills import (
 )
 from .llm import LLMClient, LLMConfig, LLMDeltaCallback, LLMEventCallback, StreamTerminated
 from .output_language import normalize_output_language, output_language_name
+from .scene_capabilities import (
+    SceneCapabilityContract,
+    compile_scene_capability_contract,
+    validate_scene_capability_contract,
+)
 from .scene_pack import parse_scene_pack, recover_scene_pack_skeleton
 from .streaming_scene_pack import extract_parseable_prefix, sanitize_streaming_code
 from .tool_runtime import ManimToolRuntime, ToolResult, build_openai_tool_schemas
@@ -53,6 +59,13 @@ Hard contract:
 - Keep runtime safety ahead of visual ambition: prefer runnable, debuggable
   Manim code over clever but fragile constructs.
 - Preserve the teaching plan, section order, and requested output language.
+- When `render_scope` is provided, generate exactly its allowed section ids and
+  included semantic roles. Never render context owned by another backend.
+- Treat Planner fields as final pedagogical decisions. Skills may guide safe
+  implementation but must not reselect the opening, teaching structure,
+  examples, representation strategy, narration goals, transitions, or closing.
+- When an implementation detail is unspecified, choose the simplest safe
+  Manim implementation that preserves the Planner's teaching intent.
 - {output_contract}
 """
 
@@ -378,6 +391,9 @@ def _build_local_asset_prompt(teaching_plan: Optional[Dict]) -> str:
 def _build_opening_prompt(teaching_plan: Optional[Dict]) -> str:
     if not teaching_plan:
         return ""
+    render_scope = teaching_plan.get("render_scope")
+    if isinstance(render_scope, dict) and render_scope.get("include_opening") is False:
+        return ""
 
     opening = teaching_plan.get("opening")
     if not isinstance(opening, dict):
@@ -424,6 +440,12 @@ def _build_opening_prompt(teaching_plan: Optional[Dict]) -> str:
 def _build_problem_intake_prompt(teaching_plan: Optional[Dict]) -> str:
     if not teaching_plan:
         return ""
+    render_scope = teaching_plan.get("render_scope")
+    if (
+        isinstance(render_scope, dict)
+        and render_scope.get("include_problem_intake") is False
+    ):
+        return ""
 
     problem_intake = teaching_plan.get("problem_intake")
     if not isinstance(problem_intake, dict):
@@ -455,13 +477,47 @@ def _build_problem_intake_prompt(teaching_plan: Optional[Dict]) -> str:
     )
 
 
-def _build_camera_execution_prompt(selection: SkillSelection) -> str:
+def _build_camera_execution_prompt(
+    selection: SkillSelection,
+    teaching_plan: Optional[Dict] = None,
+) -> str:
     if "camera-movement" not in selection.reference_ids:
         return ""
 
+    planned_intents: list[str] = []
+    has_representation_contract = False
+    if isinstance(teaching_plan, dict):
+        sections = teaching_plan.get("sections")
+        if isinstance(sections, list):
+            for section in sections:
+                if not isinstance(section, dict):
+                    continue
+                representation = section.get("representation_plan")
+                if not isinstance(representation, dict):
+                    continue
+                has_representation_contract = True
+                intent = str(representation.get("camera_intent", "")).strip()
+                if intent and intent not in {"none", "fixed"}:
+                    planned_intents.append(intent)
+
+    if has_representation_contract:
+        if not planned_intents:
+            return (
+                "## Camera implementation boundary\n"
+                "The Planner did not select a moving-camera intent. Treat the "
+                "camera reference as implementation knowledge only; do not invent "
+                "zoom, pan, or follow beats.\n"
+            )
+        return (
+            "## Planned camera execution\n"
+            f"Implement only these Planner-selected camera intents: {', '.join(dict.fromkeys(planned_intents))}.\n"
+            "Do not add extra camera beats or replace the planned representation. "
+            "Use the selected camera skill only for safe Manim mechanics.\n"
+        )
+
     return (
         "## Camera movement execution\n"
-        "- Because `camera-movement` is selected, plan camera beats explicitly in the implementation; do not output a prose camera plan.\n"
+        "- Because no Planner contract was supplied, realize the requested camera movement directly in code.\n"
         "- Do not satisfy camera movement only with a single zoom-in/restore when the visual has a moving point, path, trajectory, process, or region comparison.\n"
         "- Use at least one non-zoom camera motion when the lesson has those opportunities: pan between semantic targets, follow/track a moving target, or track along a curve/path.\n"
         "- For multi-section lessons with camera opportunities, prefer 2-4 deliberate camera beats across the full video; each beat must serve a distinct teaching intent.\n"
@@ -519,100 +575,180 @@ def _build_selected_theme_prompt(teaching_plan: Optional[Dict]) -> str:
     )
 
 
-def _build_codegen_teaching_context(teaching_plan: Optional[Dict]) -> Dict[str, object]:
+_CODEGEN_LESSON_CONTRACT_FIELDS = (
+    "lesson_goal",
+    "student_profile",
+    "teaching_promise",
+    "hook",
+    "big_idea",
+    "teacher_voice",
+    "narrative_arc",
+    "closing",
+)
+_CODEGEN_SECTION_CONTRACT_FIELDS = (
+    "id",
+    "title",
+    "teacher_goal",
+    "teacher_move",
+    "student_question",
+    "why_this_step_now",
+    "expected_student_reaction",
+    "concrete_example",
+    "visual_strategy",
+    "representation_plan",
+    "board_plan",
+    "narration_goal",
+    "key_takeaway",
+    "check_for_understanding",
+    "transition",
+)
+
+
+def _copy_contract_fields(source: Dict, fields: tuple[str, ...]) -> Dict[str, object]:
+    return {key: deepcopy(source[key]) for key in fields if key in source}
+
+
+def compile_codegen_execution_contract(
+    teaching_plan: Optional[Dict],
+) -> Dict[str, object]:
+    """Compile Planner decisions into a lossless CodeGen execution contract."""
+
     if not isinstance(teaching_plan, dict):
         return {}
 
-    context: Dict[str, object] = {}
+    context: Dict[str, object] = {
+        "contract_version": "teaching_execution.v1",
+        "decision_ownership": (
+            "Planner fields are final pedagogical decisions. CodeGen must implement "
+            "them and must not reselect the opening, lesson structure, examples, "
+            "representation strategy, narration goals, transitions, or closing."
+        ),
+    }
+    render_scope = (
+        teaching_plan.get("render_scope")
+        if isinstance(teaching_plan.get("render_scope"), dict)
+        else {}
+    )
+    lesson_fields = list(_CODEGEN_LESSON_CONTRACT_FIELDS)
+    if render_scope.get("include_opening") is False:
+        lesson_fields = [key for key in lesson_fields if key != "hook"]
+    if render_scope.get("include_closing") is False:
+        lesson_fields = [key for key in lesson_fields if key != "closing"]
+    context.update(_copy_contract_fields(teaching_plan, tuple(lesson_fields)))
 
-    for key in ("lesson_goal", "big_idea"):
+    structured_fields = {
+        "problem_intake": (
+            "is_problem_solving",
+            "restatement",
+            "givens",
+            "target",
+            "key_terms",
+            "visual_marking_plan",
+        ),
+        "opening": ("architecture", "style", "hook_line", "roadmap_style"),
+    }
+    for key, fields in structured_fields.items():
+        if key == "opening" and render_scope.get("include_opening") is False:
+            continue
+        if (
+            key == "problem_intake"
+            and render_scope.get("include_problem_intake") is False
+        ):
+            continue
         value = teaching_plan.get(key)
-        if isinstance(value, str) and value.strip():
-            context[key] = value.strip()
-
-    problem_intake = teaching_plan.get("problem_intake")
-    if isinstance(problem_intake, dict):
-        context["problem_intake"] = {
-            key: problem_intake.get(key)
-            for key in ("is_problem_solving", "restatement", "target", "key_terms", "visual_marking_plan")
-            if key in problem_intake
-        }
-
-    opening = teaching_plan.get("opening")
-    if isinstance(opening, dict):
-        context["opening"] = {
-            key: opening.get(key)
-            for key in ("architecture", "style", "hook_line", "roadmap_style")
-            if key in opening
-        }
+        if isinstance(value, dict):
+            context[key] = _copy_contract_fields(value, fields)
 
     misconceptions = teaching_plan.get("misconceptions")
-    if isinstance(misconceptions, list) and misconceptions:
-        compact_misconceptions: list[dict[str, object]] = []
-        for item in misconceptions[:1]:
-            if not isinstance(item, dict):
-                continue
-            compact_misconceptions.append(
-                {
-                    key: item.get(key)
-                    for key in ("mistake", "teacher_response")
-                    if key in item
-                }
+    if isinstance(misconceptions, list):
+        context["misconceptions"] = [
+            _copy_contract_fields(
+                item,
+                ("mistake", "why_student_thinks_so", "teacher_response"),
             )
-        if compact_misconceptions:
-            context["misconceptions"] = compact_misconceptions
+            for item in misconceptions
+            if isinstance(item, dict)
+        ]
 
     sections = teaching_plan.get("sections")
-    if isinstance(sections, list) and sections:
-        compact_sections: list[dict[str, object]] = []
-        for item in sections:
-            if not isinstance(item, dict):
-                continue
-            compact_sections.append(
-                {
-                    key: item.get(key)
-                    for key in (
-                        "id",
-                        "title",
-                        "teacher_move",
-                        "visual_strategy",
-                        "key_takeaway",
-                        "check_for_understanding",
-                    )
-                    if key in item
-                }
-            )
-        if compact_sections:
-            context["sections"] = compact_sections
+    if isinstance(sections, list):
+        context["sections"] = [
+            _copy_contract_fields(item, _CODEGEN_SECTION_CONTRACT_FIELDS)
+            for item in sections
+            if isinstance(item, dict)
+        ]
 
-    selected_assets = teaching_plan.get("selected_assets")
-    if isinstance(selected_assets, list):
-        context["selected_assets"] = selected_assets
-
-    selected_theme = teaching_plan.get("selected_theme")
-    if isinstance(selected_theme, dict):
-        context["selected_theme"] = {
-            key: selected_theme.get(key)
-            for key in ("theme_id", "display_name", "reason")
-            if key in selected_theme
-        }
-
-    fast_path = teaching_plan.get("fast_path")
-    if isinstance(fast_path, dict):
-        context["fast_path"] = {
-            key: fast_path.get(key)
-            for key in (
-                "template_id",
-                "category_id",
-                "category_display_name",
-                "mode",
-                "rewrite_required",
-                "taxonomy_size",
-            )
-            if key in fast_path
-        }
-
+    passthrough_fields = (
+        "selected_assets",
+        "selected_theme",
+        "hybrid_routes",
+        "render_scope",
+        "fast_path",
+    )
+    context.update(_copy_contract_fields(teaching_plan, passthrough_fields))
     return context
+
+
+def _build_render_scope_prompt(teaching_plan: Optional[Dict]) -> str:
+    if not isinstance(teaching_plan, dict):
+        return ""
+    render_scope = teaching_plan.get("render_scope")
+    if not isinstance(render_scope, dict):
+        return ""
+    return (
+        "## Render scope — hard ownership contract\n"
+        + json.dumps(render_scope, ensure_ascii=False, indent=2)
+        + "\n\nGenerate only the section ids and semantic roles owned by this scope. "
+        "Continuity context may guide the first and last transition, but it must "
+        "not create manifest entries, wrapper scenes, section methods, visuals, "
+        "or narration for excluded opening, problem-intake, summary, or closing roles."
+    )
+
+
+def _build_codegen_acceptance_checklist(teaching_plan: Optional[Dict]) -> str:
+    render_scope = (
+        teaching_plan.get("render_scope")
+        if isinstance(teaching_plan, dict)
+        and isinstance(teaching_plan.get("render_scope"), dict)
+        else {}
+    )
+    lines = ["## Acceptance checklist"]
+    allowed_ids = render_scope.get("allowed_section_ids")
+    if isinstance(allowed_ids, list):
+        lines.append(
+            "- `SCENE_MANIFEST` contains exactly the render-scope section ids in order; do not add opening or closing segments."
+        )
+    else:
+        lines.append("- `SCENE_MANIFEST` covers the teaching-plan section ids in order.")
+    lines.append(
+        "- `LessonBase.theme_id` matches the selected theme when one is provided."
+    )
+    if render_scope.get("include_problem_intake", True):
+        lines.append(
+            "- Problem-solving lessons start with the problem-intake read-in and visual marking before solving."
+        )
+    lines.append(
+        "- Every rendered section implements its Planner-selected example and `representation_plan`; do not substitute another teaching design."
+    )
+    if render_scope.get("include_closing", True):
+        lines.append(
+            "- The final section realizes the Planner's closing summary, transfer question, and after-class prompt when provided."
+        )
+    lines.extend(
+        [
+            "- Every spoken beat uses a direct extractable call such as `self.speak_with_subtitle(\"literal text\", ...)` or `self.speak(\"literal text\", ...)`; do not wrap TTS in `narrate`/`say` helpers or pass variables as the first argument.",
+            "- Do not use local icons, raw image paths, or URLs when no local assets were selected.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_codegen_teaching_context(
+    teaching_plan: Optional[Dict],
+) -> Dict[str, object]:
+    """Backward-compatible alias for the teaching execution contract compiler."""
+
+    return compile_codegen_execution_contract(teaching_plan)
 
 
 def _build_fast_path_reference_prompt(teaching_plan: Optional[Dict]) -> str:
@@ -669,6 +805,7 @@ def _prompt_audit(
 ) -> Dict[str, Any]:
     user_text = bundle.user_text()
     section_ids = []
+    render_scope: Dict[str, object] = {}
     if isinstance(teaching_plan, dict):
         sections = teaching_plan.get("sections")
         if isinstance(sections, list):
@@ -677,6 +814,8 @@ def _prompt_audit(
                 for item in sections
                 if isinstance(item, dict) and str(item.get("id", "")).strip()
             ]
+        if isinstance(teaching_plan.get("render_scope"), dict):
+            render_scope = deepcopy(teaching_plan["render_scope"])
     audit = build_manim_skill_audit(selection)
     skill_chars = sum(
         len(section.text)
@@ -686,6 +825,7 @@ def _prompt_audit(
     audit.update(
         {
             "section_ids_included": section_ids,
+            "render_scope": render_scope,
             "prompt_character_counts": {
                 "system": len(bundle.system),
                 "user": len(user_text),
@@ -757,36 +897,76 @@ def _core_terms(text: str) -> List[str]:
     return terms
 
 
-def _post_generation_contract_issues(code: str, teaching_plan: Optional[Dict]) -> List[str]:
-    if not isinstance(teaching_plan, dict):
-        return []
-
+def _post_generation_contract_issues(
+    code: str,
+    teaching_plan: Optional[Dict],
+    *,
+    capability_contract: SceneCapabilityContract | None = None,
+) -> List[str]:
+    plan = teaching_plan if isinstance(teaching_plan, dict) else {}
     issues: List[str] = []
     try:
         spec = parse_scene_pack(code)
     except Exception as exc:
         return [f"Scene Pack is not parseable after generation: {exc}"]
 
-    routes = teaching_plan.get("hybrid_routes") if isinstance(teaching_plan.get("hybrid_routes"), dict) else {}
+    routes = plan.get("hybrid_routes") if isinstance(plan.get("hybrid_routes"), dict) else {}
     routed_ids = routes.get("manim_section_ids") if isinstance(routes.get("manim_section_ids"), list) else []
-    sections = teaching_plan.get("sections") if isinstance(teaching_plan.get("sections"), list) else []
+    render_scope = plan.get("render_scope") if isinstance(plan.get("render_scope"), dict) else {}
+    scoped_ids = (
+        render_scope.get("allowed_section_ids")
+        if isinstance(render_scope.get("allowed_section_ids"), list)
+        else []
+    )
+    sections = plan.get("sections") if isinstance(plan.get("sections"), list) else []
     expected_section_ids = [
         str(item.get("id")).strip()
         for item in sections
         if isinstance(item, dict) and str(item.get("id", "")).strip()
     ]
-    if routed_ids:
+    if scoped_ids:
+        expected_section_ids = [str(item).strip() for item in scoped_ids if str(item).strip()]
+    elif routed_ids:
         expected_section_ids = [str(item).strip() for item in routed_ids if str(item).strip()]
 
     manifest_ids = [segment.segment_id for segment in spec.manifest]
-    missing_ids = [section_id for section_id in expected_section_ids if section_id not in manifest_ids]
-    if missing_ids:
+    if scoped_ids and manifest_ids != expected_section_ids:
         issues.append(
-            "SCENE_MANIFEST must cover the teaching-plan section order; missing section id(s): "
-            + ", ".join(missing_ids)
+            "SCENE_MANIFEST must exactly match `render_scope.allowed_section_ids` in order; "
+            f"expected {expected_section_ids}, got {manifest_ids}."
+        )
+    else:
+        missing_ids = [section_id for section_id in expected_section_ids if section_id not in manifest_ids]
+        if missing_ids:
+            issues.append(
+                "SCENE_MANIFEST must cover the teaching-plan section order; missing section id(s): "
+                + ", ".join(missing_ids)
+            )
+
+    try:
+        module = ast.parse(code)
+        defined_method_names = {
+            node.name for node in ast.walk(module) if isinstance(node, ast.FunctionDef)
+        }
+    except SyntaxError:
+        defined_method_names = set()
+    forbidden_methods = []
+    if render_scope.get("include_opening") is False:
+        forbidden_methods.append("opening_page")
+    if render_scope.get("include_closing") is False:
+        forbidden_methods.append("closing_page")
+    rendered_forbidden_methods = [
+        method_name
+        for method_name in forbidden_methods
+        if method_name in defined_method_names
+    ]
+    if rendered_forbidden_methods:
+        issues.append(
+            "Render scope excludes these semantic role method(s), so remove them and "
+            "their wrappers/manifest entries: " + ", ".join(rendered_forbidden_methods)
         )
 
-    selected_theme = teaching_plan.get("selected_theme")
+    selected_theme = plan.get("selected_theme")
     if isinstance(selected_theme, dict):
         expected_theme_id = str(selected_theme.get("theme_id", "")).strip()
         if expected_theme_id:
@@ -797,8 +977,12 @@ def _post_generation_contract_issues(code: str, teaching_plan: Optional[Dict]) -
                     f'"{actual_theme_id or "<missing>"}".'
                 )
 
-    problem_intake = teaching_plan.get("problem_intake")
-    if isinstance(problem_intake, dict) and bool(problem_intake.get("is_problem_solving")):
+    problem_intake = plan.get("problem_intake")
+    if (
+        render_scope.get("include_problem_intake", True)
+        and isinstance(problem_intake, dict)
+        and bool(problem_intake.get("is_problem_solving"))
+    ):
         restatement = str(problem_intake.get("restatement", "")).strip()
         terms = _core_terms(restatement)
         if terms and not any(term in code for term in terms):
@@ -807,13 +991,16 @@ def _post_generation_contract_issues(code: str, teaching_plan: Optional[Dict]) -
                 "`problem_intake.restatement` before solving."
             )
 
-    selected_assets = teaching_plan.get("selected_assets")
+    selected_assets = plan.get("selected_assets")
     if not (isinstance(selected_assets, list) and selected_assets):
         forbidden_asset_patterns = ("load_local_icon(", "ImageMobject(", "http://", "https://")
         if any(pattern in code for pattern in forbidden_asset_patterns):
             issues.append(
                 "No local assets were selected; generated code must not load icons, raw images, or URLs."
             )
+
+    compiled_capabilities = capability_contract or compile_scene_capability_contract(())
+    issues.extend(validate_scene_capability_contract(code, compiled_capabilities))
 
     return issues
 
@@ -895,14 +1082,15 @@ def _recover_missing_manifest_scene_pack(code: str) -> str | None:
     return recovered
 
 
-_SYSTEM_POST_GENERATION_CONTRACT_REPAIR = """\
-You are an expert Manim contract repair agent.
+_SYSTEM_POST_GENERATION_CONTRACT_REPAIR = _stage_system_contract(
+    "contract_fix",
+    "Output only the complete corrected Python file inside a ```python``` block.",
+) + """
 
-The generated code is mostly complete, but deterministic post-generation checks
-found contract mismatches. Fix ONLY those mismatches while preserving the Scene
-Pack architecture, teaching flow, narration, theme helpers, and existing visuals.
-
-Output ONLY the corrected Python code inside a ```python``` block.
+Deterministic post-generation checks found full-file contract mismatches. Fix
+ONLY those reported mismatches while preserving correct teaching content,
+narration, theme helpers, section methods, and existing visuals. This is not a
+segment-method repair stage.
 """
 
 
@@ -1129,10 +1317,15 @@ class CodeGenAgent:
         output_language: str,
         issues: List[str],
         selection: SkillSelection,
+        capability_contract: SceneCapabilityContract,
     ) -> str:
-        compact_plan = _build_codegen_teaching_context(teaching_plan)
+        execution_contract = compile_codegen_execution_contract(teaching_plan)
         user_sections = [
             PromptSection("output_language", _build_output_language_prompt(output_language)),
+            PromptSection(
+                "scene_capability_contract",
+                capability_contract.prompt_text(),
+            ),
             PromptSection(
                 "contract_issues",
                 "## Post-generation contract mismatches\n"
@@ -1140,7 +1333,8 @@ class CodeGenAgent:
             ),
             PromptSection(
                 "teaching_plan",
-                "## Teaching plan contract to preserve\n" + _compact_json_text(compact_plan),
+                "## Teaching plan contract to preserve\n"
+                + _compact_json_text(execution_contract),
             ),
         ]
         if selection.reference_ids:
@@ -1164,7 +1358,11 @@ class CodeGenAgent:
         try:
             raw = self._call(bundle.system, [{"type": "input_text", "text": bundle.user_text()}], max_retries=1)
             repaired = _extract_code(raw)
-            if not _post_generation_contract_issues(repaired, teaching_plan):
+            if not _post_generation_contract_issues(
+                repaired,
+                teaching_plan,
+                capability_contract=capability_contract,
+            ):
                 return repaired
         except Exception:
             return code
@@ -1178,21 +1376,31 @@ class CodeGenAgent:
         output_language: str,
         selection: SkillSelection,
     ) -> str:
-        issues = _post_generation_contract_issues(code, teaching_plan)
-        if not issues or not isinstance(teaching_plan, dict):
+        capability_contract = compile_scene_capability_contract(
+            selection.reference_ids,
+            teaching_plan,
+        )
+        issues = _post_generation_contract_issues(
+            code,
+            teaching_plan,
+            capability_contract=capability_contract,
+        )
+        if not issues:
             return code
+        plan = teaching_plan if isinstance(teaching_plan, dict) else {}
         repair_selection = self._select_manim_skills(
-            "validation_fix",
-            teaching_plan=teaching_plan,
+            "contract_fix",
+            teaching_plan=plan,
             diagnostics=issues,
             code=code,
         )
         return self._repair_post_generation_contract(
             code=code,
-            teaching_plan=teaching_plan,
+            teaching_plan=plan,
             output_language=output_language,
             issues=issues,
             selection=repair_selection,
+            capability_contract=capability_contract,
         )
 
     def fix_with_tools(
@@ -1372,7 +1580,10 @@ class CodeGenAgent:
             PromptSection("student_request", f"## Student request\n{request_text}"),
         ]
         if teaching_plan:
-            codegen_context = _build_codegen_teaching_context(teaching_plan)
+            codegen_context = compile_codegen_execution_contract(teaching_plan)
+            render_scope_prompt = _build_render_scope_prompt(teaching_plan)
+            if render_scope_prompt:
+                user_sections.append(PromptSection("render_scope", render_scope_prompt))
             user_sections.append(
                 PromptSection(
                     "teaching_plan",
@@ -1395,9 +1606,9 @@ class CodeGenAgent:
                 PromptSection(
                     "required_teaching_plan_execution",
                     "## Required teaching-plan execution\n"
-                    "Turn the compact teaching plan into concrete Manim behavior. "
+                    "Compile the teaching execution contract into concrete Manim behavior. "
                     "Use the selected skill context for the stage-specific teaching, layout, graph, annotation, formula, motion, and repair rules. "
-                    "Preserve every included section id in order, reflect each section's teacher move and visual strategy, and land each section on its key takeaway or check for understanding.",
+                    "Preserve every render-scope section id in order. Execute, rather than redesign, each included section's student question, teacher move, concrete example, visual and representation plan, board plan, narration goal, takeaway, check for understanding, and transition. Render opening and closing only when the scope explicitly includes them.",
                 )
             )
             user_sections.append(PromptSection("local_assets", _build_local_asset_prompt(teaching_plan)))
@@ -1414,9 +1625,22 @@ class CodeGenAgent:
                     build_manim_skill_context(selection),
                 )
             )
-        camera_execution_prompt = _build_camera_execution_prompt(selection)
+        camera_execution_prompt = _build_camera_execution_prompt(
+            selection,
+            teaching_plan,
+        )
         if camera_execution_prompt:
             user_sections.append(PromptSection("camera_movement_execution", camera_execution_prompt))
+        capability_contract = compile_scene_capability_contract(
+            selection.reference_ids,
+            teaching_plan,
+        )
+        user_sections.append(
+            PromptSection(
+                "scene_capability_contract",
+                capability_contract.prompt_text(),
+            )
+        )
         user_sections.append(PromptSection("output_structure", "## Output structure\nFollow the Scene Pack contract exactly."))
         user_sections.append(
             PromptSection(
@@ -1436,12 +1660,7 @@ class CodeGenAgent:
         user_sections.append(
             PromptSection(
                 "acceptance_checklist",
-                "## Acceptance checklist\n"
-                "- `SCENE_MANIFEST` covers the teaching-plan section ids in order.\n"
-                "- `LessonBase.theme_id` matches the selected theme when one is provided.\n"
-                "- Problem-solving lessons start with the problem-intake read-in and visual marking before solving.\n"
-                "- Every spoken beat uses a direct extractable call such as `self.speak_with_subtitle(\"literal text\", ...)` or `self.speak(\"literal text\", ...)`; do not wrap TTS in `narrate`/`say` helpers or pass variables as the first argument.\n"
-                "- Do not use local icons, raw image paths, or URLs when no local assets were selected.",
+                _build_codegen_acceptance_checklist(teaching_plan),
             )
         )
         bundle = _build_prompt_bundle(
