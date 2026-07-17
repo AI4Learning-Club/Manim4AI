@@ -186,7 +186,27 @@ def _build_props(
         s.get("type") in {"concept_card", "chapter_card"}
         for s in content_scenes
     )
-    use_segment_durations = bool(segment_durations and len(segment_durations) >= 1)
+    if segment_durations is not None:
+        expected_segment_ids = [
+            str(scene.get("source_section_id") or "").strip()
+            for scene in manim_chunks
+        ]
+        actual_segment_ids = [
+            str(item.get("segment_id") or "").strip()
+            for item in segment_durations
+        ]
+        actual_orders = [int(item.get("order", -1)) for item in segment_durations]
+        if (
+            expected_segment_ids != actual_segment_ids
+            or actual_orders != list(range(len(segment_durations)))
+        ):
+            raise ValueError(
+                "Storyboard Manim chunks must match rendered segment durations "
+                "one-to-one in id and order; "
+                f"expected {expected_segment_ids}, got {actual_segment_ids} "
+                f"with orders {actual_orders}."
+            )
+    use_segment_durations = segment_durations is not None
     is_interleaved = len(content_scenes) >= 2 and len(manim_chunks) >= 1 and has_remotion_content
 
     intro_scene = (

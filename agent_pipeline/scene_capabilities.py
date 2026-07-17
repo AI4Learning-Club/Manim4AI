@@ -206,50 +206,106 @@ def _representation_plans(
 
 
 def _uses_self_camera_frame(module: ast.Module) -> bool:
-    self_aliases, camera_aliases = _scene_and_camera_aliases(module)
-    for node in ast.walk(module):
-        if not isinstance(node, ast.Attribute) or node.attr != "frame":
-            continue
-        camera = node.value
-        if isinstance(camera, ast.Name) and camera.id in camera_aliases:
-            return True
-        if (
-            isinstance(camera, ast.Attribute)
-            and camera.attr == "camera"
-            and isinstance(camera.value, ast.Name)
-            and camera.value.id in self_aliases
-        ):
-            return True
+    for function in (
+        node
+        for node in ast.walk(module)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ):
+        nodes = _function_scope_nodes(function)
+        for node in nodes:
+            if not isinstance(node, ast.Attribute) or node.attr != "frame":
+                continue
+            scene_aliases, camera_aliases = _function_aliases_before(
+                function,
+                nodes,
+                node,
+            )
+            camera = node.value
+            if isinstance(camera, ast.Name) and camera.id in camera_aliases:
+                return True
+            if (
+                isinstance(camera, ast.Attribute)
+                and camera.attr == "camera"
+                and isinstance(camera.value, ast.Name)
+                and camera.value.id in scene_aliases
+            ):
+                return True
     return False
 
 
-def _scene_and_camera_aliases(module: ast.Module) -> tuple[set[str], set[str]]:
-    self_aliases = {"self"}
+def _function_scope_nodes(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.AST]:
+    nodes: list[ast.AST] = []
+
+    class _ScopeVisitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is function:
+                self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if node is function:
+                self.generic_visit(node)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return None
+
+        def generic_visit(self, node: ast.AST) -> None:
+            if node is not function:
+                nodes.append(node)
+            super().generic_visit(node)
+
+    _ScopeVisitor().visit(function)
+    return nodes
+
+
+def _function_aliases_before(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    nodes: list[ast.AST],
+    before_node: ast.AST,
+) -> tuple[set[str], set[str]]:
+    positional = [*function.args.posonlyargs, *function.args.args]
+    scene_aliases = {"self"} if positional and positional[0].arg == "self" else set()
     camera_aliases: set[str] = set()
-    changed = True
-    while changed:
-        changed = False
-        for node in ast.walk(module):
-            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+    before = (int(before_node.lineno), int(before_node.col_offset))
+
+    assignments: list[tuple[tuple[int, int], list[ast.AST], ast.AST | None]] = []
+    for node in nodes:
+        position = (
+            int(getattr(node, "end_lineno", getattr(node, "lineno", 0))),
+            int(getattr(node, "end_col_offset", getattr(node, "col_offset", 0))),
+        )
+        if position > before:
+            continue
+        if isinstance(node, ast.Assign):
+            assignments.append((position, list(node.targets), node.value))
+        elif isinstance(node, ast.AnnAssign):
+            assignments.append((position, [node.target], node.value))
+        elif isinstance(node, ast.NamedExpr):
+            assignments.append((position, [node.target], node.value))
+        elif isinstance(node, ast.AugAssign):
+            assignments.append((position, [node.target], None))
+        elif isinstance(node, ast.Delete):
+            assignments.append((position, list(node.targets), None))
+
+    for _, targets, value in sorted(assignments, key=lambda item: item[0]):
+        is_scene = isinstance(value, ast.Name) and value.id in scene_aliases
+        is_camera = (
+            isinstance(value, ast.Attribute)
+            and value.attr == "camera"
+            and isinstance(value.value, ast.Name)
+            and value.value.id in scene_aliases
+        )
+        for target in targets:
+            if not isinstance(target, ast.Name):
                 continue
-            value = node.value
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if isinstance(value, ast.Name) and value.id in self_aliases:
-                for target in targets:
-                    if isinstance(target, ast.Name) and target.id not in self_aliases:
-                        self_aliases.add(target.id)
-                        changed = True
-            if (
-                isinstance(value, ast.Attribute)
-                and value.attr == "camera"
-                and isinstance(value.value, ast.Name)
-                and value.value.id in self_aliases
-            ):
-                for target in targets:
-                    if isinstance(target, ast.Name) and target.id not in camera_aliases:
-                        camera_aliases.add(target.id)
-                        changed = True
-    return self_aliases, camera_aliases
+            scene_aliases.discard(target.id)
+            camera_aliases.discard(target.id)
+            if is_scene:
+                scene_aliases.add(target.id)
+            elif is_camera:
+                camera_aliases.add(target.id)
+    return scene_aliases, camera_aliases
 
 
 def _uses_3d_constructs(module: ast.Module) -> bool:
@@ -276,21 +332,27 @@ def _uses_3d_constructs(module: ast.Module) -> bool:
         ):
             return True
 
-    self_aliases, _ = _scene_and_camera_aliases(module)
-    for node in ast.walk(module):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr not in THREE_D_SCENE_ONLY_APIS:
-            continue
-        receiver = node.func.value
-        if isinstance(receiver, ast.Name) and receiver.id in self_aliases:
-            return True
-        if (
-            isinstance(receiver, ast.Call)
-            and isinstance(receiver.func, ast.Name)
-            and receiver.func.id == "super"
-        ):
-            return True
+    for function in (
+        node
+        for node in ast.walk(module)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ):
+        nodes = _function_scope_nodes(function)
+        for node in nodes:
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in THREE_D_SCENE_ONLY_APIS:
+                continue
+            receiver = node.func.value
+            scene_aliases, _ = _function_aliases_before(function, nodes, node)
+            if isinstance(receiver, ast.Name) and receiver.id in scene_aliases:
+                return True
+            if (
+                isinstance(receiver, ast.Call)
+                and isinstance(receiver.func, ast.Name)
+                and receiver.func.id == "super"
+            ):
+                return True
     return False
 
 

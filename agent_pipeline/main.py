@@ -45,6 +45,7 @@ from .fast_paths import (
     should_skip_fast_path_for_request,
 )
 from .llm import resolve_pipeline_llm_configs, validate_pipeline_llm_configs
+from .hybrid_routes import normalize_hybrid_storyboard_routes
 from .output_language import normalize_output_language, output_language_name
 from .remotion_renderer import build_remotion_hybrid
 from .renderer import (
@@ -1470,6 +1471,7 @@ def _build_manim_teaching_plan(
     if not storyboard:
         return teaching_plan
 
+    storyboard = normalize_hybrid_storyboard_routes(teaching_plan, storyboard)
     scenes = storyboard.get("scenes") if isinstance(storyboard.get("scenes"), list) else []
     sections = teaching_plan.get("sections") if isinstance(teaching_plan.get("sections"), list) else []
     by_id = {
@@ -1927,6 +1929,10 @@ def run_pipeline(
             stage_started_at = time.time()
             director = StoryboardAgent(director_llm)
             storyboard = director.plan(request_text, teaching_plan)
+            storyboard = normalize_hybrid_storyboard_routes(
+                teaching_plan,
+                storyboard,
+            )
             stage_times["director"] = time.time() - stage_started_at
             storyboard_path = run_dir / "storyboard.json"
             storyboard_path.write_text(

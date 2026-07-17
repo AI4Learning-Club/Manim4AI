@@ -1079,6 +1079,56 @@ def _scene_name_from_segment(index: int, segment_id: str) -> str:
     return f"Segment{index:02d}{_pascal_from_snake(segment_id)}Scene"
 
 
+_RECOVERABLE_SCENE_EFFECT_METHODS = frozenset(
+    {
+        "add",
+        "add_fixed_in_frame_mobjects",
+        "add_fixed_orientation_mobjects",
+        "add_sound",
+        "begin_3dillusion_camera_rotation",
+        "begin_ambient_camera_rotation",
+        "clear",
+        "clear_scene_keep_bg",
+        "move_camera",
+        "next_section",
+        "play",
+        "remove",
+        "remove_fixed_in_frame_mobjects",
+        "remove_fixed_orientation_mobjects",
+        "set_camera_orientation",
+        "set_to_default_angled_camera_orientation",
+        "speak",
+        "speak_with_subtitle",
+        "stop_3dillusion_camera_rotation",
+        "stop_ambient_camera_rotation",
+        "wait",
+    }
+)
+
+
+def _recoverable_method_scope_nodes(node: ast.FunctionDef) -> list[ast.AST]:
+    scoped_nodes: list[ast.AST] = []
+
+    class _ScopeVisitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, current: ast.FunctionDef) -> None:
+            if current is node:
+                self.generic_visit(current)
+
+        def visit_AsyncFunctionDef(self, current: ast.AsyncFunctionDef) -> None:
+            return None
+
+        def visit_Lambda(self, current: ast.Lambda) -> None:
+            return None
+
+        def generic_visit(self, current: ast.AST) -> None:
+            if current is not node:
+                scoped_nodes.append(current)
+            super().generic_visit(current)
+
+    _ScopeVisitor().visit(node)
+    return scoped_nodes
+
+
 def _recoverable_scene_method(node: ast.FunctionDef) -> bool:
     method_name = node.name
     if not (
@@ -1098,7 +1148,21 @@ def _recoverable_scene_method(node: ast.FunctionDef) -> bool:
         return False
     if any(default is None for default in node.args.kw_defaults):
         return False
-    return True
+
+    scoped_nodes = _recoverable_method_scope_nodes(node)
+    if any(
+        isinstance(scoped_node, ast.Return) and scoped_node.value is not None
+        for scoped_node in scoped_nodes
+    ):
+        return False
+    return any(
+        isinstance(scoped_node, ast.Call)
+        and isinstance(scoped_node.func, ast.Attribute)
+        and isinstance(scoped_node.func.value, ast.Name)
+        and scoped_node.func.value.id == "self"
+        and scoped_node.func.attr in _RECOVERABLE_SCENE_EFFECT_METHODS
+        for scoped_node in scoped_nodes
+    )
 
 
 def _recover_missing_manifest_scene_pack(code: str) -> str | None:
