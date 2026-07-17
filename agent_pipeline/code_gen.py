@@ -35,7 +35,11 @@ from .scene_capabilities import (
     compile_scene_capability_contract,
     validate_scene_capability_contract,
 )
-from .scene_pack import parse_scene_pack, recover_scene_pack_skeleton
+from .scene_pack import (
+    build_segment_scene_source,
+    parse_scene_pack,
+    recover_scene_pack_skeleton,
+)
 from .streaming_scene_pack import extract_parseable_prefix, sanitize_streaming_code
 from .tool_runtime import ManimToolRuntime, ToolResult, build_openai_tool_schemas
 
@@ -460,11 +464,21 @@ def _build_problem_intake_prompt(teaching_plan: Optional[Dict]) -> str:
         "visual_marking_plan": problem_intake.get("visual_marking_plan"),
     }
 
+    include_opening = not (
+        isinstance(render_scope, dict)
+        and render_scope.get("include_opening") is False
+    )
+    first_beat_location = (
+        "`opening_page()`"
+        if include_opening
+        else "the first rendered section method in `render_scope.allowed_section_ids`"
+    )
+
     return (
         "## Problem-intake plan for this lesson\n"
         + json.dumps(summary, ensure_ascii=False, indent=2)
         + "\n\nUse this problem-intake plan to shape the opening.\n"
-        + "- If `is_problem_solving` is true, the first `speak_with_subtitle(...)` beat in `opening_page()` must read `problem_intake.restatement` in 1-2 concise student-language sentences.\n"
+        + f"- If `is_problem_solving` is true, the first `speak_with_subtitle(...)` beat in {first_beat_location} must read `problem_intake.restatement` in 1-2 concise student-language sentences.\n"
         + "- If `is_problem_solving` is true, do NOT lead with strategy commentary, generic motivation, or `opening.hook_line` before that read-in.\n"
         + "- If `is_problem_solving` is true, show a compact problem card or reconstructed题面 card before solving.\n"
         + "- If `is_problem_solving` is true and the problem has multiple sub-questions, the compact reconstructed题面 card must cover each sub-question before structural explanation begins.\n"
@@ -719,7 +733,9 @@ def _build_codegen_acceptance_checklist(teaching_plan: Optional[Dict]) -> str:
             "- `SCENE_MANIFEST` contains exactly the render-scope section ids in order; do not add opening or closing segments."
         )
     else:
-        lines.append("- `SCENE_MANIFEST` covers the teaching-plan section ids in order.")
+        lines.append(
+            "- `SCENE_MANIFEST` contains the teaching-plan section ids exactly once and in exact order; only optional `opening` and `closing` semantic segments may appear at their respective boundaries."
+        )
     lines.append(
         "- `LessonBase.theme_id` matches the selected theme when one is provided."
     )
@@ -935,13 +951,38 @@ def _post_generation_contract_issues(
             "SCENE_MANIFEST must exactly match `render_scope.allowed_section_ids` in order; "
             f"expected {expected_section_ids}, got {manifest_ids}."
         )
-    else:
+    elif expected_section_ids:
+        permitted_semantic_ids = {"opening", "closing"}
+        unexpected_ids = [
+            segment_id
+            for segment_id in manifest_ids
+            if segment_id not in expected_section_ids
+            and segment_id not in permitted_semantic_ids
+        ]
+        manifest_section_ids = [
+            segment_id for segment_id in manifest_ids if segment_id in expected_section_ids
+        ]
         missing_ids = [section_id for section_id in expected_section_ids if section_id not in manifest_ids]
         if missing_ids:
             issues.append(
                 "SCENE_MANIFEST must cover the teaching-plan section order; missing section id(s): "
                 + ", ".join(missing_ids)
             )
+        if unexpected_ids:
+            issues.append(
+                "SCENE_MANIFEST contains unrelated extra section id(s): "
+                + ", ".join(unexpected_ids)
+                + "."
+            )
+        if manifest_section_ids != expected_section_ids:
+            issues.append(
+                "SCENE_MANIFEST teaching section ids must exactly match the teaching-plan order; "
+                f"expected {expected_section_ids}, got {manifest_section_ids}."
+            )
+        if "opening" in manifest_ids and manifest_ids[0] != "opening":
+            issues.append("The optional `opening` segment must be the first manifest entry.")
+        if "closing" in manifest_ids and manifest_ids[-1] != "closing":
+            issues.append("The optional `closing` segment must be the last manifest entry.")
 
     try:
         module = ast.parse(code)
@@ -985,11 +1026,24 @@ def _post_generation_contract_issues(
     ):
         restatement = str(problem_intake.get("restatement", "")).strip()
         terms = _core_terms(restatement)
-        if terms and not any(term in code for term in terms):
-            issues.append(
-                "The first problem-solving segment must include the core wording from "
-                "`problem_intake.restatement` before solving."
+        if terms and spec.manifest:
+            try:
+                first_segment_code = build_segment_scene_source(
+                    code,
+                    spec.manifest[0].segment_id,
+                )
+            except Exception:
+                first_segment_code = ""
+            first_segment_terms = set(
+                re.findall(r"[\w\u4e00-\u9fff]{2,}", first_segment_code)
             )
+            matched_terms = sum(term in first_segment_terms for term in terms)
+            required_matches = min(2, len(terms))
+            if matched_terms < required_matches:
+                issues.append(
+                    "The first problem-solving segment must include the core wording from "
+                    "`problem_intake.restatement` before solving."
+                )
 
     selected_assets = plan.get("selected_assets")
     if not (isinstance(selected_assets, list) and selected_assets):
@@ -1025,6 +1079,28 @@ def _scene_name_from_segment(index: int, segment_id: str) -> str:
     return f"Segment{index:02d}{_pascal_from_snake(segment_id)}Scene"
 
 
+def _recoverable_scene_method(node: ast.FunctionDef) -> bool:
+    method_name = node.name
+    if not (
+        method_name in {"opening_page", "closing_page"}
+        or method_name.startswith("section_")
+        or method_name.endswith("_page")
+    ):
+        return False
+    if node.decorator_list:
+        return False
+
+    positional = [*node.args.posonlyargs, *node.args.args]
+    if not positional or positional[0].arg != "self":
+        return False
+    required_positional = len(positional) - len(node.args.defaults)
+    if required_positional > 1:
+        return False
+    if any(default is None for default in node.args.kw_defaults):
+        return False
+    return True
+
+
 def _recover_missing_manifest_scene_pack(code: str) -> str | None:
     if "SCENE_MANIFEST" in code:
         return None
@@ -1043,23 +1119,23 @@ def _recover_missing_manifest_scene_pack(code: str) -> str | None:
     method_names = [
         stmt.name
         for stmt in lesson_base.body
-        if isinstance(stmt, ast.FunctionDef)
-        and not stmt.name.startswith("_")
-        and stmt.name != "construct"
+        if isinstance(stmt, ast.FunctionDef) and _recoverable_scene_method(stmt)
     ]
     if not method_names:
         return None
 
-    imports = [
-        ast.get_source_segment(code, node) or ""
-        for node in module.body
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-    ]
     manifest_entries = []
     wrappers = []
+    segment_ids: set[str] = set()
+    existing_class_names = {
+        node.name for node in module.body if isinstance(node, ast.ClassDef)
+    }
     for index, method_name in enumerate(method_names):
         segment_id = _segment_id_from_method(method_name)
         scene_name = _scene_name_from_segment(index, segment_id)
+        if not segment_id or segment_id in segment_ids or scene_name in existing_class_names:
+            return None
+        segment_ids.add(segment_id)
         manifest_entries.append(
             f'    {{"id": "{segment_id}", "scene": "{scene_name}", "method": "{method_name}"}},'
         )
@@ -1069,12 +1145,27 @@ def _recover_missing_manifest_scene_pack(code: str) -> str | None:
             f"        self.{method_name}()\n"
         )
 
-    lesson_source = ast.get_source_segment(code, lesson_base)
-    if not lesson_source:
-        return None
-
     manifest_source = "SCENE_MANIFEST = [\n" + "\n".join(manifest_entries) + "\n]"
-    recovered = "\n".join(part for part in [*imports, "", manifest_source, "", lesson_source, "", "\n\n".join(wrappers)] if part)
+    import_end_line = max(
+        (
+            int(node.end_lineno or node.lineno)
+            for node in module.body
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ),
+        default=0,
+    )
+    original_lines = code.rstrip().splitlines()
+    recovered_lines = [
+        *original_lines[:import_end_line],
+        "",
+        manifest_source,
+        "",
+        *original_lines[import_end_line:],
+        "",
+        "\n\n".join(wrappers).rstrip(),
+        "",
+    ]
+    recovered = "\n".join(recovered_lines)
     try:
         parse_scene_pack(recovered)
     except Exception:

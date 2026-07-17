@@ -1249,16 +1249,13 @@ def render_streaming_scene_pack_segment_with_repair(
             return latest_result
 
 
-def write_streaming_scene_pack_segment_file(
+def build_streaming_scene_pack_segment_source(
     code: str,
-    output_dir: Path,
     *,
     segment_id: str,
     order: int | None = None,
-    tts_voice: str | None = None,
-    scene_file: Path | None = None,
-) -> tuple[SegmentSpec, Path, str]:
-    """Materialize a single ready segment into ``streaming_scene_files`` immediately."""
+) -> tuple[SegmentSpec, str]:
+    """Return the canonical source and identity used by streaming renders."""
     segment_code = build_segment_scene_source(code, segment_id)
     segment_code = _sanitize_chinese_in_latex(segment_code)
     scene_pack = parse_scene_pack(segment_code)
@@ -1273,6 +1270,24 @@ def write_streaming_scene_pack_segment_file(
             order=int(order),
             lineno=segment.lineno,
         )
+    return segment, segment_code
+
+
+def write_streaming_scene_pack_segment_file(
+    code: str,
+    output_dir: Path,
+    *,
+    segment_id: str,
+    order: int | None = None,
+    tts_voice: str | None = None,
+    scene_file: Path | None = None,
+) -> tuple[SegmentSpec, Path, str]:
+    """Materialize a single ready segment into ``streaming_scene_files`` immediately."""
+    segment, segment_code = build_streaming_scene_pack_segment_source(
+        code,
+        segment_id=segment_id,
+        order=order,
+    )
 
     voice = tts_voice or voice_for_language("en")
     full_code = _build_scene_file_code(

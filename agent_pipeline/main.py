@@ -52,6 +52,7 @@ from .renderer import (
     SegmentRenderResult,
     _concat_segment_videos,
     _write_round_render_log,
+    build_streaming_scene_pack_segment_source,
     build_incremental_hls_preview,
     build_incremental_preview_video,
     prepare_segment_tts_assets,
@@ -823,10 +824,59 @@ def _emit_section_ready_event(
     _write_json_debug(stream_timing_path, stream_timing)
 
 
+StreamingSegmentSnapshot = tuple[str, str, int, str]
+
+
+def _streaming_segment_snapshot(
+    *,
+    scene_name: str,
+    method_name: str,
+    order: int,
+    segment_code: str,
+) -> StreamingSegmentSnapshot:
+    return (scene_name, method_name, int(order), segment_code)
+
+
+def _canonical_streaming_segment_snapshot(
+    code: str,
+    *,
+    segment_id: str,
+    order: int,
+) -> StreamingSegmentSnapshot:
+    segment, segment_code = build_streaming_scene_pack_segment_source(
+        code,
+        segment_id=segment_id,
+        order=order,
+    )
+    return _streaming_segment_snapshot(
+        scene_name=segment.scene_name,
+        method_name=segment.method_name,
+        order=segment.order,
+        segment_code=segment_code,
+    )
+
+
+def _streaming_reconciliation_sets(
+    *,
+    submitted_segment_snapshots: dict[str, StreamingSegmentSnapshot],
+    final_manifest: Sequence[Any],
+    final_segment_snapshots: dict[str, StreamingSegmentSnapshot],
+) -> tuple[set[str], set[str]]:
+    final_ids = {str(segment.segment_id) for segment in final_manifest}
+    removed_ids = set(submitted_segment_snapshots) - final_ids
+    changed_ids = {
+        str(segment.segment_id)
+        for segment in final_manifest
+        if submitted_segment_snapshots.get(str(segment.segment_id))
+        != final_segment_snapshots[str(segment.segment_id)]
+    }
+    return changed_ids, removed_ids
+
+
 def _materialize_missing_streaming_sections(
     *,
     code: str,
-    submitted_segment_ids: set[str],
+    submitted_segment_snapshots: dict[str, StreamingSegmentSnapshot],
     ensure_coordinator: Callable[[int], SectionPipelineCoordinator],
     r1_dir: Path,
     tts_voice: str | None,
@@ -845,9 +895,9 @@ def _materialize_missing_streaming_sections(
     if not spec.manifest:
         return
     coordinator = ensure_coordinator(len(spec.manifest))
-    ready_count = len(submitted_segment_ids)
+    ready_count = len(submitted_segment_snapshots)
     for segment in spec.manifest:
-        if segment.segment_id in submitted_segment_ids:
+        if segment.segment_id in submitted_segment_snapshots:
             continue
         scene_file = r1_dir / "streaming_scene_files" / f"{segment.order:02d}_{segment.segment_id}.py"
         _, resolved_scene_file, _ = write_streaming_scene_pack_segment_file(
@@ -880,6 +930,13 @@ def _materialize_missing_streaming_sections(
                 "order": segment.order,
                 "scene_file": resolved_scene_file,
             }
+        )
+        submitted_segment_snapshots[segment.segment_id] = (
+            _canonical_streaming_segment_snapshot(
+                sanitized_code,
+                segment_id=segment.segment_id,
+                order=segment.order,
+            )
         )
 
 
@@ -1414,33 +1471,39 @@ def _build_manim_teaching_plan(
         return teaching_plan
 
     scenes = storyboard.get("scenes") if isinstance(storyboard.get("scenes"), list) else []
-    manim_section_ids = [
-        str(scene.get("source_section_id"))
-        for scene in scenes
-        if isinstance(scene, dict)
-        and scene.get("type") == "manim_chunk"
-        and scene.get("source_section_id")
-    ]
+    sections = teaching_plan.get("sections") if isinstance(teaching_plan.get("sections"), list) else []
+    by_id = {
+        str(section.get("id")).strip(): section
+        for section in sections
+        if isinstance(section, dict) and str(section.get("id") or "").strip()
+    }
+    manim_section_ids: list[str] = []
+    seen_manim_ids: set[str] = set()
+    for scene in scenes:
+        if not isinstance(scene, dict) or scene.get("type") != "manim_chunk":
+            continue
+        section_id = str(scene.get("source_section_id") or "").strip()
+        if section_id not in by_id or section_id in seen_manim_ids:
+            continue
+        seen_manim_ids.add(section_id)
+        manim_section_ids.append(section_id)
     if not manim_section_ids:
         return teaching_plan
 
-    sections = teaching_plan.get("sections") if isinstance(teaching_plan.get("sections"), list) else []
-    by_id = {
-        str(section.get("id")): section
-        for section in sections
-        if isinstance(section, dict) and section.get("id")
-    }
-    filtered_sections = [by_id[section_id] for section_id in manim_section_ids if section_id in by_id]
+    filtered_sections = [by_id[section_id] for section_id in manim_section_ids]
     if not filtered_sections:
         return teaching_plan
 
-    concept_section_ids = {
-        str(scene.get("source_section_id"))
-        for scene in scenes
-        if isinstance(scene, dict)
-        and scene.get("type") == "concept_card"
-        and scene.get("source_section_id")
-    }
+    concept_section_ids: list[str] = []
+    seen_concept_ids: set[str] = set()
+    for scene in scenes:
+        if not isinstance(scene, dict) or scene.get("type") != "concept_card":
+            continue
+        section_id = str(scene.get("source_section_id") or "").strip()
+        if section_id not in by_id or section_id in seen_concept_ids:
+            continue
+        seen_concept_ids.add(section_id)
+        concept_section_ids.append(section_id)
 
     plan = dict(teaching_plan)
     plan["sections"] = filtered_sections
@@ -1462,12 +1525,18 @@ def _build_manim_teaching_plan(
     )
     include_opening = intro_scene is None
     include_closing = summary_scene is None
+    problem_intake = (
+        teaching_plan.get("problem_intake")
+        if isinstance(teaching_plan.get("problem_intake"), dict)
+        else {}
+    )
+    include_problem_intake = bool(problem_intake.get("is_problem_solving"))
     section_boundaries: Dict[str, Dict[str, str]] = {}
     for index, scene in enumerate(scenes):
         if not isinstance(scene, dict) or scene.get("type") != "manim_chunk":
             continue
         section_id = str(scene.get("source_section_id") or "").strip()
-        if not section_id:
+        if section_id not in seen_manim_ids or section_id in section_boundaries:
             continue
         previous_scene = scenes[index - 1] if index > 0 else None
         next_scene = scenes[index + 1] if index + 1 < len(scenes) else None
@@ -1488,13 +1557,13 @@ def _build_manim_teaching_plan(
         "backend": "manim",
         "allowed_section_ids": manim_section_ids,
         "include_opening": include_opening,
-        "include_problem_intake": include_opening,
+        "include_problem_intake": include_problem_intake,
         "include_closing": include_closing,
         "forbidden_roles": [
             role
             for role, included in (
                 ("opening", include_opening),
-                ("problem_intake", include_opening),
+                ("problem_intake", include_problem_intake),
                 ("closing", include_closing),
             )
             if not included
@@ -1515,7 +1584,7 @@ def _build_manim_teaching_plan(
     }
     plan["hybrid_routes"] = {
         "manim_section_ids": manim_section_ids,
-        "remotion_section_ids": sorted(concept_section_ids),
+        "remotion_section_ids": concept_section_ids,
     }
     plan["teaching_promise"] = (
         f"{teaching_plan.get('teaching_promise', '')} "
@@ -2024,6 +2093,7 @@ def run_pipeline(
                 raw_render_event_bridge(payload)
         tts_voice = voice_for_language(output_language)
         stream_buffer = ScenePackStreamBuffer()
+        submitted_segment_snapshots: dict[str, StreamingSegmentSnapshot] = {}
         seg_cap = MANIM_SETTINGS.segment_render_workers
         coordinator: SectionPipelineCoordinator | None = None
         completed_preview_results_by_order: dict[int, SegmentRenderResult] = {}
@@ -2108,11 +2178,8 @@ def run_pipeline(
             except Exception as exc:
                 summary["streaming_preview"]["last_error"] = str(exc)
 
-        def _ensure_streaming_coordinator(manifest_section_count: int) -> SectionPipelineCoordinator:
-            nonlocal coordinator
-            if coordinator is not None:
-                return coordinator
-            coordinator = SectionPipelineCoordinator(
+        def _new_streaming_coordinator(manifest_count: int) -> SectionPipelineCoordinator:
+            return SectionPipelineCoordinator(
                 validate_fix_fn=lambda payload: _validate_ready_streaming_section(
                     payload=payload,
                     code_eval_agent=code_eval_agent,
@@ -2144,15 +2211,20 @@ def run_pipeline(
                 ),
                 event_callback=render_event_bridge,
                 on_section_render_completed=_on_section_render_completed,
-                validate_workers=max(1, min(2, manifest_section_count)),
+                validate_workers=max(1, min(2, manifest_count)),
                 tts_workers=max(1, MANIM_SETTINGS.tts_process_threads),
                 render_workers=_resolve_streaming_render_workers(
                     configured_cap=seg_cap,
-                    manifest_section_count=manifest_section_count,
+                    manifest_section_count=manifest_count,
                 ),
                 tts_retry_attempts=max(0, int(MANIM_SETTINGS.tts_section_retry_attempts)),
                 allow_render_on_tts_failure=bool(MANIM_SETTINGS.allow_render_without_tts),
             )
+
+        def _ensure_streaming_coordinator(manifest_count: int) -> SectionPipelineCoordinator:
+            nonlocal coordinator
+            if coordinator is None:
+                coordinator = _new_streaming_coordinator(manifest_count)
             return coordinator
         _log("代码生成: 正在调用 AI 生成 Manim 场景代码 …")
         _log("Round 1: generating Manim code ...")
@@ -2193,7 +2265,7 @@ def run_pipeline(
                         / "streaming_scene_files"
                         / f"{report.segment.order:02d}_{report.segment.segment_id}.py"
                     )
-                    _, resolved_scene_file, segment_code = write_streaming_scene_pack_segment_file(
+                    _, resolved_scene_file, _ = write_streaming_scene_pack_segment_file(
                         snapshot.parseable_prefix,
                         r1_dir,
                         segment_id=report.segment.segment_id,
@@ -2222,6 +2294,13 @@ def run_pipeline(
                             "order": report.segment.order,
                             "scene_file": resolved_scene_file,
                         }
+                    )
+                    submitted_segment_snapshots[report.segment.segment_id] = (
+                        _canonical_streaming_segment_snapshot(
+                            snapshot.parseable_prefix,
+                            segment_id=report.segment.segment_id,
+                            order=report.segment.order,
+                        )
                     )
                     stream_buffer.mark_submitted(report.segment.segment_id)
                 except Exception as exc:
@@ -2307,7 +2386,7 @@ def run_pipeline(
         if not codegen_failure_reason:
             _materialize_missing_streaming_sections(
                 code=code,
-                submitted_segment_ids=set(stream_buffer.ready_segment_ids),
+                submitted_segment_snapshots=submitted_segment_snapshots,
                 ensure_coordinator=_ensure_streaming_coordinator,
                 r1_dir=r1_dir,
                 tts_voice=tts_voice,
@@ -2318,12 +2397,162 @@ def run_pipeline(
                 stream_timing_path=stream_timing_path,
                 pipeline_started_at=pipeline_started_at,
             )
+        final_scene_pack = None
+        final_segment_snapshots: dict[str, StreamingSegmentSnapshot] = {}
+        if not codegen_failure_reason:
+            final_scene_pack = parse_scene_pack(sanitized_code)
+            final_segment_snapshots = {
+                segment.segment_id: _canonical_streaming_segment_snapshot(
+                    sanitized_code,
+                    segment_id=segment.segment_id,
+                    order=segment.order,
+                )
+                for segment in final_scene_pack.manifest
+            }
         stage_times["round1_codegen"] = time.time() - stage_started_at
         if coordinator is not None:
             coordinator.close_submissions()
             streaming_states = coordinator.wait_until_complete()
         else:
             streaming_states = []
+
+        reconciled_segment_ids: set[str] = set()
+        removed_segment_ids: set[str] = set()
+        if final_scene_pack is not None:
+            reconciled_segment_ids, removed_segment_ids = (
+                _streaming_reconciliation_sets(
+                    submitted_segment_snapshots=submitted_segment_snapshots,
+                    final_manifest=final_scene_pack.manifest,
+                    final_segment_snapshots=final_segment_snapshots,
+                )
+            )
+
+            initial_states_by_id = {
+                state.task.segment_id: state for state in streaming_states
+            }
+            for segment_id in removed_segment_ids | reconciled_segment_ids:
+                stale_state = initial_states_by_id.get(segment_id)
+                if stale_state is None:
+                    continue
+                stale_output_dir = _state_render_result(stale_state).output_dir
+                try:
+                    resolved_output_dir = stale_output_dir.resolve()
+                    resolved_output_dir.relative_to(r1_dir.resolve())
+                except (OSError, ValueError):
+                    continue
+                if resolved_output_dir != r1_dir.resolve() and resolved_output_dir.exists():
+                    shutil.rmtree(resolved_output_dir)
+
+            reconciliation_states: list[Any] = []
+            if reconciled_segment_ids:
+                reconciliation_coordinator = _new_streaming_coordinator(
+                    len(reconciled_segment_ids)
+                )
+                try:
+                    for segment in final_scene_pack.manifest:
+                        if segment.segment_id not in reconciled_segment_ids:
+                            continue
+                        scene_file = (
+                            r1_dir
+                            / "streaming_scene_files"
+                            / f"{segment.order:02d}_{segment.segment_id}.py"
+                        )
+                        _, resolved_scene_file, _ = (
+                            write_streaming_scene_pack_segment_file(
+                                sanitized_code,
+                                r1_dir,
+                                segment_id=segment.segment_id,
+                                order=segment.order,
+                                tts_voice=tts_voice,
+                                scene_file=scene_file,
+                            )
+                        )
+                        submitted_segment_snapshots[segment.segment_id] = (
+                            final_segment_snapshots[segment.segment_id]
+                        )
+                        _emit_section_ready_event(
+                            event_callback=event_callback,
+                            run_id=run_id,
+                            run_dir=run_dir,
+                            stream_timing=stream_timing,
+                            stream_timing_path=stream_timing_path,
+                            pipeline_started_at=pipeline_started_at,
+                            segment_id=segment.segment_id,
+                            scene_name=segment.scene_name,
+                            method_name=segment.method_name,
+                            order=segment.order,
+                            ready_sections=len(final_scene_pack.manifest),
+                            resolved_scene_file=resolved_scene_file,
+                        )
+                        reconciliation_coordinator.submit_ready_section(
+                            {
+                                "segment_id": segment.segment_id,
+                                "scene_name": segment.scene_name,
+                                "order": segment.order,
+                                "scene_file": resolved_scene_file,
+                            }
+                        )
+                finally:
+                    reconciliation_coordinator.close_submissions()
+                    reconciliation_states = (
+                        reconciliation_coordinator.wait_until_complete()
+                    )
+
+            final_states_by_id = dict(initial_states_by_id)
+            final_states_by_id.update(
+                {state.task.segment_id: state for state in reconciliation_states}
+            )
+            streaming_states = [
+                final_states_by_id[segment.segment_id]
+                for segment in final_scene_pack.manifest
+                if segment.segment_id in final_states_by_id
+            ]
+            manifest_section_count = len(final_scene_pack.manifest)
+
+            if reconciled_segment_ids or removed_segment_ids:
+                completed_preview_results_by_order.clear()
+                completed_preview_results_by_order.update(
+                    {
+                        _state_render_result(state).order: _state_render_result(state)
+                        for state in streaming_states
+                        if state.status == "done"
+                    }
+                )
+                preview_update = _maybe_build_incremental_preview(
+                    output_dir=r1_dir,
+                    completed_results_by_order=completed_preview_results_by_order,
+                    published_preview_prefix_len=0,
+                    preview_version=preview_version,
+                )
+                if preview_update["updated"]:
+                    published_preview_prefix_len = int(
+                        preview_update["published_preview_prefix_len"]
+                    )
+                    preview_version = int(preview_update["preview_version"])
+                    summary["streaming_preview"]["version"] = preview_version
+                    summary["streaming_preview"]["published_prefix_len"] = (
+                        published_preview_prefix_len
+                    )
+                    summary["streaming_preview"]["latest_preview_path"] = str(
+                        preview_update["preview_path"]
+                    )
+                    summary["streaming_preview"]["last_error"] = None
+                    summary["streaming_preview"]["history"].append(
+                        {
+                            "version": preview_version,
+                            "preview_sections": int(preview_update["preview_sections"]),
+                            "preview_path": str(preview_update["preview_path"]),
+                        }
+                    )
+                else:
+                    published_preview_prefix_len = 0
+                    summary["streaming_preview"]["published_prefix_len"] = 0
+                    summary["streaming_preview"]["latest_preview_path"] = None
+                    summary["streaming_preview"]["last_error"] = (
+                        str(preview_update["error"])
+                        if preview_update["error"]
+                        else "No reconciled preview prefix is renderable."
+                    )
         _write_streaming_section_statuses(run_dir, streaming_states)
         summary["streaming_sections"] = [
             _streaming_section_state_summary(state)
