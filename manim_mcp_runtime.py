@@ -23,6 +23,7 @@ from interface.plugins.manim import (
     make_manim_stream_event,
 )
 from plugins.manim.agent_pipeline.main import run_pipeline
+from plugins.manim.agent_pipeline.render_backend import normalize_render_backend
 from plugins.manim.agent_pipeline.renderer import build_hls_video_file
 from plugins.manim.delivery import HlsPublishInput, TencentCosCdnPublisher
 from plugins.manim.mcp_server import create_server
@@ -1365,9 +1366,7 @@ class ManimRenderRuntime:
         if not request_text:
             raise ValueError("request is required")
 
-        backend = str(render_backend or "manim").strip().lower() or "manim"
-        if backend not in {"manim", "hybrid"}:
-            raise ValueError("render_backend must be 'manim' or 'hybrid'")
+        backend = normalize_render_backend(render_backend)
 
         quality_normalized = (quality or "default").strip().lower() or "default"
         quality_flags = _normalize_quality_flags(quality_normalized)
@@ -1732,9 +1731,7 @@ class ManimRenderRuntime:
         if not request_text:
             raise ValueError("request is required")
 
-        backend = str(render_backend or "manim").strip().lower() or "manim"
-        if backend not in {"manim", "hybrid"}:
-            raise ValueError("render_backend must be 'manim' or 'hybrid'")
+        backend = normalize_render_backend(render_backend)
 
         quality_normalized = (quality or "default").strip().lower() or "default"
         _normalize_quality_flags(quality_normalized)

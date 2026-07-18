@@ -416,7 +416,7 @@ def _opening_shape_for_fast_path(category: FastPathCategory) -> tuple[str, str, 
 
 def _build_teaching_plan(category: FastPathCategory, *, theme_id: str) -> dict[str, Any]:
     blueprint = category.blueprint
-    sections: list[dict[str, str]] = []
+    sections: list[dict[str, Any]] = []
     for section in blueprint.sections:
         sections.append(
             {
@@ -424,6 +424,15 @@ def _build_teaching_plan(category: FastPathCategory, *, theme_id: str) -> dict[s
                 "title": section.title,
                 "teacher_move": section.narrative,
                 "visual_strategy": section.visual_focus,
+                "representation_plan": {
+                    "dimension": "2d",
+                    "primary": section.visual_focus,
+                    "complementary": [],
+                    "core_visual_object": section.visual_focus,
+                    "animated_quantities": [],
+                    "camera_intent": "fixed",
+                    "must_preserve": [],
+                },
                 "key_takeaway": section.narrative,
                 "check_for_understanding": f"看完“{section.title}”后，你能指出画面里哪个对象或变化最关键吗？",
             }
@@ -631,7 +640,7 @@ def _make_category(
             explanation_style=style_axis,
             explanation_depth="medium",
             pacing="steady",
-            hook=f"如果内容没变，只是讲法换了，理解体验会差多少？",
+            hook="如果内容没变，只是讲法换了，理解体验会差多少？",
             big_idea=f"{display_name}的核心不是多讲内容，而是用合适的讲法把理解路径变短。",
             section_specs=[
                 (

@@ -5,8 +5,10 @@ import json
 import re
 from typing import Any, Callable, Sequence
 
-from config.logger_config import get_mcp_logger
 from mcp.types import TextContent, Tool
+
+from config.logger_config import get_mcp_logger
+from plugins.manim.agent_pipeline.render_backend import normalize_render_backend
 
 _logger = get_mcp_logger("manim_http")
 
@@ -45,8 +47,8 @@ def _build_render_schema() -> dict[str, Any]:
             },
             "render_backend": {
                 "type": "string",
-                "enum": ["manim", "hybrid"],
-                "description": "Delivery backend. hybrid wraps the final Manim video with Remotion.",
+                "enum": ["manim"],
+                "description": "Delivery backend. Only pure Manim delivery is enabled.",
             },
             "conversation_id": {
                 "type": "string",
@@ -110,9 +112,7 @@ def _normalize_render_payload(arguments: dict[str, Any]) -> dict[str, Any]:
     if quality not in {"default", "draft", "medium", "high"}:
         raise ValueError("quality must be one of: default, draft, medium, high")
 
-    render_backend = str(arguments.get("render_backend") or "manim").strip().lower() or "manim"
-    if render_backend not in {"manim", "hybrid"}:
-        raise ValueError("render_backend must be 'manim' or 'hybrid'")
+    render_backend = normalize_render_backend(arguments.get("render_backend"))
 
     conversation_id = str(arguments.get("conversation_id") or "").strip()
     if not conversation_id:

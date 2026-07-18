@@ -212,7 +212,7 @@ CLI 参数：
 - `--image`：输入图片路径
 - `--run-dir`：自定义输出目录
 - `--language`：输出语言，`en` 或 `zh`
-- `--render-backend`：交付后端，`manim` 或 `hybrid`
+- `--render-backend`：交付后端，当前仅支持 `manim`；Hybrid/Remotion 已禁用
 - `--debug`：仅限本地 CLI 调试；会把 planner/codegen 的 `analysis/code` 增量文本、LLM 请求开始/重试/完成、`response` 生命周期状态，以及“不暴露推理正文”的 reasoning 进行中状态、section 成片路径、预览视频更新写到 stdout，并在 macOS 上尝试对每个新 `preview_vNN.mp4` 调用 `open`
 - planner 侧的可读性依赖当前提示词契约：它会尽量以短字段、JSON-first 的单份教学计划持续流出，因此 stdout 中更容易看到稳定的首段分析增量，而不是晚到或反复重启的长草稿
 
