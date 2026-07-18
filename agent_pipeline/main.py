@@ -1,12 +1,4 @@
-"""
-Single-round Manim generation pipeline with optional Remotion hybrid delivery.
-
-Flow:
-  1. CodeGen agent produces Round 1 Manim code from a student request.
-  2. Round 1 renders with TTS enabled at final delivery quality.
-  3. (hybrid mode) A StoryboardAgent designs a Remotion assembly plan,
-     and the Manim video is wrapped with chapter cards / transitions.
-"""
+"""Single-round Manim generation and delivery pipeline."""
 
 from __future__ import annotations
 
@@ -47,7 +39,6 @@ from .fast_paths import (
 from .llm import resolve_pipeline_llm_configs, validate_pipeline_llm_configs
 from .hybrid_routes import normalize_hybrid_storyboard_routes
 from .output_language import normalize_output_language, output_language_name
-from .remotion_renderer import build_remotion_hybrid
 from .renderer import (
     RenderResult,
     SegmentRenderResult,
@@ -62,7 +53,6 @@ from .renderer import (
 )
 from .scene_pack import parse_scene_pack
 from .streaming_scene_pack import ScenePackStreamBuffer, sanitize_streaming_code
-from .storyboard_agent import StoryboardAgent
 from .teaching_planner import TeachingPlannerAgent
 from .style_selector import ExplanationStyleSelector
 from .section_validation import validate_and_fix_streaming_scene_file
@@ -70,6 +60,10 @@ from .theme_resolver import resolve_theme
 from .tts import has_audio_stream, voice_for_language
 from .concurrency_runtime import SectionPipelineCoordinator
 from plugins.manim.runtime_config import get_manim_runs_dir, get_manim_settings
+from .render_backend import (
+    SUPPORTED_RENDER_BACKENDS,
+    normalize_render_backend,
+)
 
 # =====================================================================
 # Configuration constants
@@ -1611,13 +1605,9 @@ def run_pipeline(
     event_callback: Callable[[ManimStreamEvent], None] | None = None,
     debug_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> Dict:
-    """Execute the single-round generate-render pipeline.
-
-    Args:
-        render_backend: "manim" for pure Manim delivery, or "hybrid" for
-            Remotion-wrapped delivery with chapter cards and transitions.
-    """
+    """Execute the single-round Manim generate-render pipeline."""
     _configure_pipeline_http_logging()
+    render_backend = normalize_render_backend(render_backend)
     stage_times: Dict[str, float] = {}
     output_language = normalize_output_language(language, DEFAULT_OUTPUT_LANGUAGE)
 
@@ -1660,6 +1650,8 @@ def run_pipeline(
             f"code={code_llm.provider}/{code_llm.model}"
         )
         if render_backend == "hybrid":
+            from .storyboard_agent import StoryboardAgent
+
             director_llm_preview = llm_configs["director"]
             routing_msg += f", director={director_llm_preview.provider}/{director_llm_preview.model}"
         _log(f"LLM routing: {routing_msg}")
@@ -2775,6 +2767,12 @@ def _apply_delivery_assets(
     if not storyboard:
         return
 
+    # Legacy Hybrid code is intentionally isolated from the Manim-only path.
+    # With normalize_render_backend() enforcing Manim-only delivery, this import
+    # is never reached by supported requests and Remotion dependencies/skills do
+    # not enter the active pipeline.
+    from .remotion_renderer import build_remotion_hybrid
+
     _emit_pipeline_event(
         event_callback,
         event_type=ManimStreamEventType.STAGE_PROGRESS,
@@ -2830,7 +2828,7 @@ def _save_summary(run_dir: Path, summary: Dict[str, Any]) -> None:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="agent_pipeline",
-        description="Single-round Manim generation pipeline with optional Remotion hybrid delivery",
+        description="Single-round Manim generation and delivery pipeline",
     )
     parser.add_argument("request", nargs="?", default=None, help="Student request text")
     parser.add_argument("--image", type=Path, default=None, help="Optional input image")
@@ -2843,9 +2841,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--render-backend",
-        choices=["manim", "hybrid"],
+        choices=list(SUPPORTED_RENDER_BACKENDS),
         default="manim",
-        help="Delivery backend: 'manim' for pure Manim, 'hybrid' for Remotion-wrapped",
+        help="Delivery backend (currently only 'manim' is enabled)",
     )
     parser.add_argument(
         "--debug",

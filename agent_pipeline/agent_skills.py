@@ -1244,10 +1244,6 @@ def build_manim_skill_prompt(teaching_plan: Optional[Dict] = None) -> str:
 
 
 def build_remotion_skill_prompt() -> str:
-    return "\n\n".join(
-        [
-            "## Local agent skill: Remotion",
-            _skill_text("remotion", "SKILL.md"),
-            _skill_text("remotion", "references", "hybrid.md"),
-        ]
-    ).strip()
+    raise RuntimeError(
+        "The Remotion skill is disabled; use the Manim generation pipeline"
+    )
